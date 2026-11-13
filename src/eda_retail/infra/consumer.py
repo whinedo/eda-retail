@@ -1,0 +1,118 @@
+"""Consumidor genérico de `eda.events` (design.md §6).
+
+Cada mensaje se procesa en una transacción de PostgreSQL que incluye el registro en el
+inbox y lo que escriba el handler (estado, `events`, `outbox`). El offset de Kafka se
+confirma solo después del `COMMIT` (`enable.auto.commit=false`).
+
+Fuera de alcance aquí (capacidad `resilience`): reintentos con backoff, dead letter
+queue y escalado. Si el handler falla, la excepción se propaga y el offset no se confirma.
+"""
+
+from __future__ import annotations
+
+import enum
+import json
+import uuid
+from collections.abc import Callable, Mapping
+
+import psycopg
+from confluent_kafka import Consumer, Message, TopicPartition
+
+from eda_retail.config import Settings
+from eda_retail.events.envelope import EventEnvelope
+from eda_retail.infra import inbox
+from eda_retail.infra.db import connect
+from eda_retail.infra.kafka import make_consumer
+
+Handler = Callable[[psycopg.Connection, EventEnvelope], None]
+
+
+class Outcome(enum.Enum):
+    PROCESSED = "processed"
+    DUPLICATE = "duplicate"
+    IGNORED = "ignored"
+
+
+def decode_message(msg: Message) -> EventEnvelope:
+    body = json.loads(msg.value())
+    body.pop("seq", None)
+    return EventEnvelope.model_validate(body)
+
+
+class EventConsumer:
+    def __init__(
+        self,
+        name: str,
+        conn: psycopg.Connection,
+        kafka_consumer: Consumer,
+        topic: str,
+        handlers: Mapping[str, Handler],
+        *,
+        inbox_enabled: bool = True,
+    ) -> None:
+        self.name = name
+        self._conn = conn
+        self._kafka = kafka_consumer
+        self._handlers = dict(handlers)
+        self._inbox_enabled = inbox_enabled
+        self._kafka.subscribe([topic])
+
+    @classmethod
+    def from_settings(
+        cls, settings: Settings, *, name: str, handlers: Mapping[str, Handler]
+    ) -> EventConsumer:
+        """`name` es a la vez el `group.id` de Kafka y el nombre del consumidor en el inbox."""
+        return cls(
+            name,
+            connect(settings.database_url),
+            make_consumer(settings.kafka_bootstrap_servers, group_id=name),
+            settings.events_topic,
+            handlers,
+            inbox_enabled=settings.inbox_enabled,
+        )
+
+    def poll(self, timeout: float) -> Message | None:
+        msg = self._kafka.poll(timeout)
+        if msg is None or msg.error():
+            return None
+        return msg
+
+    @staticmethod
+    def event_id_of(msg: Message) -> uuid.UUID:
+        return uuid.UUID(json.loads(msg.value())["event_id"])
+
+    def handle_message(self, msg: Message) -> Outcome:
+        """Procesa el mensaje en una transacción. No confirma el offset."""
+        event = decode_message(msg)
+        handler = self._handlers.get(event.event_type)
+        if handler is None:
+            return Outcome.IGNORED
+        with self._conn.transaction():
+            if not inbox.register(self._conn, self.name, event.event_id, enabled=self._inbox_enabled):
+                return Outcome.DUPLICATE
+            handler(self._conn, event)
+        return Outcome.PROCESSED
+
+    def commit(self, msg: Message) -> None:
+        """Confirma el offset en Kafka. Llamar solo tras el COMMIT de PostgreSQL."""
+        self._kafka.commit(message=msg, asynchronous=False)
+
+    def committed_offset(self, msg: Message) -> int:
+        [tp] = self._kafka.committed([TopicPartition(msg.topic(), msg.partition())], timeout=10)
+        return tp.offset
+
+    def run_once(self, timeout: float = 1.0) -> Outcome | None:
+        msg = self.poll(timeout)
+        if msg is None:
+            return None
+        outcome = self.handle_message(msg)
+        self.commit(msg)
+        return outcome
+
+    def run_forever(self) -> None:
+        while True:
+            self.run_once()
+
+    def close(self) -> None:
+        self._kafka.close()
+        self._conn.close()
