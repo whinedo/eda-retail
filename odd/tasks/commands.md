@@ -31,8 +31,8 @@ Assumptions (marked, change freely):
 | --- | --- | --- | --- | --- |
 | T1 | A5 | inline | done (RED pk assert -> 47 passed; dev DB migrated) | 8b7e24d |
 | T2 | S1, S2, S3 | inline | done (RED import error -> 8 passed) | 14377d7 |
-| T3 | S4, S5, S6, S7 (handler core, notices, incidents, close, escalate) | inline | done (RED import error -> 12 passed) | next commit |
-| T4 | S8 (CreatePlan, RevisePlan) | inline | pending | |
+| T3 | S4, S5, S6, S7 (handler core, notices, incidents, close, escalate) | inline | done (RED import error -> 12 passed) | 8107aed |
+| T4 | S8 (CreatePlan, RevisePlan) | inline | done (RED unsupported command -> 18 passed) | next commit |
 | T5 | S9, S10 (RequestStep, RecordStepResult) | inline | pending | |
 
 Route evidence: sequential units over one module (handler) and shared rules; no Writer trigger reason. T1 is high risk (item 1) and gets its own commit.

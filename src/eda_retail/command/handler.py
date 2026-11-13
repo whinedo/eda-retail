@@ -267,3 +267,7 @@ def _close(ctx: Context) -> None:
         "UPDATE incidents SET status = 'resolved', closed_at = now() WHERE incident_id = %s", (cmd.incident_id,)
     )
     ctx.emit("IncidentResolved", {"incident_id": cmd.incident_id, "outcome": cmd.outcome})
+
+
+# Los comandos de planes y pasos se registran al importar sus módulos.
+from eda_retail.command import plans  # noqa: E402,F401
