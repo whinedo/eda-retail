@@ -3,10 +3,9 @@
 from __future__ import annotations
 
 import json
-from types import SimpleNamespace
 
-from eda_retail.llm.anthropic_client import FALLBACK_BETA, AnthropicClient
 from eda_retail.llm.fake import FakeLlmClient
+from eda_retail.llm.ollama_client import OllamaClient
 from eda_retail.llm.generation import Budget, LlmRequest, generate
 from eda_retail.llm.schemas import PlanProposal, strict_schema
 
@@ -38,26 +37,40 @@ def test_plan_missing_required_field():
     assert "depends_on" in result.errors[0]
 
 
+def _ollama(reply: dict) -> tuple[OllamaClient, list]:
+    sent: list = []
+
+    def post(url: str, body: dict, timeout: float) -> dict:
+        sent.append((url, body))
+        return reply
+
+    return OllamaClient(host="http://ollama:11434", model="llama3.1", seed=7, post=post), sent
+
+
+def _reply(content: str, done_reason: str = "stop") -> dict:
+    return {"model": "llama3.1", "message": {"role": "assistant", "content": content}, "done": True,
+            "done_reason": done_reason, "prompt_eval_count": 30, "eval_count": 12, "total_duration": 2_500_000_000}
+
+
 def test_agent_has_no_effect_tools():
     """Agente que intenta actuar"""
-    captured: dict = {}
-
-    def create(**kwargs):
-        captured.update(kwargs)
-        return SimpleNamespace(
-            stop_reason="end_turn", model="claude-opus-5-5",
-            content=[SimpleNamespace(type="text", text=json.dumps(VALID_PLAN))],
-            usage=SimpleNamespace(input_tokens=10, output_tokens=5, cache_creation_input_tokens=0,
-                                  cache_read_input_tokens=0),
-        )
-
-    sdk = SimpleNamespace(beta=SimpleNamespace(messages=SimpleNamespace(create=create)))
-    client = AnthropicClient(model="claude-opus-5-5", effort="medium", sdk=sdk)
+    client, sent = _ollama(_reply(json.dumps(VALID_PLAN)))
     response = client.complete(_request())
-    assert "tools" not in captured and "tool_choice" not in captured
-    assert captured["output_config"]["format"]["type"] == "json_schema"
-    assert captured["fallbacks"] == "default" and captured["betas"] == [FALLBACK_BETA]
-    assert (response.tokens_in, response.tokens_out) == (10, 5)
+    [(url, body)] = sent
+    assert url == "http://ollama:11434/api/chat"
+    assert "tools" not in body  # el modelo no recibe ninguna herramienta
+    assert body["format"] == _request().schema and body["stream"] is False
+    assert body["options"] == {"temperature": 0, "seed": 7, "num_predict": _request().max_tokens}
+    assert [m["role"] for m in body["messages"]] == ["system", "user"]
+    assert (response.text, response.model) == (json.dumps(VALID_PLAN), "llama3.1")
+    assert (response.tokens_in, response.tokens_out, response.latency_ms) == (30, 12, 2500)
+
+
+def test_truncated_ollama_output_is_invalid():
+    """Una salida cortada por longitud (done_reason length) no se acepta"""
+    client, _ = _ollama(_reply('{"steps": [', done_reason="length"))
+    result = generate(client, _request(), PlanProposal, max_generations=1, budget=_budget())
+    assert result.reason == "llm_output_invalid"
 
 
 def test_three_invalid_plans():
@@ -125,5 +138,6 @@ def test_strict_schema_closes_every_object():
 
     found = list(objects(schema))
     assert found and all(o.get("additionalProperties") is False for o in found)
-    step = schema["$defs"]["ProposedStep"]
+    assert "$defs" not in json.dumps(schema) and "$ref" not in json.dumps(schema)  # referencias en línea
+    step = schema["properties"]["steps"]["items"]
     assert "depends_on" in step["required"]

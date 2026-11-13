@@ -17,7 +17,7 @@ Scenario names quoted verbatim; one test per scenario, docstring = scenario name
 - S8 CLAUDE.md rule 6: the LLM call happens before the transaction opens; inbox + command in one transaction; duplicates are detected before paying for an LLM call.
 
 Assumptions (marked):
-- A1 Model `claude-opus-5-5` by default (`LLM_MODEL`), effort `LLM_EFFORT` (default `medium`), server-side refusal fallback `fallbacks="default"` enabled; structured output via `output_config.format` JSON schema, then pydantic validation in code.
+- A1 (rewritten by L15) LLM via local Ollama `/api/chat` (`OLLAMA_HOST`, `LLM_MODEL` default `llama3.1`, `LLM_SEED` 42, `temperature` 0, `LLM_TIMEOUT_SECONDS` 120); structured output via `format` JSON schema with `$ref` inlined, then pydantic validation in code. No tools are sent.
 - A2 Limits by env: `LLM_MAX_GENERATIONS` 3, `LLM_MAX_TOKENS_PER_INCIDENT` 50000, `LLM_MAX_CALLS_PER_INCIDENT` 10, `MAX_PLAN_REVISIONS` 2.
 - A3 `severity` `low` gets the fixed one-step `notify_customer` plan in code, without calling the LLM.
 - A4 Budget is checked through the command handler (write-side validation), not a view.
@@ -59,3 +59,4 @@ Route evidence: units share the agent runtime and handler; sequential, no Writer
 - L12 (2026-11-13) user: "activa los check del repositorio" -> chose "CI en GitHub Actions". Added .github/workflows/ci.yml (ebd5a5f): docker compose postgres+kafka, uv sync --locked, pytest. Not run on GitHub yet (no push). Risk: item 5.
 - L13 (2026-11-13) T7: RED (ModuleNotFoundError agents.writer); GREEN 7/7 tests/test_writer.py. StepFailed invalid_draft publication stays with the phase 4 executors.
 - L14 (2026-11-13) T8: RED (ModuleNotFoundError agents.cli); GREEN 4/4 tests/test_agent_cli.py; suite 153 passed. eda-agent <interpreter|planner|replanner> and eda-projector scripts; docs/README.md gets a Procesos section. Real Anthropic calls never exercised yet (user runs them). Phase 3 complete.
+- L15 (2026-11-13) user: "no quiero usar Claude sino ollama". AnthropicClient and the anthropic dependency removed; OllamaClient (stdlib urllib, injectable post) added; tests 154 passed. Real Ollama runs are the user's (~/CLAUDE.md).

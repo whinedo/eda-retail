@@ -1,8 +1,9 @@
-"""Esquemas de las salidas del LLM y su versión estricta para `output_config.format`.
+"""Esquemas de las salidas del LLM y su versión estricta para el `format` de Ollama.
 
 Las salidas se validan aquí con pydantic (forma) y después en código (reglas de negocio y
 command handler). El esquema que se envía al modelo se cierra (`additionalProperties:
-false`) y pierde las restricciones numéricas y de longitud, que comprueba pydantic.
+false`), lleva las referencias (`$ref`) resueltas en línea y pierde las restricciones
+numéricas y de longitud, que comprueba pydantic.
 """
 
 from __future__ import annotations
@@ -51,7 +52,19 @@ _DROPPED = {"title", "default", "minLength", "maxLength", "pattern", "minimum", 
 
 def strict_schema(model: type[BaseModel]) -> dict[str, Any]:
     schema = copy.deepcopy(model.model_json_schema())
-    return _close(schema)
+    defs = schema.pop("$defs", {})
+    return _close(_inline(schema, defs))
+
+
+def _inline(node: Any, defs: dict[str, Any]) -> Any:
+    if isinstance(node, dict):
+        ref = node.get("$ref")
+        if isinstance(ref, str) and ref.startswith("#/$defs/"):
+            return _inline(copy.deepcopy(defs[ref.removeprefix("#/$defs/")]), defs)
+        return {k: _inline(v, defs) for k, v in node.items()}
+    if isinstance(node, list):
+        return [_inline(v, defs) for v in node]
+    return node
 
 
 def _close(node: Any) -> Any:

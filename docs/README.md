@@ -220,7 +220,7 @@ Cada componente es un proceso independiente (con `docker compose up -d` levantad
 | `uv run eda-agent planner` | Propone el plan a partir de `ShipmentDelayed` |
 | `uv run eda-agent replanner` | Revisa el plan ante un `StepFailed` no reintentable |
 
-Los agentes llaman a Claude (`LLM_MODEL`, por defecto `claude-opus-5-5`; `LLM_EFFORT`, por defecto `medium`) y necesitan `ANTHROPIC_API_KEY`. Los tests usan siempre el cliente simulado.
+Los agentes llaman a un modelo local de Ollama (`OLLAMA_HOST`, por defecto `http://localhost:11434`; `LLM_MODEL`, por defecto `llama3.1`; `LLM_SEED`, por defecto 42; `LLM_TIMEOUT_SECONDS`, por defecto 120) con `temperature` 0 para que las ejecuciones sean repetibles. Los tests usan siempre el cliente simulado.
 
 ## Decisiones asumidas
 
