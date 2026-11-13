@@ -14,6 +14,7 @@ import enum
 import json
 import uuid
 from collections.abc import Callable, Mapping
+from typing import Protocol, runtime_checkable
 
 import psycopg
 from confluent_kafka import Consumer, Message, TopicPartition
@@ -25,13 +26,21 @@ from eda_retail.infra import inbox, tracing
 from eda_retail.infra.db import connect
 from eda_retail.infra.kafka import make_consumer
 
-Handler = Callable[[psycopg.Connection, EventEnvelope], None]
-
-
 class Outcome(enum.Enum):
     PROCESSED = "processed"
     DUPLICATE = "duplicate"
     IGNORED = "ignored"
+
+
+@runtime_checkable
+class UnitOfWork(Protocol):
+    """Handler que gestiona sus propias transacciones (agentes con LLM, regla 6 de CLAUDE.md):
+    la llamada al LLM se hace fuera de la transacción que registra el inbox y el comando."""
+
+    def process(self, conn: psycopg.Connection, event: EventEnvelope) -> Outcome: ...
+
+
+Handler = Callable[[psycopg.Connection, EventEnvelope], None] | UnitOfWork
 
 
 def decode_message(msg: Message) -> EventEnvelope:
@@ -85,8 +94,7 @@ class EventConsumer:
     def handle_message(self, msg: Message) -> Outcome:
         """Procesa el mensaje en una transacción. No confirma el offset."""
         event = decode_message(msg)
-        handler = self._handlers.get(event.event_type)
-        if handler is None:
+        if event.event_type not in self._handlers:
             return Outcome.IGNORED
         headers = {k: v.decode() for k, v in (msg.headers() or []) if v is not None}
         attributes = tracing.event_attributes(event) | {
@@ -102,11 +110,17 @@ class EventConsumer:
             kind=SpanKind.CONSUMER,
             attributes=attributes,
         ) as span:
-            outcome = self._process(event, handler)
+            outcome = self.process(event)
             span.set_attribute("eda.outcome", outcome.value)
         return outcome
 
-    def _process(self, event: EventEnvelope, handler: Handler) -> Outcome:
+    def process(self, event: EventEnvelope) -> Outcome:
+        """Procesa un evento ya decodificado (sin Kafka). No confirma ningún offset."""
+        handler = self._handlers.get(event.event_type)
+        if handler is None:
+            return Outcome.IGNORED
+        if isinstance(handler, UnitOfWork):
+            return handler.process(self._conn, event)
         with self._conn.transaction():
             if not inbox.register(self._conn, self.name, event.event_id, enabled=self._inbox_enabled):
                 return Outcome.DUPLICATE

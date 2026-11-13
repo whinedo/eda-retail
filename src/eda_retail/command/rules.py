@@ -19,3 +19,7 @@ class BusinessRules:
     # Presupuesto por incidencia (spec llm-boundaries, "Presupuesto por incidencia").
     max_tokens_per_incident: int = field(default_factory=lambda: _int_env("LLM_MAX_TOKENS_PER_INCIDENT", 50_000))
     max_llm_calls_per_incident: int = field(default_factory=lambda: _int_env("LLM_MAX_CALLS_PER_INCIDENT", 10))
+    # Reintentos de generación acotados (spec llm-boundaries).
+    max_generations: int = field(default_factory=lambda: _int_env("LLM_MAX_GENERATIONS", 3))
+    # Revisiones del plan (spec incident-planning, "Revisiones agotadas").
+    max_plan_revisions: int = field(default_factory=lambda: _int_env("MAX_PLAN_REVISIONS", 2))

@@ -33,6 +33,7 @@ from eda_retail.events.catalog import Cause, PayloadError, PersonalDataError, Se
 from eda_retail.events.envelope import EventEnvelope
 from eda_retail.infra import tracing
 from eda_retail.infra.event_store import append_events
+from eda_retail.llm.generation import BUDGET_EXHAUSTED, Budget
 
 _NOTICE_NAMESPACE = uuid.UUID("6f1d7c0e-2b8a-4c55-9d3e-7a1b2c3d4e5f")
 FINAL_STEP_STATUSES = ("completed", "cancelled", "compensated")
@@ -119,21 +120,34 @@ class CommandHandler:
     def __init__(self, rules: BusinessRules | None = None) -> None:
         self._rules = rules or BusinessRules()
 
-    def check_budget(self, conn: psycopg.Connection, incident_id: str) -> str | None:
-        """`budget_exhausted` si la incidencia ha consumido sus tokens o sus llamadas al LLM.
+    @property
+    def rules(self) -> BusinessRules:
+        return self._rules
 
-        Se consulta antes de pagar otra llamada; una incidencia que aún no existe no ha gastado nada.
+    def budget(self, conn: psycopg.Connection, incident_id: str) -> Budget:
+        """Presupuesto de LLM de la incidencia (supuesto A4: lo valida el lado de escritura).
+
+        Una incidencia que aún no existe (el intérprete antes de abrirla) no ha gastado nada.
         """
         row = conn.execute(
             "SELECT tokens_used, llm_calls FROM incidents WHERE incident_id = %s", (incident_id,)
         ).fetchone()
-        if row is None:
-            return None
-        if row["tokens_used"] >= self._rules.max_tokens_per_incident:
-            return "budget_exhausted"
-        if row["llm_calls"] >= self._rules.max_llm_calls_per_incident:
-            return "budget_exhausted"
-        return None
+        return Budget(
+            tokens_used=row["tokens_used"] if row else 0,
+            llm_calls=row["llm_calls"] if row else 0,
+            max_tokens=self._rules.max_tokens_per_incident,
+            max_calls=self._rules.max_llm_calls_per_incident,
+        )
+
+    def check_budget(self, conn: psycopg.Connection, incident_id: str) -> str | None:
+        """`budget_exhausted` si la incidencia ha consumido sus tokens o sus llamadas al LLM."""
+        return BUDGET_EXHAUSTED if self.budget(conn, incident_id).exhausted() else None
+
+    def current_version(self, conn: psycopg.Connection, incident_id: str) -> int | None:
+        """Token de concurrencia optimista (supuesto A8): el agente lo lee antes de decidir
+        y lo envía como `expected_version`; no es un dato para decidir."""
+        row = conn.execute("SELECT version FROM incidents WHERE incident_id = %s", (incident_id,)).fetchone()
+        return row["version"] if row else None
 
     def handle(self, conn: psycopg.Connection, command: Command) -> CommandResult:
         with tracing.tracer().start_as_current_span(

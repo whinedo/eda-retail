@@ -13,25 +13,25 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field
 
 
-class _Output(BaseModel):
+class LlmOutput(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
 
-class StepParams(_Output):
+class StepParams(LlmOutput):
     """Supuesto A7: los pasos solo llevan el pedido y, para reembolsos, el importe."""
 
     order_id: str = Field(min_length=1)
     amount: float | None = None
 
 
-class ProposedStep(_Output):
+class ProposedStep(LlmOutput):
     step_id: str = Field(min_length=1)
     action: str = Field(min_length=1)
     params: StepParams
     depends_on: list[str]
 
 
-class PlanProposal(_Output):
+class PlanProposal(LlmOutput):
     steps: list[ProposedStep] = Field(min_length=1)
 
     def command_steps(self) -> list[dict[str, Any]]:
