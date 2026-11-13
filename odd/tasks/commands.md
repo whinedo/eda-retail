@@ -29,8 +29,8 @@ Assumptions (marked, change freely):
 
 | ID | Specs | Route | Status | Commit |
 | --- | --- | --- | --- | --- |
-| T1 | A5 | inline | done (RED pk assert -> 47 passed; dev DB migrated) | next commit |
-| T2 | S1, S2, S3 | inline | pending | |
+| T1 | A5 | inline | done (RED pk assert -> 47 passed; dev DB migrated) | 8b7e24d |
+| T2 | S1, S2, S3 | inline | done (RED import error -> 8 passed) | next commit |
 | T3 | S4, S5, S6, S7 (handler core, notices, incidents, close, escalate) | inline | pending | |
 | T4 | S8 (CreatePlan, RevisePlan) | inline | pending | |
 | T5 | S9, S10 (RequestStep, RecordStepResult) | inline | pending | |
