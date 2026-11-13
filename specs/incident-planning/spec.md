@@ -33,6 +33,23 @@ Todo plan MUST incluir `plan_version` y una lista de pasos, cada uno con `step_i
 - **THEN** lo rechaza y no emite ningún `StepRequested`
 - **AND** pide al planificador un plan nuevo, dentro de los límites de `llm-boundaries`
 
+### Requirement: Reembolso y reenvío excluyentes
+
+Un plan MUST NOT incluir a la vez `issue_refund` y `reissue_shipment` del mismo pedido, ni proponer uno de ellos cuando el otro ya está completado para ese pedido: el cliente recibiría el producto y su importe. El command handler SHALL rechazar el plan con el motivo `refund_and_reissue_conflict`, aunque lo proponga el LLM.
+
+#### Scenario: Reembolso y reenvío del mismo pedido
+
+- **GIVEN** un plan propuesto con `reissue_shipment` e `issue_refund` para el pedido P1
+- **WHEN** el command handler lo valida
+- **THEN** lo rechaza con el motivo `refund_and_reissue_conflict`
+- **AND** no publica `PlanCreated`
+
+#### Scenario: Reembolso tras un reenvío completado
+
+- **GIVEN** una incidencia con `reissue_shipment` completado para el pedido P1
+- **WHEN** el replanner propone un plan con `issue_refund` para P1
+- **THEN** el command handler lo rechaza con el motivo `refund_and_reissue_conflict`
+
 ### Requirement: Pasos independientes en paralelo
 
 El sistema SHALL emitir a la vez los `StepRequested` de los pasos cuyas dependencias estén cumplidas. MUST NOT emitir un paso con dependencias pendientes.

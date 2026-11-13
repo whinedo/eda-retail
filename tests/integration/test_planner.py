@@ -140,3 +140,16 @@ def test_handler_validate_writes_nothing(conn):
     assert plan_steps(conn, incident) == {}
     assert conn.execute("SELECT last_value FROM events_seq_seq").fetchone()["last_value"] == seq_before
     conn.commit()
+
+
+def test_planner_regenerates_refund_and_reissue_plan(conn):
+    """El planificador pide otro plan si el LLM propone reembolso y reenvío del mismo pedido"""
+    incident, opened = open_incident(conn)
+    order = opened.events[0].payload["order_ids"][0]
+    both = {"steps": _loss_plan(order)["steps"] + [_step("S5", "issue_refund", order) | {
+        "params": {"order_id": order, "amount": 50.0}}]}
+    fake = FakeLlmClient([both, _loss_plan(order)])
+    AgentRunner(Planner(fake, handler()), handler()).process(conn, opened.events[0])
+    assert "refund_and_reissue_conflict" in fake.requests[1].prompt
+    [plan] = _of_type(events_of(conn, incident), "PlanCreated")
+    assert "issue_refund" not in [s["action"] for s in plan["payload"]["steps"]]

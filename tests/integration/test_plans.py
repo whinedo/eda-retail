@@ -179,3 +179,39 @@ def test_revise_without_plan(conn):
     incident, _ = open_incident(conn)
     result = revise(conn, incident, LOSS_PLAN)
     assert (result.accepted, result.reason) == (False, "no_plan")
+
+
+def test_refund_and_reissue_of_same_order(conn):
+    """Reembolso y reenvío del mismo pedido"""
+    incident, _ = open_incident(conn)
+    steps = LOSS_PLAN + [step("S5", "issue_refund", order_id="P1", amount="50.00")]
+    before = types(conn, incident)
+    result = create(conn, incident, steps)
+    assert (result.accepted, result.reason) == (False, "refund_and_reissue_conflict")
+    assert types(conn, incident) == before  # no se publica PlanCreated
+
+
+def test_refund_and_reissue_of_different_orders_is_allowed(conn):
+    """Reembolsar un pedido y reenviar otro distinto en el mismo plan se admite"""
+    incident, _ = open_incident(conn)
+    steps = [step("S1", "reserve_stock", order_id="P1"), step("S2", "reissue_shipment", ["S1"], order_id="P1"),
+             step("S3", "issue_refund", order_id="P2", amount="20.00")]
+    assert create(conn, incident, steps).accepted
+
+
+def test_refund_after_completed_reissue(conn):
+    """Reembolso tras un reenvío completado"""
+    from .test_steps import record, request
+
+    incident, _ = open_incident(conn)
+    assert create(conn, incident, LOSS_PLAN).accepted
+    for sid, result, effect in [
+        ("S3", {"reservation_id": "R1"}, {"order_id": "P1", "warehouse": "W1", "reservation_id": "R1"}),
+        ("S4", {"shipment_id": "X1"}, {"order_id": "P1", "new_shipment_id": "X1"}),
+        ("S1", {"message_id": "M1"}, {"order_id": "P1", "message_id": "M1"}),
+    ]:
+        assert request(conn, incident, sid).accepted
+        assert record(conn, incident, sid, result=result, effect=effect).accepted
+    result = revise(conn, incident, [step("S2", "file_claim", order_id="P1"),
+                                     step("S5", "issue_refund", order_id="P1", amount="50.00")])
+    assert (result.accepted, result.reason) == (False, "refund_and_reissue_conflict")
