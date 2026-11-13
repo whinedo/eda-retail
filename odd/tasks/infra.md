@@ -26,9 +26,9 @@ Out of scope (later phases, assumption): "Cadena de causalidad" (needs planner),
 | --- | --- | --- | --- | --- |
 | T1 | S1 | inline | done (healthy + topics verified) | 41165ba |
 | T2 | S2, S3, S4 (writer side) | inline | done (RED import error -> 7 passed) | a185de3 |
-| T3 | S4, S5 (relay) | inline | done (RED import error -> 10 passed); "Pérdida del topic" consumer-side clause pending T5 | 8e742c6 |
-| T4 | S6, S7 (consumer loop + inbox) | inline | done (RED import error -> 14 passed, 3 runs) | next commit |
-| T5 | S8, S9, S10 (effect_keys + switches) | inline | pending | |
+| T3 | S4, S5 (relay) | inline | done (RED import error -> 10 passed); "Pérdida del topic" consumer-side clause covered in T5 | 8e742c6 |
+| T4 | S6, S7 (consumer loop + inbox) | inline | done (RED import error -> 14 passed, 3 runs) | 991464e |
+| T5 | S8, S9, S10 (effect_keys + switches) | inline | done (RED import error -> 31 passed, 3 runs) | next commit |
 
 Route evidence: one sequential feature, units depend on each other (relay needs writer, consumer needs relay); no Writer trigger reason.
 
@@ -39,3 +39,5 @@ Route evidence: one sequential feature, units depend on each other (relay needs 
 - L3 Test isolation decision: tests create a fresh `eda_test` database from `db/init/001_schema.sql` per session (events cannot be truncated) and a unique Kafka topic per test.
 - L4 (2026-11-13) user: "he movido unos ficheros y he creado un dir llamado docs" — `specs/README.md` and diagrams moved to `docs/` (uncommitted, user-owned). An earlier commit of mine swept them in via `git add -A`; redone as `41165ba` with only my files. From now on stage explicit paths only.
 - L5 (2026-11-13) user approved fixing references and committing the docs move ("Sí, y sigue con T4"): `e806764`. T4 adds `EventConsumer` (offset commit only after PostgreSQL COMMIT, unhandled types ignored without inbox) and `inbox.register`; DLQ/retries stay in `resilience`.
+- L6 (2026-11-13) user: "estoy corrigiendo design.md no lo tengas en cuenta hasta que te avise", then "ya está corregido design.md". User reverted the `docs/` links and the §12 note in design.md and deleted docs/*.png|svg (uncommitted, user-owned, not touched). §7 unchanged, so T5 followed it.
+- L7 T5: `effect_keys.acquire/complete` (ACQUIRED/COMPLETED/BUSY, takeover after `locked_until`), `compute_idempotency_key` = sha256 of JSON [incident_id, step_id, origin_plan_version]. Key purge after the safety period is not implemented (keys are never deleted). Phase 1 complete.
