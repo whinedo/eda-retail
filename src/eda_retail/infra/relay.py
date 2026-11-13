@@ -34,6 +34,15 @@ FOR UPDATE OF o SKIP LOCKED
 """
 
 
+_SELECT_DEAD_LETTERS = """
+SELECT id, consumer, event_id, correlation_id, reason, raw_message, created_at
+FROM dead_letters WHERE published_at IS NULL
+ORDER BY id
+LIMIT %s
+FOR UPDATE SKIP LOCKED
+"""
+
+
 class RelayDeliveryError(RuntimeError):
     """El broker no confirmó algún mensaje del lote; el lote se reintenta."""
 
@@ -46,10 +55,13 @@ def encode_message(seq: int, envelope: EventEnvelope) -> bytes:
 
 
 class OutboxRelay:
-    def __init__(self, conn: psycopg.Connection, producer: Producer, topic: str) -> None:
+    def __init__(
+        self, conn: psycopg.Connection, producer: Producer, topic: str, *, dlq_topic: str | None = None
+    ) -> None:
         self._conn = conn
         self._producer = producer
         self._topic = topic
+        self._dlq_topic = dlq_topic
 
     @classmethod
     def from_settings(cls, settings: Settings) -> OutboxRelay:
@@ -57,6 +69,7 @@ class OutboxRelay:
             connect(settings.database_url),
             make_producer(settings.kafka_bootstrap_servers),
             settings.events_topic,
+            dlq_topic=settings.dlq_topic,
         )
 
     def run_once(self, batch_size: int = 100, flush_timeout: float = 30.0) -> int:
@@ -109,6 +122,37 @@ class OutboxRelay:
                 on_delivery=on_delivery,
             )
 
+    def publish_dead_letters(self, batch_size: int = 100, flush_timeout: float = 30.0) -> int:
+        """Publica en `eda.dlq` las dead letters pendientes (supuesto A6). Al menos una vez."""
+        if self._dlq_topic is None:
+            return 0
+        errors: list[KafkaError] = []
+
+        def on_delivery(err: KafkaError | None, _msg) -> None:
+            if err is not None:
+                errors.append(err)
+
+        with self._conn.transaction():
+            rows = self._conn.execute(_SELECT_DEAD_LETTERS, (batch_size,)).fetchall()
+            if not rows:
+                return 0
+            for row in rows:
+                body = {k: (str(v) if k in ("event_id", "created_at") and v is not None else v) for k, v in row.items()}
+                self._producer.produce(
+                    self._dlq_topic,
+                    key=(row["correlation_id"] or "").encode(),
+                    value=json.dumps(body, ensure_ascii=False).encode(),
+                    headers=[("event_type", b"DeadLetter"), ("reason", row["reason"].encode())],
+                    on_delivery=on_delivery,
+                )
+            pending = self._producer.flush(flush_timeout)
+            if pending or errors:
+                raise RelayDeliveryError(f"dead letters sin confirmar: pendientes={pending}, errores={errors}")
+            self._conn.execute(
+                "UPDATE dead_letters SET published_at = now() WHERE id = ANY(%s)", ([r["id"] for r in rows],)
+            )
+        return len(rows)
+
     def replay_from(self, seq: int) -> int:
         """Marca como no publicadas las filas desde `seq` (republicación tras perder el topic)."""
         with self._conn.transaction():
@@ -119,7 +163,7 @@ class OutboxRelay:
 
     def run_forever(self, idle_sleep: float = 0.1) -> None:
         while True:
-            if self.run_once() == 0:
+            if self.run_once() + self.publish_dead_letters() == 0:
                 time.sleep(idle_sleep)
 
     def close(self) -> None:

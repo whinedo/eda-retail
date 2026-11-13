@@ -32,7 +32,7 @@ from eda_retail.command.models import EscalateIncident, RecordLlmCall, RecordSte
 from eda_retail.config import Settings
 from eda_retail.events.envelope import EventEnvelope
 from eda_retail.executors.retry import Backoff
-from eda_retail.infra import effect_keys, inbox, tracing
+from eda_retail.infra import dead_letters, effect_keys, inbox, tracing
 from eda_retail.infra.consumer import Outcome
 from eda_retail.llm.generation import LlmCall
 
@@ -275,3 +275,15 @@ class Executor:
                     validation_passed=call.validation_passed, attempt=call.attempt,
                 ),
             )
+
+
+def dead_letter_on_exhaustion(consumer: str) -> Callable[[psycopg.Connection, StepRequest, EffectError], None]:
+    """`on_exhausted` que manda a la dead letter queue el StepRequested que agotó sus intentos."""
+
+    def on_exhausted(conn: psycopg.Connection, request: StepRequest, exc: EffectError) -> None:
+        dead_letters.record(
+            conn, consumer=consumer, reason=dead_letters.RETRIES_EXHAUSTED, event_id=request.event.event_id,
+            correlation_id=request.incident_id, raw=request.event.model_dump(mode="json") | {"error": exc.error},
+        )
+
+    return on_exhausted

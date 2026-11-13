@@ -45,7 +45,7 @@ def _reserve_handler(enabled: bool = True):
         conn.execute(
             "INSERT INTO reservations (reservation_id, order_id, warehouse, sku, quantity, status) "
             "VALUES (%s, %s, 'W1', 'SKU1', 1, 'active')",
-            (reservation_id, p["order_id"]),
+            (reservation_id, p["params"]["order_id"]),
         )
         effect_keys.complete(conn, p["idempotency_key"], {"reservation_id": reservation_id}, enabled=enabled)
         append_events(
@@ -56,7 +56,7 @@ def _reserve_handler(enabled: bool = True):
                     correlation_id=event.correlation_id,
                     causation_id=event.event_id,
                     producer="executor-reserve_stock",
-                    payload={"order_id": p["order_id"], "warehouse": "W1", "reservation_id": reservation_id},
+                    payload={"order_id": p["params"]["order_id"], "warehouse": "W1", "reservation_id": reservation_id},
                 )
             ],
         )
@@ -76,7 +76,6 @@ def _step_requested(incident: str, order: str, step_id: str = "S1") -> EventEnve
             "step_id": step_id,
             "action": "reserve_stock",
             "params": {"order_id": order},
-            "order_id": order,
             "idempotency_key": compute_idempotency_key(incident, step_id, origin_plan_version=1),
         },
     )
