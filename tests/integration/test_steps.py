@@ -24,6 +24,11 @@ def request(conn, incident: str, step_id: str):
 
 
 def record(conn, incident: str, step_id: str, outcome: str = "completed", **kw):
+    if "plan_version" not in kw:
+        kw["plan_version"] = conn.execute(
+            "SELECT plan_version FROM incidents WHERE incident_id = %s", (incident,)
+        ).fetchone()["plan_version"]
+        conn.commit()
     result = handler().handle(
         conn,
         RecordStepResult(command_id=uuid.uuid4(), expected_version=version_of(conn, incident), producer="executor",

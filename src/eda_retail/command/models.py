@@ -60,11 +60,26 @@ class RequestStep(IncidentCommand):
 
 class RecordStepResult(IncidentCommand):
     step_id: str = Field(min_length=1)
+    plan_version: int = Field(ge=1)  # la del StepRequested que se responde
     outcome: Literal["completed", "failed"]
     result: dict[str, Any] | None = None
     error: str | None = None
     retryable: bool | None = None
-    effect: dict[str, Any] | None = None  # payload del evento de efecto (CustomerNotified…)
+    attempts: int = Field(default=1, ge=1)
+    # Payload del evento de efecto (CustomerNotified…). None si el efecto ya se había
+    # ejecutado y el ejecutor devuelve el resultado guardado en effect_keys.
+    effect: dict[str, Any] | None = None
+
+
+class ApplyRevision(IncidentCommand):
+    """Aplica un PlanRevised: cancela los pasos no mantenidos y deriva las compensaciones."""
+
+    plan_version: int = Field(ge=1)
+    step_ids: list[str]  # pasos del PlanRevised
+
+
+class AdvancePlan(IncidentCommand):
+    """Pide a la vez todos los pasos listos y cierra la incidencia si el plan terminó."""
 
 
 class CloseIncident(IncidentCommand):

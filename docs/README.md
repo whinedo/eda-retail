@@ -200,9 +200,11 @@ Lado de comandos (escritura) y lado de consultas (lectura). Los pasos (1) a (4) 
 | `RegisterCarrierNotice` | Entrada | `CarrierNoticeReceived` |
 | `OpenIncident` | Intérprete | `ShipmentDelayed` |
 | `CreatePlan` | Planificador | `PlanCreated` |
-| `RevisePlan` | Replanner | `PlanRevised` y las compensaciones que se deriven |
+| `RevisePlan` | Replanner | `PlanRevised` |
+| `ApplyRevision` | Orquestación, al recibir `PlanRevised` | `StepCancelled` de los pasos no mantenidos; deriva en código los pasos `-comp` |
+| `AdvancePlan` | Orquestación | Los `StepRequested` de todos los pasos listos, o `IncidentResolved` si el plan terminó |
 | `RequestStep` | Orquestación | `StepRequested` |
-| `RecordStepResult` | Ejecutores | `StepCompleted` o `StepFailed` y el evento de efecto |
+| `RecordStepResult` | Ejecutores | `StepCompleted` o `StepFailed` y el evento de efecto (con la `plan_version` del `StepRequested`; uno obsoleto queda en el log sin cambiar el plan) |
 | `CloseIncident` | Orquestación | `IncidentResolved` |
 | `EscalateIncident` | Cualquiera | `IncidentEscalated` (si la incidencia aún no existe, la crea escalada a partir de su aviso) |
 | `RecordLlmCall` | Agentes con LLM | `LlmCallRecorded` (no usa `expected_version` y admite incidencias cerradas) |

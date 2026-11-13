@@ -382,4 +382,4 @@ def _close(ctx: Context) -> None:
 
 
 # Los comandos de planes y pasos se registran al importar sus módulos.
-from eda_retail.command import plans, steps  # noqa: F401
+from eda_retail.command import plans, saga, steps  # noqa: F401
