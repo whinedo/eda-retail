@@ -9,6 +9,7 @@ from eda_retail.command.escalation import escalation_hook
 from eda_retail.command.handler import CommandHandler
 from eda_retail.config import load_settings
 from eda_retail.infra.consumer import EventConsumer
+from eda_retail.infra.logs import setup_logging
 from eda_retail.infra.tracing import setup_tracing
 from eda_retail.orchestrator.runner import NAME, Orchestrator
 
@@ -16,6 +17,7 @@ from eda_retail.orchestrator.runner import NAME, Orchestrator
 def main(argv: list[str] | None = None) -> None:
     argparse.ArgumentParser(description="Orquestador del plan y de la saga").parse_args(argv)
     settings = load_settings()
+    setup_logging(NAME)
     provider = setup_tracing(NAME, settings)
     handler = CommandHandler()
     orchestrator = Orchestrator(handler, inbox_enabled=settings.inbox_enabled)

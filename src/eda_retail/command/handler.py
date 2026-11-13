@@ -11,6 +11,7 @@ expected_version`; si no actualiza ninguna fila, se rechaza con `concurrency_con
 
 from __future__ import annotations
 
+import logging
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -35,6 +36,7 @@ from eda_retail.infra import tracing
 from eda_retail.infra.event_store import append_events
 from eda_retail.llm.generation import BUDGET_EXHAUSTED, Budget
 
+log = logging.getLogger("eda_retail.command")
 _NOTICE_NAMESPACE = uuid.UUID("6f1d7c0e-2b8a-4c55-9d3e-7a1b2c3d4e5f")
 FINAL_STEP_STATUSES = ("completed", "cancelled", "compensated")
 # Comandos que cargan la incidencia por su cuenta (pueden no exigir que exista o esté abierta).
@@ -179,6 +181,7 @@ class CommandHandler:
         ) as span:
             result = self._handle(conn, command)
             _record(span, result)
+            _log(command, result)
             return result
 
     def _handle(self, conn: psycopg.Connection, command: Command, *, dry_run: bool = False) -> CommandResult:
@@ -199,6 +202,15 @@ class CommandHandler:
         except Rejected as rej:
             return CommandResult(False, rej.reason, rej.detail)
         return CommandResult(True, events=list(ctx.events), version=ctx.version)
+
+
+def _log(command: Command, result: CommandResult) -> None:
+    incident = getattr(command, "incident_id", "") or getattr(command, "carrier_notice_id", "")
+    if result.accepted:
+        produced = ", ".join(e.event_type for e in result.events) or "sin eventos"
+        log.info("%s %s aceptado -> %s", command.name, incident, produced)
+    else:
+        log.info("%s %s rechazado: %s %s", command.name, incident, result.reason, result.detail or "")
 
 
 def _record(span: Span, result: CommandResult) -> None:

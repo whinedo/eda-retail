@@ -78,6 +78,7 @@ for entry in "${PROCESSES[@]}"; do
 done
 
 echo "en marcha. Logs: tail -f $LOGS_DIR/*.log  ·  Ctrl+C para parar"
+echo "para empezar: uv run eda-notice seed && uv run eda-notice send --example delay"
 
 # Si cualquier proceso termina, se para el resto (trap EXIT) y se informa de cuál fue.
 while true; do

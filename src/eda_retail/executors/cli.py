@@ -21,6 +21,7 @@ from eda_retail.executors.pool import ConcurrentRunner
 from eda_retail.executors.retry import Backoff
 from eda_retail.infra.db import connect
 from eda_retail.infra.kafka import make_consumer
+from eda_retail.infra.logs import setup_logging
 from eda_retail.infra.tracing import setup_tracing
 from eda_retail.llm.generation import LlmClient
 from eda_retail.llm.ollama_client import OllamaClient
@@ -45,6 +46,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
     settings = load_settings()
+    setup_logging(f"executor-{args.action}")
     provider = setup_tracing(f"executor-{args.action}", settings)
     handler = CommandHandler()
     executor = build_executor(args.action, OllamaClient(), handler, settings)

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import enum
 import json
+import logging
 import uuid
 from collections.abc import Callable, Mapping
 from typing import Protocol, runtime_checkable
@@ -31,6 +32,8 @@ from eda_retail.events.versioning import UpcastError
 from eda_retail.infra import dead_letters, inbox, tracing
 from eda_retail.infra.db import connect
 from eda_retail.infra.kafka import make_consumer
+
+log = logging.getLogger("eda_retail.consumer")
 
 
 class Outcome(enum.Enum):
@@ -172,6 +175,7 @@ class EventConsumer:
         ) as span:
             outcome = self.process(event)
             span.set_attribute("eda.outcome", outcome.value)
+        log.info("<- %s %s: %s", event.event_type, event.correlation_id, outcome.value)
         return outcome
 
     def process(self, event: EventEnvelope) -> Outcome:
@@ -230,6 +234,7 @@ def write_dead_letter(
             conn, consumer=consumer, reason=dead_letters.INVALID_SCHEMA, event_id=bad.event_id,
             correlation_id=bad.correlation_id, raw=bad.raw,
         )
+        log.warning("dead letter %s (%s): %s", bad.event_type or "mensaje", bad.correlation_id or "-", bad)
         if hook is not None and bad.correlation_id and bad.event_id is not None:
             hook(conn, bad.correlation_id, bad.event_id)
     return Outcome.DEAD_LETTER

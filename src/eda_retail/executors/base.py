@@ -20,6 +20,7 @@ El offset de Kafka lo confirma el consumidor después del `COMMIT`.
 
 from __future__ import annotations
 
+import logging
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -36,6 +37,7 @@ from eda_retail.infra import dead_letters, effect_keys, inbox, tracing
 from eda_retail.infra.consumer import Outcome
 from eda_retail.llm.generation import LlmCall
 
+log = logging.getLogger("eda_retail.executor")
 TIMEOUT = "timeout"
 # Rechazos que no son un error del ejecutor: el paso ya no espera este resultado.
 _NO_LONGER_EXPECTED = {"step_not_requested", "incident_closed"}
@@ -180,7 +182,10 @@ class Executor:
                 except EffectError as exc:
                     if exc.retryable and attempt < s.max_attempts:
                         span.add_event("eda.retry", {"eda.attempt": attempt, "eda.error": exc.error})
-                        self._sleep(self._backoff.delay(attempt))
+                        delay = self._backoff.delay(attempt)
+                        log.warning("%s %s intento %d: %s; reintento en %.2f s", request.incident_id,
+                                    request.step_id, attempt, exc.error, delay)
+                        self._sleep(delay)
                         attempt += 1
                         continue
                     span.set_attribute("eda.attempts", attempt)

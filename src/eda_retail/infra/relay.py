@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import time
 
 import psycopg
@@ -21,7 +22,10 @@ from eda_retail.events.envelope import EventEnvelope
 from eda_retail.infra import tracing
 from eda_retail.infra.db import connect
 from eda_retail.infra.kafka import make_producer
+from eda_retail.infra.logs import setup_logging
 from eda_retail.infra.tracing import setup_tracing
+
+log = logging.getLogger("eda_retail.relay")
 
 _SELECT_PENDING = """
 SELECT o.seq, o.trace_context, e.event_id, e.event_type, e.event_version, e.occurred_at,
@@ -163,7 +167,12 @@ class OutboxRelay:
 
     def run_forever(self, idle_sleep: float = 0.1) -> None:
         while True:
-            if self.run_once() + self.publish_dead_letters() == 0:
+            published, dead = self.run_once(), self.publish_dead_letters()
+            if published:
+                log.info("publicados %d eventos en %s", published, self._topic)
+            if dead:
+                log.info("publicadas %d dead letters en %s", dead, self._dlq_topic)
+            if published + dead == 0:
                 time.sleep(idle_sleep)
 
     def close(self) -> None:
@@ -176,6 +185,7 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--replay-from", type=int, help="republica desde este seq")
     args = parser.parse_args(argv)
     settings = load_settings()
+    setup_logging("relay")
     provider = setup_tracing("relay", settings)
     relay = OutboxRelay.from_settings(settings)
     try:

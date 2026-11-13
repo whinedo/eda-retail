@@ -9,6 +9,7 @@ ya procesados se descartan por el inbox).
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 
@@ -24,6 +25,8 @@ from eda_retail.infra.consumer import (
     decode_checked,
     write_dead_letter,
 )
+
+log = logging.getLogger("eda_retail.executor")
 
 
 class ConcurrentRunner:
@@ -58,7 +61,10 @@ class ConcurrentRunner:
                 if bad.event_type in (None, "StepRequested"):
                     write_dead_letter(self._conns[0], self._name, bad, inbox_enabled=self._inbox_enabled,
                                       hook=self._on_dead_letter)
-        self.process_batch(events)
+        for event, outcome in zip(events, self.process_batch(events), strict=True):
+            if outcome is not Outcome.IGNORED:
+                log.info("<- %s %s %s: %s", event.event_type, event.correlation_id,
+                         event.payload.get("step_id", ""), outcome.value)
         for m in messages:
             consumer.commit(message=m, asynchronous=False)
         return len(messages)
