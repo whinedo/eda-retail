@@ -222,6 +222,10 @@ Cada componente es un proceso independiente (con `docker compose up -d` levantad
 | `uv run eda-agent interpreter` | Interpreta `CarrierNoticeReceived` y abre la incidencia |
 | `uv run eda-agent planner` | Propone el plan a partir de `ShipmentDelayed` |
 | `uv run eda-agent replanner` | Revisa el plan ante un `StepFailed` no reintentable |
+| `uv run eda-orchestrator` | Traduce `PlanCreated`, `PlanRevised`, `StepCompleted` y `StepFailed` en `ApplyRevision`, `AdvancePlan` o `EscalateIncident` |
+| `uv run eda-executor <acción>` | Ejecuta los `StepRequested` de una acción (`notify_customer`, `file_claim`, `reserve_stock`, `release_stock`, `reissue_shipment`, `issue_refund`), un proceso por acción |
+
+Los ejecutores reintentan los errores transitorios hasta `STEP_MAX_ATTEMPTS` (por defecto 3) con espera exponencial y jitter (`STEP_BACKOFF_BASE_SECONDS`, por defecto 0,5; `STEP_BACKOFF_MAX_SECONDS`, por defecto 10) y procesan como mucho `EXECUTOR_MAX_CONCURRENCY` pasos a la vez (por defecto 5). Un evento con esquema inválido o que agota sus reintentos va a la tabla `dead_letters`, y el relay lo publica en `eda.dlq` (`DLQ_TOPIC`).
 
 Los agentes llaman a un modelo local de Ollama (`OLLAMA_HOST`, por defecto `http://localhost:11434`; `LLM_MODEL`, por defecto `llama3.1`; `LLM_SEED`, por defecto 42; `LLM_TIMEOUT_SECONDS`, por defecto 120) con `temperature` 0 para que las ejecuciones sean repetibles. Los tests usan siempre el cliente simulado.
 
@@ -236,6 +240,8 @@ Anotadas aquí porque no estaban cerradas en la conversación; se pueden cambiar
 - Los requisitos siguen hablando de «el bus», «el log» y «el almacén de claves» como conceptos; `design.md` indica cómo los materializa la pila.
 - El envío de correos, el transportista, el almacén y los pagos son simulados.
 - La `idempotency_key` se calcula con la versión del plan **en la que se creó el paso**, no con la vigente, para que un paso mantenido en una revisión conserve su clave y no se duplique. Esto afina la fórmula `hash(incident_id, plan_version, step_id)` del documento de casos de negocio.
+- La orquestación decide en el command handler (`ApplyRevision`, `AdvancePlan`) con el estado de `plan_steps`; el orquestador no guarda estado propio. Varias compensaciones se encadenan en orden inverso al de los pasos originales.
+- Un paso que el plan revisado no mantiene y que no llegó a tener efecto (`pending`, `requested` o `failed`) pasa a `cancelled`. Un resultado de una versión anterior del plan queda en el log, pero no se usa para decidir.
 - `StepCompleted` y `StepFailed` v2 llevan la `plan_version` del `StepRequested` que los pidió, para reconocer los resultados obsoletos. Los v1 se leen como de la versión 1 del plan (y `StepFailed` con un intento).
 
 ## Experimentos

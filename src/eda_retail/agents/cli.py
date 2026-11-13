@@ -17,6 +17,7 @@ from eda_retail.agents.interpreter import Interpreter
 from eda_retail.agents.planner import Planner
 from eda_retail.agents.replanner import Replanner
 from eda_retail.agents.runtime import AgentRunner
+from eda_retail.command.escalation import escalation_hook
 from eda_retail.command.handler import CommandHandler
 from eda_retail.config import load_settings
 from eda_retail.infra.consumer import EventConsumer
@@ -47,7 +48,10 @@ def main(argv: list[str] | None = None) -> None:
     settings = load_settings()
     provider = setup_tracing(f"agent-{args.agent}", settings)
     handlers = build_handlers(args.agent, OllamaClient(), CommandHandler(), inbox_enabled=settings.inbox_enabled)
-    consumer = EventConsumer.from_settings(settings, name=args.agent, handlers=handlers)
+    consumer = EventConsumer.from_settings(
+        settings, name=args.agent, handlers=handlers,
+        on_dead_letter=escalation_hook(CommandHandler(), producer=args.agent),
+    )
     try:
         consumer.run_forever()
     finally:

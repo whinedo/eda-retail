@@ -188,20 +188,8 @@ class EventConsumer:
         return Outcome.PROCESSED
 
     def _dead_letter(self, bad: InvalidMessage) -> Outcome:
-        with tracing.tracer().start_as_current_span(
-            "dead letter", attributes={"eda.reason": dead_letters.INVALID_SCHEMA, "eda.consumer": self.name}
-        ), self._conn.transaction():
-            if bad.event_id is not None and not inbox.register(
-                self._conn, self.name, bad.event_id, enabled=self._inbox_enabled
-            ):
-                return Outcome.DUPLICATE
-            dead_letters.record(
-                self._conn, consumer=self.name, reason=dead_letters.INVALID_SCHEMA, event_id=bad.event_id,
-                correlation_id=bad.correlation_id, raw=bad.raw,
-            )
-            if self._on_dead_letter is not None and bad.correlation_id and bad.event_id is not None:
-                self._on_dead_letter(self._conn, bad.correlation_id, bad.event_id)
-        return Outcome.DEAD_LETTER
+        return write_dead_letter(self._conn, self.name, bad, inbox_enabled=self._inbox_enabled,
+                                 hook=self._on_dead_letter)
 
     def commit(self, msg: Message) -> None:
         """Confirma el offset en Kafka. Llamar solo tras el COMMIT de PostgreSQL."""
@@ -226,3 +214,22 @@ class EventConsumer:
     def close(self) -> None:
         self._kafka.close()
         self._conn.close()
+
+
+def write_dead_letter(
+    conn: psycopg.Connection, consumer: str, bad: InvalidMessage, *, inbox_enabled: bool = True,
+    hook: DeadLetterHook | None = None,
+) -> Outcome:
+    """Guarda el mensaje inválido en `dead_letters` (con su fila de inbox) y escala la incidencia."""
+    with tracing.tracer().start_as_current_span(
+        "dead letter", attributes={"eda.reason": dead_letters.INVALID_SCHEMA, "eda.consumer": consumer}
+    ), conn.transaction():
+        if bad.event_id is not None and not inbox.register(conn, consumer, bad.event_id, enabled=inbox_enabled):
+            return Outcome.DUPLICATE
+        dead_letters.record(
+            conn, consumer=consumer, reason=dead_letters.INVALID_SCHEMA, event_id=bad.event_id,
+            correlation_id=bad.correlation_id, raw=bad.raw,
+        )
+        if hook is not None and bad.correlation_id and bad.event_id is not None:
+            hook(conn, bad.correlation_id, bad.event_id)
+    return Outcome.DEAD_LETTER

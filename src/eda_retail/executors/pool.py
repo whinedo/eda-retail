@@ -16,14 +16,25 @@ import psycopg
 from confluent_kafka import Consumer, Message
 
 from eda_retail.events.envelope import EventEnvelope
-from eda_retail.infra.consumer import Outcome, UnitOfWork, decode_message
+from eda_retail.infra.consumer import (
+    DeadLetterHook,
+    InvalidMessage,
+    Outcome,
+    UnitOfWork,
+    decode_checked,
+    write_dead_letter,
+)
 
 
 class ConcurrentRunner:
     def __init__(
-        self, unit: UnitOfWork, connect: Callable[[], psycopg.Connection], *, max_concurrency: int = 5
+        self, unit: UnitOfWork, connect: Callable[[], psycopg.Connection], *, max_concurrency: int = 5,
+        name: str = "executor", inbox_enabled: bool = True, on_dead_letter: DeadLetterHook | None = None,
     ) -> None:
         self._unit = unit
+        self._name = name
+        self._inbox_enabled = inbox_enabled
+        self._on_dead_letter = on_dead_letter
         self.max_concurrency = max_concurrency
         self._conns = [connect() for _ in range(max_concurrency)]
         self._pool = ThreadPoolExecutor(max_workers=max_concurrency, thread_name_prefix="executor")
@@ -39,7 +50,15 @@ class ConcurrentRunner:
         messages: list[Message] = [m for m in consumer.consume(self.max_concurrency, timeout) if not m.error()]
         if not messages:
             return 0
-        self.process_batch([decode_message(m) for m in messages])
+        events: list[EventEnvelope] = []
+        for m in messages:
+            try:
+                events.append(decode_checked(m))
+            except InvalidMessage as bad:  # irrecuperable: a la dead letter queue, sin bloquear el lote
+                if bad.event_type in (None, "StepRequested"):
+                    write_dead_letter(self._conns[0], self._name, bad, inbox_enabled=self._inbox_enabled,
+                                      hook=self._on_dead_letter)
+        self.process_batch(events)
         for m in messages:
             consumer.commit(message=m, asynchronous=False)
         return len(messages)
