@@ -28,7 +28,7 @@ from typing import Any, Protocol
 import psycopg
 
 from eda_retail.command.handler import CommandHandler, CommandResult
-from eda_retail.command.models import RecordLlmCall, RecordStepResult
+from eda_retail.command.models import EscalateIncident, RecordLlmCall, RecordStepResult
 from eda_retail.config import Settings
 from eda_retail.events.envelope import EventEnvelope
 from eda_retail.executors.retry import Backoff
@@ -43,6 +43,8 @@ _NO_LONGER_EXPECTED = {"step_not_requested", "incident_closed"}
 
 class EffectError(Exception):
     """El efecto no se pudo ejecutar. `retryable` distingue transitorio de negocio."""
+
+    escalate: str | None = None  # motivo con el que, además, se escala la incidencia
 
     def __init__(self, error: str, *, retryable: bool) -> None:
         super().__init__(error)
@@ -228,6 +230,8 @@ class Executor:
                         return Outcome.DUPLICATE
                     self._record(conn, request, outcome="failed", error=exc.error, retryable=exc.retryable,
                                  attempts=attempt)
+                    if exc.escalate is not None:
+                        self._escalate(conn, request, exc.escalate)
                     if exc.retryable and self._on_exhausted is not None:
                         self._on_exhausted(conn, request, exc)
                 return Outcome.PROCESSED
@@ -249,6 +253,16 @@ class Executor:
         if not result.accepted and result.reason not in _NO_LONGER_EXPECTED:
             raise RuntimeError(f"{self.name}: RecordStepResult rechazado: {result.reason} {result.detail}")
         self.last_result = result
+
+    def _escalate(self, conn: psycopg.Connection, request: StepRequest, reason: str) -> None:
+        version = self._handler.current_version(conn, request.incident_id)
+        result = self._handler.handle(
+            conn,
+            EscalateIncident(command_id=request.event.event_id, expected_version=version or 0, producer=self.name,
+                             incident_id=request.incident_id, reason=reason),
+        )
+        if result.reason == "concurrency_conflict":
+            raise _Retry()
 
     def _record_calls(self, conn: psycopg.Connection, request: StepRequest, calls: list[LlmCall]) -> None:
         for call in calls:
