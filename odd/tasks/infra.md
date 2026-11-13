@@ -24,8 +24,8 @@ Out of scope (later phases, assumption): "Cadena de causalidad" (needs planner),
 
 | ID | Specs | Route | Status | Commit |
 | --- | --- | --- | --- | --- |
-| T1 | S1 | inline | pending | |
-| T2 | S2, S3, S4 (writer side) | inline | pending | |
+| T1 | S1 | inline | done (healthy + topics verified) | 41165ba |
+| T2 | S2, S3, S4 (writer side) | inline | done (RED import error -> 7 passed) | next commit |
 | T3 | S4, S5 (relay) | inline | pending | |
 | T4 | S6, S7 (consumer loop + inbox) | inline | pending | |
 | T5 | S8, S9, S10 (effect_keys + switches) | inline | pending | |
