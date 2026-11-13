@@ -19,8 +19,8 @@ Branch: `feat/infra` (continues phase 1, before phase 2) · Delivery: ask-on-ris
 | --- | --- | --- | --- | --- |
 | T1 | S2 | inline | done (UI API answers on :16686) | 8bd3026 |
 | T2 | S4, S3 (schema) | inline | done (RED import error -> 3 passed; suite 34 passed) | 770c0fa |
-| T3 | S3, S5, S6, S7 (tracing in event_store, relay, consumer, db) | inline | done (RED import error -> 42 passed) | next commit |
-| T4 | S1, S2 end-to-end check in Jaeger + docs | inline | pending | |
+| T3 | S3, S5, S6, S7 (tracing in event_store, relay, consumer, db) | inline | done (RED import error -> 42 passed) | 3eed716 |
+| T4 | S1, S2 end-to-end check in Jaeger + docs | inline | done (demo trace: 17 spans, 4 services, one trace) | next commit |
 
 Route evidence: sequential units (T3 needs T2's column); no Writer trigger reason.
 
@@ -28,3 +28,4 @@ Route evidence: sequential units (T3 needs T2's column); no Writer trigger reaso
 
 - L1 (2026-11-13) user: "antes añade observabilidad con Opentelemtry (opentracing?) tanto para operaciones síncronas como asíncronas con un Jaeger en el docker compose para visualizarlo"
 - L2 (2026-11-13) user chose "Columna en outbox (Recomendado)" over derived IDs for carrying trace context through the outbox.
+- L3 T4 evidence: `scripts/trace_demo.py` produced one Jaeger trace with 17 spans across `command-handler`, `relay`, `interpreter`, `planner` (create → publish → process chain, SQL spans nested). Dev DB `eda` migrated with `uv run alembic upgrade head` (outbox now has `trace_context`). design.md §13 added; only that block committed, user's uncommitted edits in §4.1/§4.2/§12 left untouched.
