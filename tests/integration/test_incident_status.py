@@ -209,3 +209,23 @@ def test_escalated_incident(conn):
 def test_unknown_incident_query(conn):
     """La consulta de una incidencia que la vista no conoce devuelve None con la posición"""
     assert get_incident_status(conn, "I-no-existe") is None
+
+
+def test_invalid_event_does_not_block_the_view(conn):
+    """Un evento con payload fuera del catálogo se salta: no bloquea el proyector"""
+    incident, _ = open_incident(conn)
+    projector = _status_projector()
+    _catch_up(conn, projector)
+    poison = EventEnvelope.model_validate({
+        "event_id": uuid.uuid4(), "event_type": "PlanCreated", "event_version": 1,
+        "occurred_at": "2026-11-13T00:00:00Z", "correlation_id": incident, "causation_id": None,
+        "producer": "test", "payload": {"incident_id": incident},
+    })
+    with conn.transaction():
+        [poison_seq] = append_events(conn, [poison])
+    result = create(conn, incident, LOSS_PLAN[:1])
+    _catch_up(conn, projector)
+    status = get_incident_status(conn, incident)
+    assert status.last_applied_seq > poison_seq
+    assert status.plan_version == 1 and [s["step_id"] for s in status.steps] == ["S1"]
+    assert result.accepted

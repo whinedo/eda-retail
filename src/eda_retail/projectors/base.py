@@ -13,17 +13,21 @@ depender de `occurred_at` ni de relojes de otras máquinas), el proyector lo da 
 
 from __future__ import annotations
 
+import logging
 import time
 from collections.abc import Callable, Mapping
 from datetime import timedelta
 from typing import Any
 
 import psycopg
+from opentelemetry import trace
 
-from eda_retail.events.catalog import CATALOG
+from eda_retail.events.catalog import CATALOG, PayloadError, PersonalDataError, validate_payload
 from eda_retail.events.envelope import EventEnvelope
 from eda_retail.events.versioning import Upcasters
 from eda_retail.infra import tracing
+
+log = logging.getLogger(__name__)
 
 Apply = Callable[[psycopg.Connection, int, EventEnvelope], None]
 
@@ -58,7 +62,18 @@ class Projector:
         if handler is None:
             return
         target = CATALOG[event.event_type].version if event.event_type in CATALOG else event.event_version
-        handler(conn, seq, self._upcasters.upcast(event, target))
+        event = self._upcasters.upcast(event, target)
+        if event.event_type in CATALOG:
+            try:
+                validate_payload(event.event_type, event.payload)
+            except (PayloadError, PersonalDataError) as exc:
+                # Evento envenenado: no puede aplicarse y no debe bloquear la vista para siempre.
+                log.warning("proyector %s: se salta el evento %s (seq %s): %s", self.name, event.event_id, seq, exc)
+                trace.get_current_span().add_event(
+                    "eda.invalid_event_skipped", {"eda.seq": seq, "eda.event_id": str(event.event_id)}
+                )
+                return
+        handler(conn, seq, event)
 
     def run_once(self, conn: psycopg.Connection) -> int:
         """Aplica el siguiente lote contiguo; devuelve cuántos eventos avanzó."""
