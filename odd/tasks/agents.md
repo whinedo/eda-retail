@@ -24,6 +24,8 @@ Assumptions (marked):
 - A5 `EscalateIncident` on an incident that does not exist yet is accepted when it belongs to a registered notice (interpreter exhausting its generations); the incident is created `escalated` with `cause` `unknown`.
 - A6 `RecordLlmCall` does not take part in optimistic concurrency (append-only fact; it does not bump `version`).
 - A7 Plan step `params` from the LLM are `order_id` and optional `amount`.
+- A8 Agents decide from views, but take `expected_version` from the command handler (`current_version`) before the LLM call, outside the transaction: it is a write-side concurrency token, not decision data (design.md §4.1: writes are validated through the handler).
+- A9 Projectors stop at a `seq` gap (an uncommitted lower `seq` would otherwise be lost); a gap still open `gap_timeout` (default 5 s, process monotonic clock) after first seen is treated as a rollback and skipped.
 
 ## Tasks
 
@@ -31,7 +33,7 @@ Assumptions (marked):
 | --- | --- | --- | --- | --- |
 | T1 | S1 (catalog + RecordLlmCall + docs/spec), A5 | inline | done | feat(command): record LLM calls |
 | T2 | S2 (llm/ package) | inline | done | feat(llm): bounded, validated generation |
-| T3 | S7 (projector infra + incident_status + query) | inline | pending | |
+| T3 | S7 (projector infra + incident_status + query) | inline | done | feat(projectors): incident_status view |
 | T4 | S8, S3 (agent unit of work + interpreter) | inline | pending | |
 | T5 | S4 (planner) | inline | pending | |
 | T6 | S5 (replanner, budget, max revisions) | inline | pending | |
@@ -47,3 +49,4 @@ Route evidence: units share the agent runtime and handler; sequential, no Writer
 - L3 (2026-11-13) user chose "Evento LlmCallRecorded (Recomendado)" for LLM usage in the log.
 - L4 (2026-11-13) T1: RED observed (ImportError RecordLlmCall); GREEN 7/7 in test_llm_calls.py; full suite 102 passed. tests/test_catalog.py EXPECTED_TYPES extended with LlmCallRecorded. No schema change (tokens_used, llm_calls already in incidents).
 - L5 (2026-11-13) T2: RED (ModuleNotFoundError eda_retail.llm); GREEN 8/8 tests/test_llm.py. Escalation events for llm_output_invalid/budget_exhausted are asserted at agent level (T4–T6). .env.example could not be edited (deny rule): LLM_* vars pending there.
+- L6 (2026-11-13) T3: tests and code written in one step (RED not observed separately). GREEN 10/10; suite 120 passed x3. First gap check used DB now() vs app occurred_at and was flaky under clock skew; replaced by a monotonic timer (A9). "Incidencia escalada" second clause (no more StepRequested) is enforced by the handler (incident_closed) and belongs to the phase 4 orchestrator. Risk: item 4 (gap handling).
