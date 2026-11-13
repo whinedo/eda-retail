@@ -30,7 +30,7 @@ Assumptions (marked):
 | ID | Specs | Route | Status | Commit |
 | --- | --- | --- | --- | --- |
 | T1 | S1 (catalog + RecordLlmCall + docs/spec), A5 | inline | done | feat(command): record LLM calls |
-| T2 | S2 (llm/ package) | inline | pending | |
+| T2 | S2 (llm/ package) | inline | done | feat(llm): bounded, validated generation |
 | T3 | S7 (projector infra + incident_status + query) | inline | pending | |
 | T4 | S8, S3 (agent unit of work + interpreter) | inline | pending | |
 | T5 | S4 (planner) | inline | pending | |
@@ -46,3 +46,4 @@ Route evidence: units share the agent runtime and handler; sequential, no Writer
 - L2 (2026-11-13) user chose "Adelantar incident_status (Recomendado)" for the replanner's state.
 - L3 (2026-11-13) user chose "Evento LlmCallRecorded (Recomendado)" for LLM usage in the log.
 - L4 (2026-11-13) T1: RED observed (ImportError RecordLlmCall); GREEN 7/7 in test_llm_calls.py; full suite 102 passed. tests/test_catalog.py EXPECTED_TYPES extended with LlmCallRecorded. No schema change (tokens_used, llm_calls already in incidents).
+- L5 (2026-11-13) T2: RED (ModuleNotFoundError eda_retail.llm); GREEN 8/8 tests/test_llm.py. Escalation events for llm_output_invalid/budget_exhausted are asserted at agent level (T4–T6). .env.example could not be edited (deny rule): LLM_* vars pending there.
