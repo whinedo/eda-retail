@@ -1,7 +1,7 @@
 """Fixtures de integración: PostgreSQL y Kafka reales de `docker compose`.
 
 La tabla `events` no admite TRUNCATE, así que cada sesión de tests crea una base
-`eda_test` nueva a partir de `db/init/001_schema.sql`. Cada test usa un topic de
+`eda_test` nueva con las migraciones de Alembic (que parten de `db/init/001_schema.sql`). Cada test usa un topic de
 Kafka propio para no ver mensajes de otros tests.
 """
 
@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Iterator
-from pathlib import Path
 
 import psycopg
 import pytest
@@ -17,8 +16,8 @@ from confluent_kafka.admin import AdminClient, NewTopic
 
 from eda_retail.config import Settings, load_settings
 from eda_retail.infra.db import connect
+from eda_retail.infra.migrations import upgrade
 
-SCHEMA = Path(__file__).resolve().parents[1] / "db" / "init" / "001_schema.sql"
 TEST_DB = "eda_test"
 
 
@@ -39,8 +38,7 @@ def database_url(base_settings: Settings) -> str:
         admin.execute(f"DROP DATABASE IF EXISTS {TEST_DB} WITH (FORCE)")
         admin.execute(f"CREATE DATABASE {TEST_DB}")
     url = _with_db(base_settings.database_url, TEST_DB)
-    with psycopg.connect(url, autocommit=True) as conn:
-        conn.execute(SCHEMA.read_text(encoding="utf-8"))
+    upgrade(url)  # esquema base (001_schema.sql) + migraciones de Alembic
     return url
 
 

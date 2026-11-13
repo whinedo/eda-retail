@@ -4,9 +4,11 @@ version = "0.1.0"
 description = "PoC académica de EDA con agentes para incidencias logísticas"
 requires-python = ">=3.12,<3.13"
 dependencies = [
+    "alembic>=1.20.1",
     "confluent-kafka>=2.5",
     "psycopg[binary]>=3.2",
     "pydantic>=2.8",
+    "sqlalchemy>=2.1.8",
 ]
 
 [project.scripts]
