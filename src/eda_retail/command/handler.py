@@ -55,6 +55,10 @@ class CommandResult:
     version: int | None = None
 
 
+class _DryRun(Exception):
+    """Interrumpe un ensayo (`CommandHandler.validate`) antes de escribir eventos."""
+
+
 class Rejected(Exception):
     def __init__(self, reason: str, detail: str | None = None) -> None:
         super().__init__(reason)
@@ -149,6 +153,15 @@ class CommandHandler:
         row = conn.execute("SELECT version FROM incidents WHERE incident_id = %s", (incident_id,)).fetchone()
         return row["version"] if row else None
 
+    def validate(self, conn: psycopg.Connection, command: Command) -> CommandResult:
+        """Ensayo: ¿aceptaría el comando ahora? Ejecuta las reglas y lo deshace todo.
+
+        Sirve a los agentes para comprobar una propuesta del LLM con las mismas reglas que
+        la escritura real, sin duplicarlas. No añade eventos ni gasta `seq` (no deja huecos
+        que hagan esperar a los proyectores).
+        """
+        return self._handle(conn, command, dry_run=True)
+
     def handle(self, conn: psycopg.Connection, command: Command) -> CommandResult:
         with tracing.tracer().start_as_current_span(
             f"command {command.name}",
@@ -163,7 +176,7 @@ class CommandHandler:
             _record(span, result)
             return result
 
-    def _handle(self, conn: psycopg.Connection, command: Command) -> CommandResult:
+    def _handle(self, conn: psycopg.Connection, command: Command, *, dry_run: bool = False) -> CommandResult:
         ctx = Context(conn, command, self._rules)
         try:
             with conn.transaction():  # savepoint si el llamante ya tiene una transacción
@@ -173,7 +186,11 @@ class CommandHandler:
                 if executor is None:
                     raise Rejected("invalid_command", f"comando no soportado: {command.name}")
                 executor(ctx)
+                if dry_run:
+                    raise _DryRun()
                 append_events(conn, ctx.events)
+        except _DryRun:
+            return CommandResult(True, events=list(ctx.events), version=ctx.version)
         except Rejected as rej:
             return CommandResult(False, rej.reason, rej.detail)
         return CommandResult(True, events=list(ctx.events), version=ctx.version)

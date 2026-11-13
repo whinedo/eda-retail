@@ -25,6 +25,7 @@ Assumptions (marked):
 - A6 `RecordLlmCall` does not take part in optimistic concurrency (append-only fact; it does not bump `version`).
 - A7 Plan step `params` from the LLM are `order_id` and optional `amount`.
 - A8 Agents decide from views, but take `expected_version` from the command handler (`current_version`) before the LLM call, outside the transaction: it is a write-side concurrency token, not decision data (design.md §4.1: writes are validated through the handler).
+- A10 The fixed `low` plan has one `notify_customer` step per affected order (one step for the usual single-order notice).
 - A9 Projectors stop at a `seq` gap (an uncommitted lower `seq` would otherwise be lost); a gap still open `gap_timeout` (default 5 s, process monotonic clock) after first seen is treated as a rollback and skipped.
 
 ## Tasks
@@ -35,7 +36,7 @@ Assumptions (marked):
 | T2 | S2 (llm/ package) | inline | done | feat(llm): bounded, validated generation |
 | T3 | S7 (projector infra + incident_status + query) | inline | done | feat(projectors): incident_status view |
 | T4 | S8, S3 (agent unit of work + interpreter) | inline | done | feat(agents): interpreter and agent unit of work |
-| T5 | S4 (planner) | inline | pending | |
+| T5 | S4 (planner) | inline | done | feat(agents): planner |
 | T6 | S5 (replanner, budget, max revisions) | inline | pending | |
 | T7 | S6 (writer + draft validation) | inline | pending | |
 | T8 | agent CLI entry point with tracing | inline | pending | |
@@ -52,3 +53,4 @@ Route evidence: units share the agent runtime and handler; sequential, no Writer
 - L6 (2026-11-13) T3: tests and code written in one step (RED not observed separately). GREEN 10/10; suite 120 passed x3. First gap check used DB now() vs app occurred_at and was flaky under clock skew; replaced by a monotonic timer (A9). "Incidencia escalada" second clause (no more StepRequested) is enforced by the handler (incident_closed) and belongs to the phase 4 orchestrator. Risk: item 4 (gap handling).
 - L7 (2026-11-13) T3 independent verifier: PASS, no blockers. Advisories: (a) A9 assumes no transaction holds a seq longer than gap_timeout (consider idle_in_transaction_session_timeout); (b) stale _gap_seen entries in a losing instance (memory only); (c) `-comp`/`compensating` view path untestable until phase 4 adds a compensation event; (d) no test escalates an incident that already has a plan.
 - L8 (2026-11-13) T4: RED (ModuleNotFoundError eda_retail.agents); GREEN 8/8 test_interpreter.py; suite 128 passed. AgentRunner: inbox.seen before the LLM, decide outside transactions, one transaction for inbox + commands + RecordLlmCall; concurrency_conflict rolls back and re-decides (max 3), recording all spent calls. EventConsumer accepts UnitOfWork handlers and exposes process(event). Ambiguous notice: cause unknown with severity low is rejected in code (regenerated), not coerced.
+- L9 (2026-11-13) T5: RED (ModuleNotFoundError agents.planner); GREEN 8/8 test_planner.py. Business check of LLM plans = CommandHandler.validate (dry run of the real command, rolled back before appending events: no seq gaps). Planner-level tests cover llm-boundaries scenarios "Plan sin campo obligatorio", "Tres planes inválidos seguidos", "Presupuesto de tokens agotado" with the escalation event.
