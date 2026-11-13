@@ -40,6 +40,8 @@ Reglas:
 - Ejemplo para un paquete perdido del pedido P1:
   S1 notify_customer (depends_on []), S2 file_claim (depends_on []),
   S3 reserve_stock (depends_on []), S4 reissue_shipment (depends_on ["S3"]).
+- Si el pedido se puede reenviar (reserve_stock y reissue_shipment), no lo reembolses: el
+  reembolso es para cuando el reenvío no es posible.
 - Un reembolso no supera el importe del pedido.
 Responde solo con el JSON del esquema."""
 
