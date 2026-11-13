@@ -40,6 +40,17 @@ class Settings:
     effect_lock_seconds: int = field(
         default_factory=lambda: int(os.environ.get("EFFECT_LOCK_SECONDS", "30"))
     )
+    # Ejecutores (spec resilience): reintentos con espera exponencial y límite de concurrencia.
+    step_max_attempts: int = field(default_factory=lambda: int(os.environ.get("STEP_MAX_ATTEMPTS", "3")))
+    step_backoff_base_seconds: float = field(
+        default_factory=lambda: float(os.environ.get("STEP_BACKOFF_BASE_SECONDS", "0.5"))
+    )
+    step_backoff_max_seconds: float = field(
+        default_factory=lambda: float(os.environ.get("STEP_BACKOFF_MAX_SECONDS", "10"))
+    )
+    executor_max_concurrency: int = field(
+        default_factory=lambda: int(os.environ.get("EXECUTOR_MAX_CONCURRENCY", "5"))
+    )
     tracing_enabled: bool = field(default_factory=lambda: _env_bool("TRACING_ENABLED", True))
     otlp_endpoint: str = field(
         default_factory=lambda: os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4318")
