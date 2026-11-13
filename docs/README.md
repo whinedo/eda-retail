@@ -213,7 +213,7 @@ Todos llevan `command_id` y `expected_version` (`RecordLlmCall` lo ignora: es un
 
 ## Procesos
 
-Cada componente es un proceso independiente (con `docker compose up -d` levantado):
+Cada componente es un proceso independiente (con `docker compose up -d` levantado). `scripts/run-agents.sh` los arranca todos, aplica las migraciones, deja un log por proceso en `logs/` y los para todos con Ctrl+C o si alguno termina:
 
 | Comando | Qué hace |
 | --- | --- |
