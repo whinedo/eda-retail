@@ -153,6 +153,11 @@ class CommandHandler:
         row = conn.execute("SELECT version FROM incidents WHERE incident_id = %s", (incident_id,)).fetchone()
         return row["version"] if row else None
 
+    def plan_version(self, conn: psycopg.Connection, incident_id: str) -> int | None:
+        """Versión vigente del plan: el orquestador la usa para reconocer resultados obsoletos."""
+        row = conn.execute("SELECT plan_version FROM incidents WHERE incident_id = %s", (incident_id,)).fetchone()
+        return row["plan_version"] if row else None
+
     def validate(self, conn: psycopg.Connection, command: Command) -> CommandResult:
         """Ensayo: ¿aceptaría el comando ahora? Ejecuta las reglas y lo deshace todo.
 
