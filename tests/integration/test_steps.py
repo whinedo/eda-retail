@@ -134,7 +134,8 @@ def test_failed_step_result(conn):
     result = record(conn, incident, "S3", outcome="failed", error="out_of_stock", retryable=False)
     assert result.accepted
     [ev] = result.events
-    assert ev.payload == {"step_id": "S3", "error": "out_of_stock", "retryable": False}
+    assert ev.event_version == 2
+    assert ev.payload == {"step_id": "S3", "plan_version": 1, "error": "out_of_stock", "retryable": False, "attempts": 1}
     assert plan_steps(conn, incident)["S3"]["status"] == "failed"
 
 

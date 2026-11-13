@@ -7,14 +7,17 @@ import uuid
 import pytest
 
 from eda_retail.events.catalog import CATALOG, PayloadError, PersonalDataError, build_event
+from eda_retail.events.envelope import new_event
+from eda_retail.events.upcasters import to_current
 from eda_retail.events.versioning import UpcastError, Upcasters
 
 EXPECTED_TYPES = {
     "CarrierNoticeReceived", "ShipmentDelayed", "PlanCreated", "PlanRevised", "StepRequested",
     "StepCompleted", "StepFailed", "CustomerNotified", "ClaimFiled", "StockReserved",
     "StockReleased", "ShipmentReissued", "RefundIssued", "IncidentResolved", "IncidentEscalated",
-    "LlmCallRecorded",
+    "LlmCallRecorded", "StepCancelled",
 }
+VERSION_2 = {"StepCompleted", "StepFailed"}
 
 
 def _step_requested(params: dict) -> dict:
@@ -31,7 +34,8 @@ def _step_requested(params: dict) -> dict:
 def test_catalog_has_every_event_of_readme():
     """El catálogo tiene un esquema por cada evento del catálogo de docs/README.md"""
     assert set(CATALOG) == EXPECTED_TYPES
-    assert all(spec.version == 1 for spec in CATALOG.values())
+    assert {name for name, spec in CATALOG.items() if spec.version == 2} == VERSION_2
+    assert all(spec.version == 1 for name, spec in CATALOG.items() if name not in VERSION_2)
 
 
 def test_build_event_validates_payload_and_sets_envelope():
@@ -102,3 +106,53 @@ def test_upcaster_chain_and_errors():
     assert x.payload == {"a": 1}
     with pytest.raises(UpcastError):
         reg.upcast(x, 4)
+
+
+def _v1(event_type: str, payload: dict):
+    return new_event(
+        event_type=event_type, event_version=1, correlation_id="I1", causation_id=None, producer="x", payload=payload
+    )
+
+
+def test_step_results_carry_plan_version():
+    """StepCompleted y StepFailed v2 llevan plan_version; StepFailed también attempts"""
+    done = build_event(
+        "StepCompleted", {"step_id": "S1", "plan_version": 2, "result": {}},
+        correlation_id="I1", causation_id=None, producer="x",
+    )
+    assert (done.event_version, done.payload["plan_version"]) == (2, 2)
+    with pytest.raises(PayloadError, match="plan_version"):
+        build_event("StepCompleted", {"step_id": "S1", "result": {}}, correlation_id="I1", causation_id=None, producer="x")
+    with pytest.raises(PayloadError, match="attempts"):
+        build_event(
+            "StepFailed", {"step_id": "S1", "plan_version": 1, "error": "timeout", "retryable": True},
+            correlation_id="I1", causation_id=None, producer="x",
+        )
+
+
+def test_v1_step_results_are_upcast():
+    """Un StepCompleted o StepFailed v1 se lee como v2 de la versión 1 del plan y un intento"""
+    done = to_current(_v1("StepCompleted", {"step_id": "S1", "result": {"claim_id": "C1"}}))
+    assert done.event_version == 2
+    assert done.payload == {"step_id": "S1", "plan_version": 1, "result": {"claim_id": "C1"}}
+    failed = to_current(_v1("StepFailed", {"step_id": "S2", "error": "out_of_stock", "retryable": False}))
+    assert failed.payload == {
+        "step_id": "S2", "plan_version": 1, "error": "out_of_stock", "retryable": False, "attempts": 1,
+    }
+
+
+def test_current_events_are_not_upcast():
+    """Un evento en su versión vigente, o fuera del catálogo, se lee tal cual"""
+    ev = _v1("IncidentEscalated", {"incident_id": "I1", "reason": "r"})
+    assert to_current(ev) is ev
+    other = _v1("NotAnEvent", {"a": 1})
+    assert to_current(other) is other
+
+
+def test_step_cancelled_event():
+    """StepCancelled lleva la incidencia, la versión del plan que lo cancela y el paso"""
+    ev = build_event(
+        "StepCancelled", {"incident_id": "I1", "plan_version": 2, "step_id": "S3"},
+        correlation_id="I1", causation_id=None, producer="x",
+    )
+    assert ev.event_version == 1

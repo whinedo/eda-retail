@@ -92,14 +92,29 @@ class StepRequested(_Payload):
 
 
 class StepCompleted(_Payload):
+    """v2: `plan_version` del `StepRequested` que lo pidió (detecta resultados obsoletos)."""
+
     step_id: str
+    plan_version: int = Field(ge=1)
     result: dict[str, Any]
 
 
 class StepFailed(_Payload):
+    """v2: `plan_version` del `StepRequested` y `attempts` que hizo el ejecutor."""
+
     step_id: str
+    plan_version: int = Field(ge=1)
     error: str = Field(min_length=1)
     retryable: bool
+    attempts: int = Field(ge=1)
+
+
+class StepCancelled(_Payload):
+    """Paso que una revisión del plan no mantiene y que no llegó a tener efecto."""
+
+    incident_id: str
+    plan_version: int = Field(ge=1)
+    step_id: str
 
 
 class CustomerNotified(_Payload):
@@ -162,11 +177,13 @@ class EventSpec:
     model: type[_Payload]
 
 
+_VERSIONS = {"StepCompleted": 2, "StepFailed": 2}
+
 CATALOG: dict[str, EventSpec] = {
-    m.__name__: EventSpec(1, m)
+    m.__name__: EventSpec(_VERSIONS.get(m.__name__, 1), m)
     for m in (
         CarrierNoticeReceived, ShipmentDelayed, PlanCreated, PlanRevised, StepRequested,
-        StepCompleted, StepFailed, CustomerNotified, ClaimFiled, StockReserved,
+        StepCompleted, StepFailed, StepCancelled, CustomerNotified, ClaimFiled, StockReserved,
         StockReleased, ShipmentReissued, RefundIssued, IncidentResolved, IncidentEscalated,
         LlmCallRecorded,
     )

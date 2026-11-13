@@ -22,6 +22,7 @@ from opentelemetry.trace import SpanKind
 
 from eda_retail.config import Settings
 from eda_retail.events.envelope import EventEnvelope
+from eda_retail.events.upcasters import to_current
 from eda_retail.infra import inbox, tracing
 from eda_retail.infra.db import connect
 from eda_retail.infra.kafka import make_consumer
@@ -47,7 +48,7 @@ Handler = Callable[[psycopg.Connection, EventEnvelope], None] | UnitOfWork
 def decode_message(msg: Message) -> EventEnvelope:
     body = json.loads(msg.value())
     body.pop("seq", None)
-    return EventEnvelope.model_validate(body)
+    return to_current(EventEnvelope.model_validate(body))
 
 
 class EventConsumer:

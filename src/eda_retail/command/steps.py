@@ -77,15 +77,20 @@ def _record_step_result(ctx: Context) -> None:
     elif cmd.error is None or cmd.retryable is None:
         raise Rejected("invalid_command", "un paso fallido lleva error y retryable")
 
+    plan_version = ctx.incident["plan_version"]  # type: ignore[index]
     ctx.bump_version()
     ctx.conn.execute(
         "UPDATE plan_steps SET status = %s WHERE incident_id = %s AND step_id = %s",
         (cmd.outcome, cmd.incident_id, cmd.step_id),
     )
     if cmd.outcome == "failed":
-        ctx.emit("StepFailed", {"step_id": cmd.step_id, "error": cmd.error, "retryable": cmd.retryable})
+        ctx.emit(
+            "StepFailed",
+            {"step_id": cmd.step_id, "plan_version": plan_version, "error": cmd.error,
+             "retryable": cmd.retryable, "attempts": 1},
+        )
         return
-    ctx.emit("StepCompleted", {"step_id": cmd.step_id, "result": cmd.result})
+    ctx.emit("StepCompleted", {"step_id": cmd.step_id, "plan_version": plan_version, "result": cmd.result})
     ctx.emit(EFFECT_EVENT[Action(step["action"])], cmd.effect)  # type: ignore[arg-type]
     if step["compensates"]:
         ctx.conn.execute(

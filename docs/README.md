@@ -180,8 +180,9 @@ Lado de comandos (escritura) y lado de consultas (lectura). Los pasos (1) a (4) 
 | `PlanCreated` | Agente planificador | `incident_id`, `plan_version`, `steps[]` |
 | `PlanRevised` | Replanner | `incident_id`, `plan_version`, `steps[]`, `reason` |
 | `StepRequested` | Orquestación del plan | `incident_id`, `plan_version`, `step_id`, `action`, `params`, `idempotency_key` |
-| `StepCompleted` | Ejecutor | `step_id`, `result` |
-| `StepFailed` | Ejecutor | `step_id`, `error`, `retryable` |
+| `StepCompleted` (v2) | Ejecutor | `step_id`, `plan_version`, `result` |
+| `StepFailed` (v2) | Ejecutor | `step_id`, `plan_version`, `error`, `retryable`, `attempts` |
+| `StepCancelled` | Orquestación | `incident_id`, `plan_version`, `step_id` |
 | `CustomerNotified` | Ejecutor | `order_id`, `message_id` |
 | `ClaimFiled` | Ejecutor | `order_id`, `claim_id` |
 | `StockReserved` | Ejecutor | `order_id`, `warehouse`, `reservation_id` |
@@ -233,6 +234,7 @@ Anotadas aquí porque no estaban cerradas en la conversación; se pueden cambiar
 - Los requisitos siguen hablando de «el bus», «el log» y «el almacén de claves» como conceptos; `design.md` indica cómo los materializa la pila.
 - El envío de correos, el transportista, el almacén y los pagos son simulados.
 - La `idempotency_key` se calcula con la versión del plan **en la que se creó el paso**, no con la vigente, para que un paso mantenido en una revisión conserve su clave y no se duplique. Esto afina la fórmula `hash(incident_id, plan_version, step_id)` del documento de casos de negocio.
+- `StepCompleted` y `StepFailed` v2 llevan la `plan_version` del `StepRequested` que los pidió, para reconocer los resultados obsoletos. Los v1 se leen como de la versión 1 del plan (y `StepFailed` con un intento).
 
 ## Experimentos
 
