@@ -10,21 +10,137 @@ Regla de diseño: **el LLM propone y el código dispone**. Ningún LLM ejecuta e
 
 ## Diagrama de agentes
 
-![Agentes y eventos](diagrama-agentes.png)
+```mermaid
+flowchart LR
+  IN["Aviso del transportista<br/>texto libre o API"]
+  BUS[("Bus de eventos<br/>y log de eventos")]
+  INT["Agente intérprete"]
+  PLN["Agente planificador"]
+  RPL["Replanner"]
+  CH["Command handler<br/>y validador"]
+  ORQ["Orquestación del plan"]
+  EXE["Ejecutores<br/>aviso, reclamación, stock,<br/>reenvío, reembolso"]
+  RED["Agente redactor<br/>aviso y reclamación"]
+  IDS[("Almacén de claves<br/>de idempotencia")]
+  PRJ["Proyectores"]
+  VW[("Vistas CQRS")]
+  FIN["Cierre de la incidencia<br/>IncidentResolved o escalado"]
 
-Versiones en vector: `diagrama-agentes.svg` y `diagrama-agentes.pdf`.
+  IN -- "(1) CarrierNoticeReceived" --> BUS
+  BUS --> INT
+  INT -- "(2) propone ShipmentDelayed" --> CH
+  BUS --> PLN
+  PLN -- "(3) propone PlanCreated" --> CH
+  CH -- "(a) escribe solo eventos válidos" --> BUS
+  BUS --> ORQ
+  ORQ -- "(4) StepRequested" --> BUS
+  BUS --> EXE
+  EXE <-- "(5) texto / borrador validado" --> RED
+  EXE <-- "(6) clave" --> IDS
+  EXE -- "(7) StepCompleted o StepFailed" --> BUS
+  BUS -- "(8) StepFailed" --> RPL
+  RPL -- "(9) propone PlanRevised, vuelve a 4" --> CH
+  ORQ -- "(10)" --> FIN
+  BUS -- "(b)" --> PRJ
+  PRJ -- "(c)" --> VW
+
+  classDef llm fill:#E3F0FF,stroke:#2B7DE0,color:#1d1d1f
+  classDef code fill:#E6F6EC,stroke:#2E9E5B,color:#1d1d1f
+  classDef data fill:#F1F1EE,stroke:#8A8A80,color:#1d1d1f
+  classDef ext fill:#FFF3E0,stroke:#E08A2B,color:#1d1d1f
+  class INT,PLN,RED,RPL llm
+  class CH,ORQ,EXE,PRJ code
+  class BUS,IDS,VW data
+  class IN,FIN ext
+```
+
+Azul: agentes con LLM (proponen). Verde: código determinista (dispone). Gris: datos. Naranja: entrada y salida. Los pasos (1) a (10) siguen el flujo de una incidencia, con el bus entre cada productor y su consumidor; (a) a (c) son la escritura validada y la proyección de las vistas. Los agentes con LLM nunca escriben en el log ni ejecutan efectos.
 
 ### Secuencia de la saga
 
-![Saga](diagrama-saga.png)
+```mermaid
+sequenceDiagram
+  participant Orq as Orquestación
+  participant Av as Ejecutor<br/>aviso
+  participant Rc as Ejecutor<br/>reclamación
+  participant St as Ejecutor<br/>stock
+  participant En as Ejecutor<br/>envío
+  participant Rf as Ejecutor<br/>reembolso
+  participant Rp as Replanner<br/>(LLM)
+  participant CH as Command<br/>handler
+  Note over Orq,CH: Plan v1 de una pérdida de paquete: notify_customer, file_claim, reserve_stock y reissue_shipment.<br/>Todos los mensajes viajan por el bus y cada StepRequested lleva su idempotency_key.
+  par pasos independientes en paralelo
+    Orq->>Av: (1.a) StepRequested notify_customer
+  and
+    Orq->>Rc: (1.b) StepRequested file_claim
+  and
+    Orq->>St: (1.c) StepRequested reserve_stock
+  end
+  Av-->>Orq: (2.a) StepCompleted (CustomerNotified)
+  Rc-->>Orq: (2.b) StepCompleted (ClaimFiled)
+  St-->>Orq: (2.c) StepCompleted (StockReserved)
+  Orq->>En: (3) StepRequested reissue_shipment<br/>(depende de reserve_stock)
+  alt Camino feliz
+    En-->>Orq: (4) StepCompleted (ShipmentReissued)
+    Orq->>Orq: (5) IncidentResolved, outcome resolved
+  else El reenvío falla (carrier_rejected, no reintentable)
+    En-->>Orq: (4) StepFailed
+    Orq->>Rp: (5) StepFailed
+    Rp->>CH: (6) propone el plan v2:<br/>reembolso en lugar de reenvío
+    CH-->>Orq: (7) PlanRevised v2<br/>(validado: sin compensaciones en el plan, importe dentro del máximo)
+    Note over Orq,St: (8) El código deriva la compensación de reserve_stock<br/>y bloquea issue_refund hasta que termine
+    Orq->>St: (9) StepRequested release_stock<br/>(step_id reserve_stock-comp)
+    alt La compensación termina bien
+      St-->>Orq: (10) StepCompleted (StockReleased)
+      Orq->>Rf: (11) StepRequested issue_refund<br/>(paso pivote, sin compensación)
+      alt El reembolso termina bien
+        Rf-->>Orq: (12) StepCompleted (RefundIssued)
+        Orq->>Orq: (13) IncidentResolved, outcome refunded
+      else El reembolso falla
+        Rf-->>Orq: (12) StepFailed
+        Orq->>Orq: (13) nueva revisión del plan o<br/>IncidentEscalated si se agotan las revisiones
+      end
+    else La compensación agota sus reintentos
+      St-->>Orq: (10) StepFailed
+      Orq->>Orq: (11) IncidentEscalated, compensation_failed<br/>(no se emite el reembolso)
+    end
+  end
+```
 
-Operaciones y compensaciones de una pérdida de paquete, con los caminos de éxito, de reembolso tras compensar y de escalado. También en `diagrama-saga.svg` y `.pdf`.
+Operaciones y compensaciones de una pérdida de paquete, con los caminos de éxito, de reembolso tras compensar y de escalado.
 
 ### CQRS
 
-![CQRS](diagrama-cqrs.png)
+```mermaid
+flowchart LR
+  subgraph CMD["Lado de comandos (escritura)"]
+    A["Agentes, orquestación<br/>y ejecutores"]
+    CH["Command handler<br/>valida reglas, esquema<br/>y expected_version"]
+    TX[("PostgreSQL, una transacción<br/>incidents, plan_steps,<br/>events, outbox, inbox")]
+  end
+  K["Kafka<br/>eda.events"]
+  subgraph QRY["Lado de consultas (lectura)"]
+    P["Proyectores<br/>idempotentes"]
+    V[("view_* y<br/>projector_offsets")]
+    Q["Consultas<br/>panel y agentes"]
+  end
+  A -- "(1) comando con<br/>command_id y expected_version" --> CH
+  CH -- "(2) estado y eventos<br/>en la misma transacción" --> TX
+  CH -. "rechaza:<br/>concurrency_conflict,<br/>incident_closed" .-> A
+  TX -- "(3) relay del outbox" --> K
+  K -- "(4) eventos a los<br/>consumidores" --> A
+  TX -- "(5) lee events por seq" --> P
+  P -- "(6) actualiza la vista<br/>y last_seq" --> V
+  Q -- "(7) solo lectura,<br/>responde con last_applied_seq" --> V
+  classDef code fill:#E6F6EC,stroke:#2E9E5B,color:#1d1d1f
+  classDef data fill:#F1F1EE,stroke:#8A8A80,color:#1d1d1f
+  classDef llm fill:#E3F0FF,stroke:#2B7DE0,color:#1d1d1f
+  class CH,P code
+  class TX,V,K data
+  class A,Q llm
+```
 
-Lado de comandos (escritura) y lado de consultas (lectura). También en `diagrama-cqrs.svg` y `.pdf`. Los pasos numerados siguen el flujo principal de una incidencia; (a) a (c) son los caminos de escritura y de lectura.
+Lado de comandos (escritura) y lado de consultas (lectura). Los pasos (1) a (4) son el camino de escritura y (5) a (7), el de lectura.
 
 ## Patrones de la guía que se ejercitan
 
