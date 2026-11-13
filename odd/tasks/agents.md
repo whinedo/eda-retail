@@ -39,7 +39,7 @@ Assumptions (marked):
 | T5 | S4 (planner) | inline | done | feat(agents): planner |
 | T6 | S5 (replanner, budget, max revisions) | inline | done | feat(agents): replanner + fix(projectors) bbe1b39 |
 | T7 | S6 (writer + draft validation) | inline | done | feat(agents): writer |
-| T8 | agent CLI entry point with tracing | inline | pending | |
+| T8 | agent CLI entry point with tracing | inline | done | feat(agents): eda-agent and eda-projector |
 
 Route evidence: units share the agent runtime and handler; sequential, no Writer trigger reason.
 
@@ -58,3 +58,4 @@ Route evidence: units share the agent runtime and handler; sequential, no Writer
 - L11 (2026-11-13) T6 follow-up: 3833d1b was committed with 4 failing tests (pipeline exit masked by `tail`); cause: test_relay appends placeholder payloads and the incident_status projector raised on them. Fixed in bbe1b39: projectors skip events whose payload fails catalog validation (warning + span event), with a test. Suite 142 passed x2.
 - L12 (2026-11-13) user: "activa los check del repositorio" -> chose "CI en GitHub Actions". Added .github/workflows/ci.yml (ebd5a5f): docker compose postgres+kafka, uv sync --locked, pytest. Not run on GitHub yet (no push). Risk: item 5.
 - L13 (2026-11-13) T7: RED (ModuleNotFoundError agents.writer); GREEN 7/7 tests/test_writer.py. StepFailed invalid_draft publication stays with the phase 4 executors.
+- L14 (2026-11-13) T8: RED (ModuleNotFoundError agents.cli); GREEN 4/4 tests/test_agent_cli.py; suite 153 passed. eda-agent <interpreter|planner|replanner> and eda-projector scripts; docs/README.md gets a Procesos section. Real Anthropic calls never exercised yet (user runs them). Phase 3 complete.

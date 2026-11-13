@@ -18,6 +18,8 @@ dependencies = [
 
 [project.scripts]
 eda-relay = "eda_retail.infra.relay:main"
+eda-agent = "eda_retail.agents.cli:main"
+eda-projector = "eda_retail.projectors.cli:main"
 
 [dependency-groups]
 dev = ["pytest>=8"]
