@@ -29,3 +29,10 @@ Route evidence: sequential units (T3 needs T2's column); no Writer trigger reaso
 - L1 (2026-11-13) user: "antes añade observabilidad con Opentelemtry (opentracing?) tanto para operaciones síncronas como asíncronas con un Jaeger en el docker compose para visualizarlo"
 - L2 (2026-11-13) user chose "Columna en outbox (Recomendado)" over derived IDs for carrying trace context through the outbox.
 - L3 T4 evidence: `scripts/trace_demo.py` produced one Jaeger trace with 17 spans across `command-handler`, `relay`, `interpreter`, `planner` (create → publish → process chain, SQL spans nested). Dev DB `eda` migrated with `uv run alembic upgrade head` (outbox now has `trace_context`). design.md §13 added; only that block committed, user's uncommitted edits in §4.1/§4.2/§12 left untouched.
+- L4 (2026-11-13) user: "Sí, verifícalo". Independent verifier on `408c7c5..2f9daf9`: no blockers, S1–S7 pass, 42 passed; schema identical across empty-DB and existing-volume upgrades, downgrade/upgrade round-trips, baseline differential identical except the added `traceparent` header. Scratch, 5 DBs, 4 topics and 11 consumer groups removed by parent.
+  Advisories:
+  - A1 fixed: `%` in the database URL broke `migrations._config` (ConfigParser interpolation); now escaped, test `test_database_url_with_percent_encoded_password`.
+  - A2: with tracing disabled, a consumer still forwards an upstream `traceparent` into `outbox.trace_context` (NoOp tracer keeps the parent context). Accepted: keeps traces continuous across mixed deployments.
+  - A3: `provider.shutdown()` takes ~7–10 s when the collector is unreachable (OTLP retry backoff).
+  - A4 (phase 2 handlers): exception messages are recorded on `process` spans; handlers must not put PII in exception text. Headers are decoded as UTF-8 (a foreign non-UTF-8 header would fail).
+  - A5: IGNORED events get no `process` span; no consumer CLI calls `setup_tracing` yet (components arrive in later phases).

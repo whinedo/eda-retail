@@ -12,7 +12,8 @@ ALEMBIC_INI = Path(__file__).resolve().parents[3] / "alembic.ini"
 
 def _config(database_url: str) -> Config:
     cfg = Config(str(ALEMBIC_INI))
-    cfg.set_main_option("sqlalchemy.url", database_url)
+    # ConfigParser interpola '%': se duplica para admitir contraseñas codificadas (p%40ss).
+    cfg.set_main_option("sqlalchemy.url", database_url.replace("%", "%%"))
     return cfg
 
 
