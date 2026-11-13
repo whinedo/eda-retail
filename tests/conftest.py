@@ -13,8 +13,11 @@ from collections.abc import Iterator
 import psycopg
 import pytest
 from confluent_kafka.admin import AdminClient, NewTopic
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
 from eda_retail.config import Settings, load_settings
+from eda_retail.infra import tracing
 from eda_retail.infra.db import connect
 from eda_retail.infra.migrations import upgrade
 
@@ -24,6 +27,20 @@ TEST_DB = "eda_test"
 def _with_db(url: str, dbname: str) -> str:
     base, _, _ = url.rpartition("/")
     return f"{base}/{dbname}"
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _span_exporter() -> InMemorySpanExporter:
+    """Proveedor de trazas en memoria para toda la sesión (sin Jaeger)."""
+    exporter = InMemorySpanExporter()
+    tracing.install(tracing.build_provider("tests", SimpleSpanProcessor(exporter)))
+    return exporter
+
+
+@pytest.fixture
+def spans(_span_exporter: InMemorySpanExporter) -> InMemorySpanExporter:
+    _span_exporter.clear()
+    return _span_exporter
 
 
 @pytest.fixture(scope="session")

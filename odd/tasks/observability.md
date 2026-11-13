@@ -18,8 +18,8 @@ Branch: `feat/infra` (continues phase 1, before phase 2) · Delivery: ask-on-ris
 | ID | Specs | Route | Status | Commit |
 | --- | --- | --- | --- | --- |
 | T1 | S2 | inline | done (UI API answers on :16686) | 8bd3026 |
-| T2 | S4, S3 (schema) | inline | done (RED import error -> 3 passed; suite 34 passed) | next commit |
-| T3 | S3, S5, S6, S7 (tracing in event_store, relay, consumer, db) | inline | pending | |
+| T2 | S4, S3 (schema) | inline | done (RED import error -> 3 passed; suite 34 passed) | 770c0fa |
+| T3 | S3, S5, S6, S7 (tracing in event_store, relay, consumer, db) | inline | done (RED import error -> 42 passed) | next commit |
 | T4 | S1, S2 end-to-end check in Jaeger + docs | inline | pending | |
 
 Route evidence: sequential units (T3 needs T2's column); no Writer trigger reason.

@@ -40,6 +40,10 @@ class Settings:
     effect_lock_seconds: int = field(
         default_factory=lambda: int(os.environ.get("EFFECT_LOCK_SECONDS", "30"))
     )
+    tracing_enabled: bool = field(default_factory=lambda: _env_bool("TRACING_ENABLED", True))
+    otlp_endpoint: str = field(
+        default_factory=lambda: os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4318")
+    )
 
 
 def load_settings() -> Settings:
