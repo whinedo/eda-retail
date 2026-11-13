@@ -213,7 +213,31 @@ Todos llevan `command_id` y `expected_version` (`RecordLlmCall` lo ignora: es un
 
 ## Procesos
 
-Cada componente es un proceso independiente (con `docker compose up -d` levantado). `scripts/run-agents.sh` los arranca todos (cargando `.env` si existe y comprobando que Ollama tiene `LLM_MODEL`), aplica las migraciones, deja un log por proceso en `logs/` y los para todos con Ctrl+C o si alguno termina:
+### Puesta en marcha
+
+Con Docker y Ollama instalados, y `.env` creado a partir de `.env.example` (fija `LLM_MODEL` a un modelo descargado, p. ej. `qwen2.5:7b-instruct`):
+
+```bash
+docker compose up -d           # kafka, postgres y jaeger
+scripts/run-agents.sh          # terminal 1: todos los procesos, con un log por proceso en logs/
+scripts/notice.sh              # terminal 2: CLI interactivo de avisos
+tail -f logs/*.log             # terminal 3: seguir el flujo
+scripts/stop-all.sh            # al terminar: para los procesos y los contenedores
+```
+
+En el CLI interactivo, `s` carga los datos de ejemplo (pedidos `P-1001`…`P-1005` y su stock) y `1`…`4` envían un aviso de ejemplo; después se muestra cómo avanza la incidencia hasta que se resuelve o se escala. Las trazas completas están en Jaeger: `http://localhost:16686`.
+
+### Scripts
+
+| Script | Qué hace |
+| --- | --- |
+| `scripts/run-agents.sh [--logs DIR] [--no-migrate]` | Comprueba que kafka y postgres están en marcha y que Ollama tiene `LLM_MODEL`, aplica las migraciones y arranca todos los procesos cargando `.env`; deja un log por proceso en `logs/` y los para todos con Ctrl+C o si alguno termina |
+| `scripts/notice.sh [argumentos de eda-notice]` | Abre `eda-notice` (por defecto, el modo interactivo) con la misma configuración (`.env`) |
+| `scripts/stop-all.sh [--dry-run] [--keep-docker]` | Para todos los procesos de la PoC y después los contenedores (`docker compose stop`, sin borrar datos); `--keep-docker` deja los contenedores y `--dry-run` solo muestra qué pararía |
+
+### Comandos
+
+Cada componente es un proceso independiente; los scripts anteriores los lanzan, pero también se pueden arrancar uno a uno (añade `--env-file .env` a `uv run` para cargar la configuración):
 
 | Comando | Qué hace |
 | --- | --- |
