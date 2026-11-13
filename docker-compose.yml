@@ -66,6 +66,16 @@ services:
       timeout: 5s
       retries: 10
 
+  # Trazas de OpenTelemetry: OTLP en 4317 (gRPC) y 4318 (HTTP), interfaz en http://localhost:16686
+  # Almacenamiento en memoria: las trazas se pierden al reiniciar el contenedor.
+  jaeger:
+    image: jaegertracing/jaeger:2.11.0
+    container_name: eda-jaeger
+    ports:
+      - "16686:16686"
+      - "4317:4317"
+      - "4318:4318"
+
 volumes:
   kafka_data:
   postgres_data:
