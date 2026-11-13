@@ -1,0 +1,42 @@
+# CI: tests unitarios y de integración contra PostgreSQL y Kafka reales (docker compose).
+# Los tests usan siempre el cliente LLM falso: no hace falta ANTHROPIC_API_KEY.
+name: CI
+
+on:
+  push:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Instalar Python y dependencias
+        run: |
+          uv python install 3.12
+          uv sync --locked
+
+      - name: Levantar PostgreSQL y Kafka
+        run: docker compose up -d --wait postgres kafka
+
+      - name: Tests
+        run: uv run pytest -q
+
+      - name: Logs de los servicios
+        if: failure()
+        run: docker compose logs --no-color postgres kafka
