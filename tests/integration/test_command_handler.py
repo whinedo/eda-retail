@@ -201,3 +201,37 @@ def test_invalid_command_payload_is_rejected(conn):
     conn.commit()
     assert (result.accepted, result.reason) == (False, "invalid_command")
     assert "cause" in result.detail
+
+
+def test_concurrent_open_incident_for_same_notice(connect_db):
+    """Aviso repetido (concurrente): varias instancias abren la misma incidencia a la vez"""
+    setup = connect_db()
+    notice, registered = register_notice(setup)
+    incident = incident_id_for_notice(notice)
+    order = add_order(setup)
+    barrier = threading.Barrier(6)
+    results, errors = [], []
+
+    def worker():
+        c = connect_db()
+        cmd = OpenIncident(
+            command_id=registered.events[0].event_id, expected_version=0, producer="interpreter",
+            incident_id=incident, carrier_notice_id=notice, order_ids=[order], cause="delay",
+            estimated_delay_hours=24, severity="low",
+        )
+        barrier.wait()
+        try:
+            with c.transaction():
+                results.append(handler().handle(c, cmd))
+        except Exception as exc:  # noqa: BLE001 - el test comprueba que no hay ninguna
+            errors.append(exc)
+
+    threads = [threading.Thread(target=worker) for _ in range(6)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=20)
+    assert errors == []
+    assert sum(r.accepted for r in results) == 1
+    assert {r.reason for r in results if not r.accepted} == {"duplicate_notice"}
+    assert [e["event_type"] for e in events_of(setup, incident)].count("ShipmentDelayed") == 1

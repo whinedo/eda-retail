@@ -83,6 +83,7 @@ def test_valid_plan_is_created(conn):
         ([step("S1", "notify_customer", ["S2"]), step("S2", "file_claim", ["S1"])], "invalid_plan"),
         ([step("S1", "issue_refund", order_id="P1", amount="100.01")], "refund_limit"),
         ([step("S1", "issue_refund", order_id="P1")], "invalid_plan"),
+        ([step("S1", "issue_refund", order_id="P1", amount="NaN")], "invalid_plan"),
         ([], "invalid_plan"),
     ],
     ids=[
@@ -95,6 +96,7 @@ def test_valid_plan_is_created(conn):
         "dependencia circular",
         "Reembolso por encima del máximo",
         "reembolso sin importe",
+        "reembolso con importe NaN",
         "plan vacío",
     ],
 )

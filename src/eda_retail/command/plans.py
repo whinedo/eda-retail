@@ -86,8 +86,8 @@ def _check_refund(ctx: Context, s: PlanStep) -> None:
         amount = Decimal(str(s.params["amount"]))
     except (KeyError, InvalidOperation) as exc:
         raise Rejected("invalid_plan", f"{s.step_id}: issue_refund sin amount válido") from exc
-    if amount <= 0:
-        raise Rejected("invalid_plan", f"{s.step_id}: amount debe ser positivo")
+    if not amount.is_finite() or amount <= 0:
+        raise Rejected("invalid_plan", f"{s.step_id}: amount debe ser un número positivo")
     if amount > ctx.rules.max_refund_amount:
         raise Rejected("refund_limit", f"{s.step_id}: {amount} > {ctx.rules.max_refund_amount}")
 

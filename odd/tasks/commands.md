@@ -33,7 +33,7 @@ Assumptions (marked, change freely):
 | T2 | S1, S2, S3 | inline | done (RED import error -> 8 passed) | 14377d7 |
 | T3 | S4, S5, S6, S7 (handler core, notices, incidents, close, escalate) | inline | done (RED import error -> 12 passed) | 8107aed |
 | T4 | S8 (CreatePlan, RevisePlan) | inline | done (RED unsupported command -> 18 passed) | ea1a793 |
-| T5 | S9, S10 (RequestStep, RecordStepResult) | inline | done (RED invalid_command -> 8 passed; suite 93) | next commit |
+| T5 | S9, S10 (RequestStep, RecordStepResult) | inline | done (RED invalid_command -> 8 passed; suite 93) | 57837fe |
 
 Route evidence: sequential units over one module (handler) and shared rules; no Writer trigger reason. T1 is high risk (item 1) and gets its own commit.
 
@@ -41,3 +41,10 @@ Route evidence: sequential units over one module (handler) and shared rules; no 
 
 - L1 (2026-11-13) user: "Sí, fase 2" (after phase 1 + observability were verified).
 - L2 T1–T5 done. Dev DB `eda` migrated to 0003. Spec tension noted, not resolved: `CarrierNoticeReceived.raw_text` is carrier free text stored in the log, while event-backbone forbids personal data in events; the personal-data guard exempts only that field.
+- L3 (2026-11-13) user: "Sí, verifícalo". Independent verifier on `5e817be..57837fe`: S1–S6, S8–S10 and A5 pass (7-thread concurrency rounds: exactly one accepted per version; 40 rejection cases write nothing; migration 0003 keeps data). One blocker B1: concurrent `OpenIncident` for the same notice raised `UniqueViolation` instead of `duplicate_notice` (check-then-insert race). Fixed with `INSERT … ON CONFLICT (incident_id) DO NOTHING` + regression test `test_concurrent_open_incident_for_same_notice` (RED 6 threads -> GREEN, 3 runs). Advisory NaN refund amount crashing `handle()` also fixed (`is_finite`). Suite 95 passed. Scratch and 2 DBs removed by parent.
+  Remaining advisories:
+  - Steps dropped by a revision stay `pending` and requestable until orchestration cancels them (A4, phase 4).
+  - Some scenarios share one parametrized test with a combined docstring (`test_plans.py`, "Comando derivado de un evento / Cadena de causalidad"); every scenario has a test.
+  - Personal-data guard misses free-text phones/names; `raw_text` exemption (L2).
+  - `db/init/001_schema.sql` still shows the old `plan_steps` key; Alembic 0003 always runs after it. `plan_steps_incident_idx` is now redundant with the PK prefix.
+  - Unexpected DB errors (e.g. lock timeouts) propagate from `handle()`; the savepoint keeps the caller transaction usable, consumers must handle them (resilience).

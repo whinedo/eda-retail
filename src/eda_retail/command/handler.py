@@ -218,13 +218,18 @@ def _open_incident(ctx: Context) -> None:
     }
     order_ids = [o for o in dict.fromkeys(cmd.order_ids) if o in known]
     status = "open" if order_ids else "escalated"
-    ctx.conn.execute(
+    # ON CONFLICT: dos instancias que abren la misma incidencia a la vez no fallan con
+    # UniqueViolation; la segunda espera a la primera y se rechaza como duplicado.
+    inserted = ctx.conn.execute(
         """
         INSERT INTO incidents (incident_id, status, severity, cause, version, closed_at)
         VALUES (%s, %s, %s, %s, 1, CASE WHEN %s = 'escalated' THEN now() END)
+        ON CONFLICT (incident_id) DO NOTHING
         """,
         (cmd.incident_id, status, cmd.severity, cmd.cause, status),
-    )
+    ).rowcount
+    if inserted == 0:
+        raise Rejected("duplicate_notice")
     ctx.version = 1
     if not order_ids:
         ctx.emit("IncidentEscalated", {"incident_id": cmd.incident_id, "reason": "no_valid_orders"})
