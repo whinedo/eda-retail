@@ -13,6 +13,7 @@ EXPECTED_TYPES = {
     "CarrierNoticeReceived", "ShipmentDelayed", "PlanCreated", "PlanRevised", "StepRequested",
     "StepCompleted", "StepFailed", "CustomerNotified", "ClaimFiled", "StockReserved",
     "StockReleased", "ShipmentReissued", "RefundIssued", "IncidentResolved", "IncidentEscalated",
+    "LlmCallRecorded",
 }
 
 

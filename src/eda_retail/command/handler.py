@@ -25,6 +25,7 @@ from eda_retail.command.models import (
     EscalateIncident,
     IncidentCommand,
     OpenIncident,
+    RecordLlmCall,
     RegisterCarrierNotice,
 )
 from eda_retail.command.rules import BusinessRules
@@ -35,6 +36,8 @@ from eda_retail.infra.event_store import append_events
 
 _NOTICE_NAMESPACE = uuid.UUID("6f1d7c0e-2b8a-4c55-9d3e-7a1b2c3d4e5f")
 FINAL_STEP_STATUSES = ("completed", "cancelled", "compensated")
+# Comandos que cargan la incidencia por su cuenta (pueden no exigir que exista o esté abierta).
+_SELF_LOADING = (OpenIncident, RecordLlmCall, EscalateIncident)
 
 
 def incident_id_for_notice(carrier_notice_id: str) -> str:
@@ -116,6 +119,22 @@ class CommandHandler:
     def __init__(self, rules: BusinessRules | None = None) -> None:
         self._rules = rules or BusinessRules()
 
+    def check_budget(self, conn: psycopg.Connection, incident_id: str) -> str | None:
+        """`budget_exhausted` si la incidencia ha consumido sus tokens o sus llamadas al LLM.
+
+        Se consulta antes de pagar otra llamada; una incidencia que aún no existe no ha gastado nada.
+        """
+        row = conn.execute(
+            "SELECT tokens_used, llm_calls FROM incidents WHERE incident_id = %s", (incident_id,)
+        ).fetchone()
+        if row is None:
+            return None
+        if row["tokens_used"] >= self._rules.max_tokens_per_incident:
+            return "budget_exhausted"
+        if row["llm_calls"] >= self._rules.max_llm_calls_per_incident:
+            return "budget_exhausted"
+        return None
+
     def handle(self, conn: psycopg.Connection, command: Command) -> CommandResult:
         with tracing.tracer().start_as_current_span(
             f"command {command.name}",
@@ -134,7 +153,7 @@ class CommandHandler:
         ctx = Context(conn, command, self._rules)
         try:
             with conn.transaction():  # savepoint si el llamante ya tiene una transacción
-                if isinstance(command, IncidentCommand) and not isinstance(command, OpenIncident):
+                if isinstance(command, IncidentCommand) and not isinstance(command, _SELF_LOADING):
                     _load_open_incident(ctx)
                 executor = _EXECUTORS.get(type(command))
                 if executor is None:
@@ -249,11 +268,68 @@ def _open_incident(ctx: Context) -> None:
 @executes(EscalateIncident)
 def _escalate(ctx: Context) -> None:
     cmd: EscalateIncident = ctx.command  # type: ignore[assignment]
+    exists = ctx.conn.execute("SELECT 1 FROM incidents WHERE incident_id = %s", (cmd.incident_id,)).fetchone()
+    if exists is None:
+        _escalate_from_notice(ctx)
+        return
+    _load_open_incident(ctx)
     ctx.bump_version()
     ctx.conn.execute(
         "UPDATE incidents SET status = 'escalated', closed_at = now() WHERE incident_id = %s", (cmd.incident_id,)
     )
     ctx.emit("IncidentEscalated", {"incident_id": cmd.incident_id, "reason": cmd.reason})
+
+
+def _escalate_from_notice(ctx: Context) -> None:
+    """Supuesto A5: el intérprete agota sus intentos antes de abrir la incidencia.
+
+    Se acepta si la incidencia corresponde a un aviso registrado; se crea ya escalada, con
+    causa `unknown` (y por tanto gravedad `medium`, la mínima que admite esa causa).
+    """
+    cmd: EscalateIncident = ctx.command  # type: ignore[assignment]
+    notice = ctx.conn.execute(
+        "SELECT 1 FROM carrier_notices WHERE incident_id = %s", (cmd.incident_id,)
+    ).fetchone()
+    if notice is None:
+        raise Rejected("incident_not_found")
+    if cmd.expected_version != 0:
+        raise Rejected("concurrency_conflict", "una incidencia nueva se escala con expected_version 0")
+    inserted = ctx.conn.execute(
+        """
+        INSERT INTO incidents (incident_id, status, severity, cause, version, closed_at)
+        VALUES (%s, 'escalated', %s, %s, 1, now())
+        ON CONFLICT (incident_id) DO NOTHING
+        """,
+        (cmd.incident_id, Severity.MEDIUM.value, Cause.UNKNOWN.value),
+    ).rowcount
+    if inserted == 0:
+        raise Rejected("concurrency_conflict", "la incidencia se creó a la vez")
+    ctx.version = 1
+    ctx.emit("IncidentEscalated", {"incident_id": cmd.incident_id, "reason": cmd.reason})
+
+
+@executes(RecordLlmCall)
+def _record_llm_call(ctx: Context) -> None:
+    """Supuesto A6: sin concurrencia optimista; el coste ya se produjo aunque esté cerrada."""
+    cmd: RecordLlmCall = ctx.command  # type: ignore[assignment]
+    row = ctx.conn.execute(
+        """
+        UPDATE incidents SET tokens_used = tokens_used + %s, llm_calls = llm_calls + 1
+        WHERE incident_id = %s RETURNING version
+        """,
+        (cmd.tokens_in + cmd.tokens_out, cmd.incident_id),
+    ).fetchone()
+    if row is None:
+        raise Rejected("incident_not_found")
+    ctx.version = row["version"]
+    ctx.emit(
+        "LlmCallRecorded",
+        {
+            "incident_id": cmd.incident_id, "agent": cmd.agent, "model": cmd.model,
+            "tokens_in": cmd.tokens_in, "tokens_out": cmd.tokens_out, "latency_ms": cmd.latency_ms,
+            "validation_passed": cmd.validation_passed, "attempt": cmd.attempt,
+        },
+    )
 
 
 @executes(CloseIncident)

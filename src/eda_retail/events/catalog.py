@@ -143,6 +143,19 @@ class IncidentEscalated(_Payload):
     reason: str = Field(min_length=1)
 
 
+class LlmCallRecorded(_Payload):
+    """Una llamada al LLM, aceptada o no (spec observability-audit). Sin el prompt ni la salida."""
+
+    incident_id: str
+    agent: str = Field(min_length=1)
+    model: str = Field(min_length=1)
+    tokens_in: int = Field(ge=0)
+    tokens_out: int = Field(ge=0)
+    latency_ms: int = Field(ge=0)
+    validation_passed: bool
+    attempt: int = Field(ge=1)
+
+
 @dataclass(frozen=True)
 class EventSpec:
     version: int
@@ -155,6 +168,7 @@ CATALOG: dict[str, EventSpec] = {
         CarrierNoticeReceived, ShipmentDelayed, PlanCreated, PlanRevised, StepRequested,
         StepCompleted, StepFailed, CustomerNotified, ClaimFiled, StockReserved,
         StockReleased, ShipmentReissued, RefundIssued, IncidentResolved, IncidentEscalated,
+        LlmCallRecorded,
     )
 }
 

@@ -73,3 +73,15 @@ class CloseIncident(IncidentCommand):
 
 class EscalateIncident(IncidentCommand):
     reason: str = Field(min_length=1)
+
+
+class RecordLlmCall(IncidentCommand):
+    """Hecho de solo añadir: no comprueba ni incrementa `version` y admite incidencias cerradas."""
+
+    agent: str = Field(min_length=1)
+    model: str = Field(min_length=1)
+    tokens_in: int = Field(ge=0)
+    tokens_out: int = Field(ge=0)
+    latency_ms: int = Field(ge=0)
+    validation_passed: bool
+    attempt: int = Field(ge=1)
