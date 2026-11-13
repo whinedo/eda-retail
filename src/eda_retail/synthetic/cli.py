@@ -1,5 +1,6 @@
 """`eda-notice`: carga datos de ejemplo y registra avisos del transportista.
 
+    uv run eda-notice                      # modo interactivo: menú y seguimiento de la incidencia
     uv run eda-notice seed                 # pedidos P-1001…P-1005 y su stock
     uv run eda-notice send                 # aviso de ejemplo (retraso de P-1001)
     uv run eda-notice send --example loss  # delay | loss | out_of_stock | injection
@@ -12,13 +13,16 @@ import argparse
 
 from eda_retail.config import load_settings
 from eda_retail.infra.db import connect
+from eda_retail.synthetic.interactive import run
 from eda_retail.synthetic.sample import CARRIER, EXAMPLES, seed, send_notice
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(prog="eda-notice", description="Entrada de avisos de la PoC")
-    sub = parser.add_subparsers(dest="command", required=True)
+    sub = parser.add_subparsers(dest="command")
     sub.add_parser("seed", help="carga pedidos y stock de ejemplo")
+    live = sub.add_parser("interactive", help="menú para enviar avisos y seguir cada incidencia (por defecto)")
+    live.add_argument("--timeout", type=float, default=180.0, help="segundos siguiendo cada incidencia")
     send = sub.add_parser("send", help="registra un aviso del transportista")
     group = send.add_mutually_exclusive_group()
     group.add_argument("--example", choices=sorted(EXAMPLES), default="delay")
@@ -31,6 +35,12 @@ def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     conn = connect(load_settings().database_url)
     try:
+        if args.command in (None, "interactive"):
+            try:
+                run(conn, input, print, timeout=getattr(args, "timeout", 180.0))
+            except (EOFError, KeyboardInterrupt):
+                print()
+            return 0
         if args.command == "seed":
             orders, stock = seed(conn)
             print(f"datos de ejemplo: {orders} pedidos y {stock} filas de stock nuevos")

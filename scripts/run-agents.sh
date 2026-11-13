@@ -4,7 +4,7 @@
 # Uso: scripts/run-agents.sh [--logs DIR] [--no-migrate]
 #
 # Requiere `docker compose up -d` (kafka y postgres) y, para los agentes con LLM, Ollama en
-# OLLAMA_HOST. Cada proceso escribe en DIR/<nombre>.log (por defecto logs/). Ctrl+C los para
+# OLLAMA_HOST con el modelo LLM_MODEL. Si existe .env, todos los procesos lo cargan. Cada proceso escribe en DIR/<nombre>.log (por defecto logs/). Ctrl+C los para
 # todos. Si un proceso termina, el script para el resto y sale con error.
 set -euo pipefail
 
@@ -44,13 +44,25 @@ for service in kafka postgres; do
   fi
 done
 
-OLLAMA="${OLLAMA_HOST:-http://localhost:11434}"
-if ! curl -fsS --max-time 3 "$OLLAMA/api/tags" >/dev/null 2>&1; then
-  echo "aviso: Ollama no responde en $OLLAMA; los agentes con LLM fallarán" >&2
+UV_ARGS=()
+if [[ -f .env ]]; then
+  UV_ARGS=(--env-file .env)
 fi
+uvrun() { uv run ${UV_ARGS[@]+"${UV_ARGS[@]}"} "$@"; }
+
+# OLLAMA_HOST y LLM_MODEL tal como los verán los procesos (entorno + .env).
+read -r OLLAMA MODEL < <(uvrun python -c \
+  'import os; print(os.environ.get("OLLAMA_HOST", "http://localhost:11434"), os.environ.get("LLM_MODEL", "llama3.1"))')
+if ! TAGS=$(curl -fsS --max-time 3 "$OLLAMA/api/tags" 2>/dev/null); then
+  echo "aviso: Ollama no responde en $OLLAMA; los agentes con LLM fallarán" >&2
+elif ! grep -q "\"name\":\"$MODEL\"" <<<"$TAGS"; then
+  echo "error: Ollama no tiene el modelo '$MODEL'; ejecuta: ollama pull $MODEL (o fija LLM_MODEL en .env)" >&2
+  exit 1
+fi
+echo "LLM: $MODEL en $OLLAMA"
 
 if [[ "$MIGRATE" -eq 1 ]]; then
-  uv run alembic upgrade head
+  uvrun alembic upgrade head
 fi
 
 mkdir -p "$LOGS_DIR"
@@ -72,13 +84,13 @@ for entry in "${PROCESSES[@]}"; do
   name="${entry%%|*}"
   cmd="${entry#*|}"
   # shellcheck disable=SC2086  # cmd se divide a propósito en programa y argumentos
-  uv run $cmd >"$LOGS_DIR/$name.log" 2>&1 &
+  uvrun $cmd >"$LOGS_DIR/$name.log" 2>&1 &
   PIDS+=("$!")
   printf '  %-28s pid %-6s %s\n' "$name" "$!" "$LOGS_DIR/$name.log"
 done
 
 echo "en marcha. Logs: tail -f $LOGS_DIR/*.log  ·  Ctrl+C para parar"
-echo "para empezar: uv run eda-notice seed && uv run eda-notice send --example delay"
+echo "para enviar avisos (en otra terminal): uv run --env-file .env eda-notice"
 
 # Si cualquier proceso termina, se para el resto (trap EXIT) y se informa de cuál fue.
 while true; do

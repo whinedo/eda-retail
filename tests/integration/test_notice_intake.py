@@ -48,3 +48,59 @@ def test_cli_arguments():
     assert parse_args(["send", "--text", "hola"]).text == "hola"
     with pytest.raises(SystemExit):
         parse_args(["send", "--example", "loss", "--text", "x"])
+
+
+def _clock(step: float = 1.0):
+    now = [0.0]
+
+    def tick() -> float:
+        now[0] += step
+        return now[0]
+
+    return tick
+
+
+def test_interactive_sends_example_and_follows_incident(conn):
+    """El modo interactivo carga datos, envía el ejemplo elegido y sigue la incidencia hasta el límite"""
+    from eda_retail.synthetic.interactive import run
+
+    answers = iter(["s", "1", "9", "q"])
+    lines: list[str] = []
+    run(conn, lambda _prompt: next(answers), lines.append, timeout=2, sleep=lambda _s: None, clock=_clock())
+    text = "\n".join(lines)
+    assert "datos de ejemplo:" in text
+    [sent] = [line for line in lines if line.startswith("aviso ")]
+    incident = sent.rsplit(" ", 1)[1]
+    assert [e["event_type"] for e in events_of(conn, incident)] == ["CarrierNoticeReceived"]
+    assert "esperando a que el intérprete abra la incidencia" in text  # sin agentes en marcha
+    assert "sin cerrar tras 2 s" in text
+    assert "opción no válida: 9" in text
+
+
+def test_watch_stops_when_incident_is_closed(conn):
+    """El seguimiento termina en cuanto la vista muestra la incidencia cerrada"""
+    import uuid
+
+    from eda_retail.command.models import EscalateIncident
+    from eda_retail.projectors.incident_status import build_projector
+    from eda_retail.synthetic.interactive import watch
+
+    from .command_helpers import handler, open_incident, version_of
+
+    incident, _ = open_incident(conn)
+    handler().handle(conn, EscalateIncident(command_id=uuid.uuid4(), expected_version=version_of(conn, incident),
+                                            producer="test", incident_id=incident, reason="budget_exhausted"))
+    conn.commit()
+    projector = build_projector()
+    while projector.run_once(conn):
+        pass
+    lines: list[str] = []
+    status = watch(conn, incident, lines.append, timeout=60, sleep=lambda _s: None, clock=_clock())
+    assert status is not None and status.status == "escalated"
+    assert lines == ["  escalated (budget_exhausted)"]
+
+
+def test_default_command_is_interactive():
+    """eda-notice sin subcomando abre el modo interactivo"""
+    assert parse_args([]).command is None
+    assert parse_args(["interactive", "--timeout", "30"]).timeout == 30

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import os
+import urllib.error
 import urllib.request
 from collections.abc import Callable
 from typing import Any
@@ -21,6 +22,12 @@ from eda_retail.llm.generation import LlmRequest, LlmResponse
 
 DEFAULT_HOST = "http://localhost:11434"
 DEFAULT_MODEL = "llama3.1"
+
+
+
+class OllamaModelNotFound(RuntimeError):
+    """Ollama responde 404: el modelo pedido no está descargado."""
+
 
 Post = Callable[[str, dict[str, Any], float], dict[str, Any]]
 
@@ -62,7 +69,15 @@ class OllamaClient:
         }
 
     def complete(self, request: LlmRequest) -> LlmResponse:
-        reply = self._post(f"{self.host}/api/chat", self.request_body(request), self.timeout)
+        try:
+            reply = self._post(f"{self.host}/api/chat", self.request_body(request), self.timeout)
+        except urllib.error.HTTPError as exc:
+            if exc.code == 404:
+                raise OllamaModelNotFound(
+                    f"Ollama ({self.host}) no tiene el modelo '{self.model}': descárgalo con "
+                    f"`ollama pull {self.model}` o fija LLM_MODEL"
+                ) from exc
+            raise
         return LlmResponse(
             text=reply.get("message", {}).get("content", ""),
             model=reply.get("model", self.model),

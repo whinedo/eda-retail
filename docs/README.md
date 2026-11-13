@@ -213,7 +213,7 @@ Todos llevan `command_id` y `expected_version` (`RecordLlmCall` lo ignora: es un
 
 ## Procesos
 
-Cada componente es un proceso independiente (con `docker compose up -d` levantado). `scripts/run-agents.sh` los arranca todos, aplica las migraciones, deja un log por proceso en `logs/` y los para todos con Ctrl+C o si alguno termina:
+Cada componente es un proceso independiente (con `docker compose up -d` levantado). `scripts/run-agents.sh` los arranca todos (cargando `.env` si existe y comprobando que Ollama tiene `LLM_MODEL`), aplica las migraciones, deja un log por proceso en `logs/` y los para todos con Ctrl+C o si alguno termina:
 
 | Comando | Qué hace |
 | --- | --- |
@@ -223,6 +223,7 @@ Cada componente es un proceso independiente (con `docker compose up -d` levantad
 | `uv run eda-agent planner` | Propone el plan a partir de `ShipmentDelayed` |
 | `uv run eda-agent replanner` | Revisa el plan ante un `StepFailed` no reintentable |
 | `uv run eda-orchestrator` | Traduce `PlanCreated`, `PlanRevised`, `StepCompleted` y `StepFailed` en `ApplyRevision`, `AdvancePlan` o `EscalateIncident` |
+| `uv run eda-notice` | Modo interactivo: menú para enviar avisos (de ejemplo o texto libre) y seguir cada incidencia en la vista `incident_status` hasta que se cierra |
 | `uv run eda-notice seed` | Carga pedidos (`P-1001`…`P-1005`) y stock de ejemplo; repetirlo no duplica nada |
 | `uv run eda-notice send [--example delay\|loss\|out_of_stock\|injection] [--text "…"]` | Registra un aviso del transportista: la entrada que pone en marcha el flujo |
 | `uv run eda-executor <acción>` | Ejecuta los `StepRequested` de una acción (`notify_customer`, `file_claim`, `reserve_stock`, `release_stock`, `reissue_shipment`, `issue_refund`), un proceso por acción |

@@ -141,3 +141,20 @@ def test_strict_schema_closes_every_object():
     assert "$defs" not in json.dumps(schema) and "$ref" not in json.dumps(schema)  # referencias en línea
     step = schema["properties"]["steps"]["items"]
     assert "depends_on" in step["required"]
+
+
+def test_missing_ollama_model_has_a_clear_error():
+    """Si Ollama no tiene el modelo (404), el error dice cuál falta y cómo descargarlo"""
+    import urllib.error
+
+    import pytest
+
+    from eda_retail.llm.ollama_client import OllamaModelNotFound
+
+    def not_found(url, body, timeout):
+        raise urllib.error.HTTPError(url, 404, "Not Found", None, None)
+
+    client = OllamaClient(host="http://ollama:11434", model="llama3.1", post=not_found)
+    request = LlmRequest(agent="interpreter", incident_id="I1", system="s", prompt="p", schema={})
+    with pytest.raises(OllamaModelNotFound, match=r"no tiene el modelo 'llama3.1'.*ollama pull llama3.1"):
+        client.complete(request)
