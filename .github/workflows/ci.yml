@@ -1,6 +1,7 @@
-# CI: tests unitarios y de integración contra PostgreSQL y Kafka reales (docker compose).
-# Los tests usan siempre el cliente LLM falso: no hace falta ANTHROPIC_API_KEY.
-name: CI
+# Required check for merging to main: the pre-commit hooks (hygiene, ruff, pytest).
+# pytest runs against real PostgreSQL and Kafka (docker compose) and always uses the fake
+# LLM client: no Ollama in CI.
+name: checks
 
 on:
   push:
@@ -16,11 +17,11 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  test:
+  checks:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: astral-sh/setup-uv@v6
         with:
@@ -34,8 +35,8 @@ jobs:
       - name: Levantar PostgreSQL y Kafka
         run: docker compose up -d --wait postgres kafka
 
-      - name: Tests
-        run: uv run pytest -q
+      - name: Run pre-commit (hygiene, ruff, pytest)
+        run: uv run pre-commit run --all-files --show-diff-on-failure
 
       - name: Logs de los servicios
         if: failure()

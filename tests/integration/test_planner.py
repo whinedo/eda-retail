@@ -44,7 +44,7 @@ def _of_type(evs, event_type: str) -> list[dict]:
 def test_mild_delay(conn):
     """Retraso leve"""
     fake = FakeLlmClient()
-    incident, delayed, evs = _run(conn, fake, severity="low", cause="delay")
+    _, delayed, evs = _run(conn, fake, severity="low", cause="delay")
     [plan] = _of_type(evs, "PlanCreated")
     assert plan["payload"]["plan_version"] == 1
     assert [s["action"] for s in plan["payload"]["steps"]] == ["notify_customer"]

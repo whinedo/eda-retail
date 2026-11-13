@@ -5,8 +5,8 @@ from __future__ import annotations
 import json
 
 from eda_retail.llm.fake import FakeLlmClient
-from eda_retail.llm.ollama_client import OllamaClient
 from eda_retail.llm.generation import Budget, LlmRequest, generate
+from eda_retail.llm.ollama_client import OllamaClient
 from eda_retail.llm.schemas import PlanProposal, strict_schema
 
 VALID_PLAN = {

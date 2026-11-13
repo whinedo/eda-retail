@@ -29,7 +29,7 @@ def _http_post(url: str, body: dict[str, Any], timeout: float) -> dict[str, Any]
     request = urllib.request.Request(
         url, data=json.dumps(body).encode(), headers={"Content-Type": "application/json"}, method="POST"
     )
-    with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310 (URL de configuración)
+    with urllib.request.urlopen(request, timeout=timeout) as response:
         return json.loads(response.read())
 
 

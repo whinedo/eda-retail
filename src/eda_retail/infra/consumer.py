@@ -26,6 +26,7 @@ from eda_retail.infra import inbox, tracing
 from eda_retail.infra.db import connect
 from eda_retail.infra.kafka import make_consumer
 
+
 class Outcome(enum.Enum):
     PROCESSED = "processed"
     DUPLICATE = "duplicate"

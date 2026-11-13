@@ -12,13 +12,11 @@ import json
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
-from typing import Any, Generic, Protocol, TypeVar
+from typing import Any, Protocol
 
 from pydantic import BaseModel, ValidationError
 
 from eda_retail.infra import tracing
-
-T = TypeVar("T", bound=BaseModel)
 
 LLM_OUTPUT_INVALID = "llm_output_invalid"
 BUDGET_EXHAUSTED = "budget_exhausted"
@@ -83,17 +81,14 @@ class Budget:
 
 
 @dataclass(frozen=True)
-class Generation(Generic[T]):
+class Generation[T: BaseModel]:
     value: T | None
     reason: str | None  # None si hay valor; llm_output_invalid o budget_exhausted si no
     calls: list[LlmCall] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
 
 
-Check = Callable[[T], "str | None"]
-
-
-def parse_output(response: LlmResponse, output: type[T]) -> tuple[T | None, str | None]:
+def parse_output[T: BaseModel](response: LlmResponse, output: type[T]) -> tuple[T | None, str | None]:
     """Convierte la respuesta en el modelo pydantic; devuelve (valor, error)."""
     if response.refused:
         return None, LLM_REFUSED
@@ -108,7 +103,7 @@ def parse_output(response: LlmResponse, output: type[T]) -> tuple[T | None, str 
         return None, f"campos ausentes o inválidos: {fields}"
 
 
-def generate(
+def generate[T: BaseModel](
     client: LlmClient,
     request: LlmRequest,
     output: type[T],

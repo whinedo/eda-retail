@@ -110,7 +110,7 @@ def test_retryable_failure_is_ignored(conn):
 
 def test_replanner_waits_for_the_view(conn):
     """Si incident_status aún no refleja el fallo, no decide ni registra el evento en el inbox"""
-    incident, failed = _out_of_stock(conn)
+    _, failed = _out_of_stock(conn)
     fake = FakeLlmClient([REFUND_PLAN])
     runner = AgentRunner(Replanner(fake, handler(), view_timeout=0.0), handler())
     # sin ejecutar el proyector: la vista no tiene la incidencia al día
