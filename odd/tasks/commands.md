@@ -20,9 +20,9 @@ Scenario names quoted verbatim from the repo specs; one test per scenario, docst
 
 Assumptions (marked, change freely):
 - A1 `RegisterCarrierNotice` assigns the `incident_id` deterministically from `carrier_notice_id` and uses it as `correlation_id` of `CarrierNoticeReceived`, so the whole incident is one trace and one `incident_id` per notice holds by construction.
-- A2 Rejection reasons not named by the specs: `invalid_command`, `incident_not_found`, `notice_not_found`, `incident_exists`, `action_not_allowed`, `invalid_plan`, `plan_exists`, `no_plan`, `completed_step_in_plan`, `step_not_found`, `step_not_requestable`, `dependencies_pending`, `compensation_pending`, `steps_pending`, `invalid_severity`, `personal_data_in_event`.
+- A2 Rejection reasons not named by the specs: `invalid_command`, `incident_not_found`, `notice_not_found`, `incident_exists`, `action_not_allowed`, `invalid_plan`, `plan_exists`, `no_plan`, `completed_step_in_plan`, `step_not_found`, `step_not_requestable`, `step_not_requested`, `dependencies_pending`, `compensation_pending`, `steps_pending`, `invalid_severity`, `personal_data_in_event`.
 - A3 `resolved` and `escalated` incidents both reject further commands with `incident_closed`.
-- A4 Deferred to phase 3/4: planner severity rule for `low`, generation retries, budget, `max_revisions`, compensation derivation and cancellation on `PlanRevised`, stale `plan_version` results, `compensating → compensated` transitions.
+- A4 Deferred to phase 3/4: planner severity rule for `low`, generation retries, budget, `max_revisions`, compensation derivation and cancellation on `PlanRevised`, stale `plan_version` results. (`compensating → compensated` is done in T5 when the `-comp` step completes.)
 - A5 Schema fix: `plan_steps.step_id` was a global primary key; migration `0003` makes it `(incident_id, step_id)` (with `compensates` as a composite reference).
 
 ## Tasks
@@ -32,11 +32,12 @@ Assumptions (marked, change freely):
 | T1 | A5 | inline | done (RED pk assert -> 47 passed; dev DB migrated) | 8b7e24d |
 | T2 | S1, S2, S3 | inline | done (RED import error -> 8 passed) | 14377d7 |
 | T3 | S4, S5, S6, S7 (handler core, notices, incidents, close, escalate) | inline | done (RED import error -> 12 passed) | 8107aed |
-| T4 | S8 (CreatePlan, RevisePlan) | inline | done (RED unsupported command -> 18 passed) | next commit |
-| T5 | S9, S10 (RequestStep, RecordStepResult) | inline | pending | |
+| T4 | S8 (CreatePlan, RevisePlan) | inline | done (RED unsupported command -> 18 passed) | ea1a793 |
+| T5 | S9, S10 (RequestStep, RecordStepResult) | inline | done (RED invalid_command -> 8 passed; suite 93) | next commit |
 
 Route evidence: sequential units over one module (handler) and shared rules; no Writer trigger reason. T1 is high risk (item 1) and gets its own commit.
 
 ## Log
 
 - L1 (2026-11-13) user: "Sí, fase 2" (after phase 1 + observability were verified).
+- L2 T1–T5 done. Dev DB `eda` migrated to 0003. Spec tension noted, not resolved: `CarrierNoticeReceived.raw_text` is carrier free text stored in the log, while event-backbone forbids personal data in events; the personal-data guard exempts only that field.
