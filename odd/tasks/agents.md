@@ -37,7 +37,7 @@ Assumptions (marked):
 | T3 | S7 (projector infra + incident_status + query) | inline | done | feat(projectors): incident_status view |
 | T4 | S8, S3 (agent unit of work + interpreter) | inline | done | feat(agents): interpreter and agent unit of work |
 | T5 | S4 (planner) | inline | done | feat(agents): planner |
-| T6 | S5 (replanner, budget, max revisions) | inline | pending | |
+| T6 | S5 (replanner, budget, max revisions) | inline | done | feat(agents): replanner |
 | T7 | S6 (writer + draft validation) | inline | pending | |
 | T8 | agent CLI entry point with tracing | inline | pending | |
 
@@ -54,3 +54,4 @@ Route evidence: units share the agent runtime and handler; sequential, no Writer
 - L7 (2026-11-13) T3 independent verifier: PASS, no blockers. Advisories: (a) A9 assumes no transaction holds a seq longer than gap_timeout (consider idle_in_transaction_session_timeout); (b) stale _gap_seen entries in a losing instance (memory only); (c) `-comp`/`compensating` view path untestable until phase 4 adds a compensation event; (d) no test escalates an incident that already has a plan.
 - L8 (2026-11-13) T4: RED (ModuleNotFoundError eda_retail.agents); GREEN 8/8 test_interpreter.py; suite 128 passed. AgentRunner: inbox.seen before the LLM, decide outside transactions, one transaction for inbox + commands + RecordLlmCall; concurrency_conflict rolls back and re-decides (max 3), recording all spent calls. EventConsumer accepts UnitOfWork handlers and exposes process(event). Ambiguous notice: cause unknown with severity low is rejected in code (regenerated), not coerced.
 - L9 (2026-11-13) T5: RED (ModuleNotFoundError agents.planner); GREEN 8/8 test_planner.py. Business check of LLM plans = CommandHandler.validate (dry run of the real command, rolled back before appending events: no seq gaps). Planner-level tests cover llm-boundaries scenarios "Plan sin campo obligatorio", "Tres planes inválidos seguidos", "Presupuesto de tokens agotado" with the escalation event.
+- L10 (2026-11-13) T6: RED (ModuleNotFoundError agents.replanner); GREEN 5/5 test_replanner.py; suite 141 passed. Replanner reads the plan only from incident_status, waits (bounded, view_timeout 5 s) until the view shows the failed step, else raises ViewNotCaughtUp before touching the inbox. max_revisions = plan_version - 1 >= MAX_PLAN_REVISIONS, escalated without an LLM call. step_id stability enforced in code (step_id_changed). Retryable and -comp failures are ignored (orchestrator, phase 4).

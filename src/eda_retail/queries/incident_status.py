@@ -6,6 +6,8 @@ para que el cliente sepa cuán actual es (consistencia eventual declarada).
 
 from __future__ import annotations
 
+import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -43,3 +45,23 @@ def get_incident_status(conn: psycopg.Connection, incident_id: str) -> IncidentS
     if row is None:
         return None
     return IncidentStatus(**row, last_applied_seq=position)
+
+
+def wait_for_incident_status(
+    conn: psycopg.Connection,
+    incident_id: str,
+    ready: Callable[[IncidentStatus], bool],
+    *,
+    timeout: float,
+    interval: float = 0.1,
+) -> IncidentStatus | None:
+    """Espera, como mucho `timeout` segundos, a que la vista cumpla `ready` (consistencia
+    eventual). Devuelve None si no llega a tiempo. Nunca escribe."""
+    deadline = time.monotonic() + timeout
+    while True:
+        status = get_incident_status(conn, incident_id)
+        if status is not None and ready(status):
+            return status
+        if time.monotonic() >= deadline:
+            return None
+        time.sleep(interval)
