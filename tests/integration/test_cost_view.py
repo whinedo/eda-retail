@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from dataclasses import replace
 from decimal import Decimal
 
 from eda_retail.config import Settings
@@ -77,7 +78,8 @@ def test_cost_duplicate_event_does_not_change_view(conn, settings):
     publish(settings, events)  # los mismos eventos otra vez, con offsets nuevos
     _catch_up(settings, conn)
     after = _cost(settings, conn, incident)
-    assert after == before
+    assert after.applied != before.applied  # la posición avanza con los mensajes reenviados
+    assert replace(after, applied=before.applied) == before  # la vista no cambia
 
 
 def test_cost_read_right_after_write(conn, settings):

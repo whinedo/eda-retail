@@ -59,7 +59,7 @@ def test_e4_full_rebuild(base_settings):
     """Reconstrucción completa"""
     report = run_e4(base_settings, seed=6, incidents=6)
     views = report.metrics["views"]
-    assert set(views) == {"incident_status", "cost_per_incident", "audit_trail", "carrier_dashboard"}
+    assert set(views) == {"orders", "incident_status", "cost_per_incident", "audit_trail", "carrier_dashboard"}
     for v in views.values():
         assert v["identical"] and v["events_applied"] > 0 and v["seconds"] >= 0
     assert report.hypothesis == {"H4": True}
