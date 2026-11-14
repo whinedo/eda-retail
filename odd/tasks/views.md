@@ -17,6 +17,7 @@ Proposal approved by the user (L2). Existing scenarios in `specs/cqrs-views` and
 Assumptions (marked):
 - A1 Prices and effect costs are applied at query time so that a rebuilt view is identical regardless of configuration (H4).
 - A2 Migration 0006 drops `llm_cost` and `effects_cost` from `view_cost_per_incident`; views are rebuildable from the log, so no data is lost.
+- A3 `eda-projector rebuild` runs with no writers active (as in E4): a `seq` gap is an old rollback and is skipped at once (`gap_timeout` 0).
 
 ## Tasks
 
@@ -25,8 +26,8 @@ Assumptions (marked):
 | T1 | S1, S3, S4 migration 0006 + round-trip test | inline | done (RED 2 failed → GREEN 237 passed) | 78a2987 |
 | T2 | S1, S4, S5 cost projector + query | inline | done (RED collection error → GREEN 242 passed) | c98364d |
 | T3 | S2, S5 audit projector + query | inline | done (RED collection error → GREEN 246 passed) | ccade9b |
-| T4 | S3, S4, S5 carrier projector + query | inline | done (RED collection error → GREEN 250 passed) | (pending commit) |
-| T5 | S6 rebuild with fingerprint + CLI with four projectors | inline | pending | |
+| T4 | S3, S4, S5 carrier projector + query | inline | done (RED collection error → GREEN 250 passed) | 07f0ec8 |
+| T5 | S6 rebuild with fingerprint + CLI with four projectors | inline | done (RED collection error → GREEN 257 passed; dev DB: 4 views identical over 49 events) | (pending commit) |
 | T6 | specs/ scenarios, docs/README, `.env.example` text for the user | inline | pending | |
 
 Route evidence: each task is one understood unit of about 100–200 lines; no writer trigger (no parallel units, no context backstop).
@@ -35,3 +36,4 @@ Route evidence: each task is one understood unit of about 100–200 lines; no wr
 
 - L1 (2026-11-14, user): "Proponerme las specs y tareas de la fase 5 (vistas view_cost_per_incident, view_audit_trail, view_carrier_dashboard y sus consultas) y esperar mi visto bueno antes de escribir código."
 - L2 (2026-11-14, user): "Aprobada" — proposal S1–S6 with T1–T6 approved.
+- L3 (2026-11-14): T5 rebuild failed in the full suite for cost and carrier views. Cause: `test_view_counters_start_at_zero` (T1) inserted rows straight into the views, which no event backs; a correct rebuild drops them. Fix: that test now rolls back its rows (`force_rollback=True`). A replay upper bound was tried and reverted (not the cause; A3 covers quiet rebuilds). Assumption A3: rebuild runs with no writers active, so `seq` gaps are skipped at once (`gap_timeout` 0).

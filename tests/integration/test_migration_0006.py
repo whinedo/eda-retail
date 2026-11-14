@@ -61,15 +61,16 @@ def test_migration_0006_round_trip(scratch_db):
 def test_view_counters_start_at_zero(conn):
     """Una fila nueva de las vistas de coste y del panel empieza con los contadores a cero"""
     incident, carrier = f"I-{uuid.uuid4().hex[:8]}", f"c-{uuid.uuid4().hex[:8]}"
-    with conn.transaction():
+    # Filas escritas a mano, no desde el log: se deshacen para no ensuciar las vistas de otros tests.
+    with conn.transaction(force_rollback=True):
         conn.execute("INSERT INTO view_cost_per_incident (incident_id) VALUES (%s)", (incident,))
         conn.execute("INSERT INTO view_carrier_dashboard (carrier) VALUES (%s)", (carrier,))
-    cost = conn.execute(
-        "SELECT claims, reissues, refunds_amount, last_seq FROM view_cost_per_incident WHERE incident_id = %s",
-        (incident,),
-    ).fetchone()
-    board = conn.execute(
-        "SELECT incidents, last_seq FROM view_carrier_dashboard WHERE carrier = %s", (carrier,)
-    ).fetchone()
+        cost = conn.execute(
+            "SELECT claims, reissues, refunds_amount, last_seq FROM view_cost_per_incident WHERE incident_id = %s",
+            (incident,),
+        ).fetchone()
+        board = conn.execute(
+            "SELECT incidents, last_seq FROM view_carrier_dashboard WHERE carrier = %s", (carrier,)
+        ).fetchone()
     assert (cost["claims"], cost["reissues"], cost["refunds_amount"], cost["last_seq"]) == (0, 0, 0, 0)
     assert (board["incidents"], board["last_seq"]) == (0, 0)
