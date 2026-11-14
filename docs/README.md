@@ -13,18 +13,18 @@ Regla de diseño: **el LLM propone y el código dispone**. Ningún LLM ejecuta e
 ```mermaid
 flowchart LR
   IN["Aviso del transportista<br/>eda-notice o front"]
-  INK["intake<br/>command handler"]
+  INK["intake<br/>(agregado)"]
   BUS[("Kafka eda.events<br/>solo eventos")]
-  INT["Intérprete<br/>LLM + command handler"]
+  INT["Intérprete<br/>(LLM)"]
   ORQ["Saga<br/>orquestador"]
-  PLN["Planificador<br/>LLM + command handler"]
-  RPL["Replanificador<br/>LLM + command handler"]
-  EXE["Ejecutores e inventory<br/>command handlers"]
+  PLN["Planificador<br/>(LLM)"]
+  RPL["Replanificador<br/>(LLM)"]
+  EXE["Ejecutores e inventory<br/>(agregados)"]
   RED["Agente redactor<br/>aviso y reclamación"]
   IDS[("effect_keys<br/>de cada ejecutor")]
-  PRJ["Proyectores"]
+  PRJ["Proyectores<br/>(consulta CQRS)"]
   VW[("Proyecciones<br/>view_orders, cost_per_incident…")]
-  ELOG["event_log<br/>vista del log"]
+  ELOG["event_log<br/>(consulta CQRS)"]
   WEB["Front web"]
 
   IN == "(1) RegisterCarrierNotice" ==> INK
@@ -58,7 +58,7 @@ flowchart LR
   class IN,WEB ext
 ```
 
-Azul: agentes con LLM (proponen). Verde: código determinista (dispone). Gris: datos. Naranja: entrada y front. Flecha gruesa: comando REST síncrono e idempotente (`command_id`), que el command handler del sistema acepta o rechaza. Flecha fina: evento por Kafka. Punteada: consulta de solo lectura a una proyección. Los pasos (1) a (11) siguen una incidencia: la saga invoca un comando, el sistema escribe su estado y su evento en su outbox en una transacción, y la saga reacciona al evento cuando le llega. (a) a (c) son el lado de lectura. Cada sistema solo escribe en su esquema; los agentes con LLM nunca escriben eventos ni ejecutan efectos.
+Azul: agentes con LLM (proponen). Verde: código determinista (dispone). Gris: datos. Naranja: entrada y front. Flecha gruesa: comando REST síncrono e idempotente (`command_id`), que el sistema que lo recibe acepta o rechaza. Flecha fina: evento por Kafka. Punteada: consulta de solo lectura a una proyección. Los pasos (1) a (11) siguen una incidencia: la saga invoca un comando, el sistema escribe su estado y su evento en su outbox en una transacción, y la saga reacciona al evento cuando le llega. (a) a (c) son el lado de lectura. Cada sistema solo escribe en su esquema; los agentes con LLM nunca escriben eventos ni ejecutan efectos.
 
 ### Secuencia de la saga
 
@@ -75,7 +75,7 @@ sequenceDiagram
   Note over Orq,Rp: Flecha continua: comando REST síncrono con command_id (idempotente). La respuesta 202 solo confirma que el sistema lo acepta.<br/>Flecha abierta: evento por Kafka. La saga solo cambia de estado al consumir un evento, y cada comando tiene un plazo.
   Orq->>Pl: (1) CreatePlan
   Pl-->>Orq: 202
-  Pl-)Orq: (2) PlanCreated v1 (validado por su handler):<br/>notify_customer, file_claim, reserve_stock, reissue_shipment
+  Pl-)Orq: (2) PlanCreated v1 (validado por código):<br/>notify_customer, file_claim, reserve_stock, reissue_shipment
   par pasos independientes en paralelo
     Orq->>Av: (3.a) ExecuteStep notify_customer
   and
@@ -94,7 +94,7 @@ sequenceDiagram
     En-)Orq: (6) StepFailed
     Orq->>Rp: (7) RevisePlan (plan vigente, paso fallido, revisiones)
     Rp-->>Orq: 202
-    Rp-)Orq: (8) PlanRevised v2: reembolso en lugar de reenvío<br/>(validado por su handler: sin compensaciones, importe dentro del máximo)
+    Rp-)Orq: (8) PlanRevised v2: reembolso en lugar de reenvío<br/>(validado por código: sin compensaciones, importe dentro del máximo)
     Note over Orq,St: (9) El código de la saga deriva la compensación de reserve_stock<br/>y retiene issue_refund hasta que termine
     Orq->>St: (10) ExecuteStep release_stock<br/>(step_id reserve_stock-comp)
     alt La compensación termina bien
@@ -122,7 +122,7 @@ Operaciones y compensaciones de una pérdida de paquete, con los caminos de éxi
 flowchart LR
   subgraph CMD["Lado de comandos (escritura)"]
     SG["Saga<br/>(orquestador)"]
-    CH["Command handler del sistema<br/>(Aggregate)<br/>POST /commands/#lt;Comando#gt;"]
+    AG["Agregado<br/>POST /commands/#lt;Comando#gt;"]
     TX[("PostgreSQL, esquema del sistema<br/>inbox, estado y outbox<br/>en una transacción")]
   end
   K["Kafka<br/>eda.events<br/>solo eventos"]
@@ -133,9 +133,9 @@ flowchart LR
     EV[("event_log.events<br/>y offsets")]
     Q["Consultas<br/>front, CLI, experimentos<br/>y otros sistemas"]
   end
-  SG -- "(1) comando con command_id<br/>(idempotente, con reintentos)" --> CH
-  CH -- "(2) inbox, estado y eventos" --> TX
-  CH -. "202 aceptado<br/>o 422 rechazado" .-> SG
+  SG -- "(1) comando con command_id<br/>(idempotente, con reintentos)" --> AG
+  AG -- "(2) inbox, estado y eventos" --> TX
+  AG -. "202 aceptado<br/>o 422 rechazado" .-> SG
   TX -- "(3) relay de su outbox" --> K
   K -- "(4) evento de resultado" --> SG
   K -- "(5) consumen eventos,<br/>offset por partición" --> P
@@ -147,7 +147,7 @@ flowchart LR
   classDef code fill:#E6F6EC,stroke:#2E9E5B,color:#1d1d1f
   classDef data fill:#F1F1EE,stroke:#8A8A80,color:#1d1d1f
   classDef ext fill:#FFF3E0,stroke:#E08A2B,color:#1d1d1f
-  class SG,CH,P,EL code
+  class SG,AG,P,EL code
   class TX,V,K,EV data
   class Q ext
 ```
