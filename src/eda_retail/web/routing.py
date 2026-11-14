@@ -45,3 +45,17 @@ def node_condition(node: str) -> tuple[str, list[Any]]:
         consumes.append("(event_type = %s AND payload->>'action' = %s)")
         params.extend([STEP_REQUESTED, node.removeprefix(EXECUTOR_PREFIX)])
     return "(" + " OR ".join(["producer = %s", *consumes]) + ")", params
+
+
+def consumed_types(node: str) -> list[str]:
+    """Tipos de evento que consume un nodo, de las mismas declaraciones que `receivers`."""
+    if node == PROJECTORS:
+        return ["*"]
+    types: list[str] = []
+    if node == ORCHESTRATOR:
+        types.extend(ORCHESTRATOR_EVENT_TYPES)
+    if node in AGENTS:
+        types.append(AGENTS[node][0])
+    if node.startswith(EXECUTOR_PREFIX):
+        types.append(STEP_REQUESTED)
+    return types

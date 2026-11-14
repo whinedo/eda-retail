@@ -161,3 +161,48 @@ def test_stream_without_position_skips_existing_events(conn, database_url: str):
     _append(conn, incident, "ShipmentDelayed", {"incident_id": incident})
 
     assert _stream(database_url) == []
+
+
+def _llm_call(incident_id: str, agent: str, tokens_in: int, tokens_out: int, latency_ms: int, passed: bool) -> dict:
+    return {
+        "incident_id": incident_id,
+        "agent": agent,
+        "model": "fake",
+        "tokens_in": tokens_in,
+        "tokens_out": tokens_out,
+        "latency_ms": latency_ms,
+        "validation_passed": passed,
+        "attempt": 1,
+    }
+
+
+def test_llm_agent_metrics(conn, database_url: str):
+    """Métricas de un agente con LLM"""
+    agent = f"planner-{uuid.uuid4().hex[:6]}"  # agente propio: la base de tests es compartida
+    incident = _incident()
+    _append(conn, incident, "LlmCallRecorded", _llm_call(incident, agent, 100, 20, 1000, True), producer=agent)
+    _append(conn, incident, "LlmCallRecorded", _llm_call(incident, agent, 300, 40, 3000, False), producer=agent)
+
+    from eda_retail.web.nodes import llm_metrics
+
+    with read_only_connect(database_url) as ro:
+        metrics = llm_metrics(ro, agent)
+
+    assert metrics == {
+        "calls": 2, "tokens_in": 400, "tokens_out": 60, "avg_latency_ms": 2000, "validations_passed": 1,
+    }
+
+
+def test_node_detail(conn, database_url: str):
+    """Detalle de un nodo: descripción, tipos que consume y emite, y métricas del agente"""
+    incident = _incident()
+    _append(conn, incident, "ShipmentDelayed", {"incident_id": incident}, producer="interpreter")
+    client = TestClient(create_app(database_url=database_url), base_url="http://localhost")
+
+    body = client.get("/api/nodes/interpreter").json()
+
+    assert body["id"] == "interpreter" and body["kind"] == "llm" and body["description"]
+    assert body["consumes"] == ["CarrierNoticeReceived"]
+    assert "ShipmentDelayed" in body["emits"]
+    assert body["llm"]["calls"] >= 0
+    assert isinstance(body["up"], bool)
