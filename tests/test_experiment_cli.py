@@ -19,8 +19,8 @@ def test_one_command_per_experiment():
 
 def test_each_experiment_defaults_to_its_spec_size():
     """Sin --incidents, cada experimento usa el tamaño de su escenario en la spec"""
-    assert {e: incidents_for(parse_args([e])) for e in ("e1", "e2", "e3", "e4", "e5", "e7")} == {
-        "e1": 50, "e2": 50, "e3": 30, "e4": 200, "e5": 40, "e7": 50}
+    assert {e: incidents_for(parse_args([e])) for e in ("e1", "e2", "e3", "e4", "e5", "e6", "e7")} == {
+        "e1": 50, "e2": 50, "e3": 30, "e4": 200, "e5": 40, "e6": 50, "e7": 50}
     assert incidents_for(parse_args(["e4", "--incidents", "20"])) == 20
 
 
@@ -37,3 +37,11 @@ def test_llm_options_only_for_llm_experiments():
     """--llm, --repetitions y --threshold se rechazan en los experimentos con oráculo"""
     with pytest.raises(SystemExit):
         parse_args(["e1", "--llm", "ollama"])
+
+
+def test_e6_uses_ollama_with_three_repetitions_and_no_threshold():
+    """E6 se lanza con Ollama y tres repeticiones; H6 no tiene umbral"""
+    kw = experiment_kwargs(parse_args(["e6"]))
+    assert kw["llm"] is LLMS["ollama"] and kw["repetitions"] == 3 and kw["incidents"] == 50
+    with pytest.raises(SystemExit):
+        parse_args(["e6", "--threshold", "0.9"])

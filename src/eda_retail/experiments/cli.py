@@ -2,7 +2,7 @@
 (spec experiments, «Informe reproducible»).
 
 Usa la configuración de siempre (`.env`): PostgreSQL y Kafka de `docker compose`. Cada
-ejecución crea y borra su propia base de datos y su topic. Los experimentos con LLM real (E5)
+ejecución crea y borra su propia base de datos y su topic. Los experimentos con LLM real (E5 y E6)
 usan Ollama por defecto; `--llm oracle` los ejecuta con el oráculo, sin coste (decisión D2).
 """
 
@@ -20,6 +20,7 @@ from eda_retail.experiments.e2_crash import run_e2
 from eda_retail.experiments.e3_replan import run_e3
 from eda_retail.experiments.e4_rebuild import run_e4
 from eda_retail.experiments.e5_plan_quality import run_e5
+from eda_retail.experiments.e6_compare import run_e6
 from eda_retail.experiments.e7_audit import run_e7
 from eda_retail.experiments.oracle import Oracle
 from eda_retail.experiments.report import Report, write_report
@@ -27,11 +28,11 @@ from eda_retail.infra.logs import setup_logging
 from eda_retail.llm.ollama_client import OllamaClient
 
 EXPERIMENTS: dict[str, Callable[..., Report]] = {
-    "e1": run_e1, "e2": run_e2, "e3": run_e3, "e4": run_e4, "e5": run_e5, "e7": run_e7,
+    "e1": run_e1, "e2": run_e2, "e3": run_e3, "e4": run_e4, "e5": run_e5, "e6": run_e6, "e7": run_e7,
 }
 # Tamaño del escenario de cada experimento en la spec (E7 elige 10 de ellas al azar).
-DEFAULT_INCIDENTS = {"e1": 50, "e2": 50, "e3": 30, "e4": 200, "e5": 40, "e7": 50}
-LLM_EXPERIMENTS = {"e5"}  # con LLM real y repeticiones (spec «Repetición para el componente no determinista»)
+DEFAULT_INCIDENTS = {"e1": 50, "e2": 50, "e3": 30, "e4": 200, "e5": 40, "e6": 50, "e7": 50}
+LLM_EXPERIMENTS = {"e5", "e6"}  # con LLM real y repeticiones (spec «Repetición para el componente no determinista»)
 LLMS = {"ollama": lambda data: OllamaClient(), "oracle": lambda data: Oracle(data).client()}
 
 
@@ -41,13 +42,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=42, help="semilla del generador y de los fallos (42)")
     parser.add_argument("--incidents", type=int, help="número de incidencias (por defecto, el de la spec)")
     parser.add_argument("--out", default="experiments/results", help="carpeta de los informes")
-    parser.add_argument("--llm", choices=sorted(LLMS), help="LLM de E5 (ollama por defecto; oracle sin coste)")
-    parser.add_argument("--repetitions", type=int, help="repeticiones de E5 (3 por defecto, mínimo 3 en la spec)")
+    parser.add_argument("--llm", choices=sorted(LLMS), help="LLM de E5 y E6 (ollama por defecto; oracle sin coste)")
+    parser.add_argument("--repetitions", type=int, help="repeticiones de E5 y E6 (3 por defecto, mínimo 3 en la spec)")
     parser.add_argument("--threshold", type=float, help="umbral de acierto de H5 (0.8 por defecto)")
     args = parser.parse_args(argv)
     if args.experiment not in LLM_EXPERIMENTS and any(
             v is not None for v in (args.llm, args.repetitions, args.threshold)):
         parser.error("--llm, --repetitions y --threshold solo se usan en " + ", ".join(sorted(LLM_EXPERIMENTS)))
+    if args.threshold is not None and args.experiment != "e5":
+        parser.error("--threshold solo se usa en e5 (H6 no tiene umbral)")
     return args
 
 
@@ -69,6 +72,7 @@ def main(argv: list[str] | None = None, settings: Settings | None = None) -> int
     args = parse_args(argv)
     setup_logging("experiment")
     logging.getLogger("eda_retail").setLevel(logging.WARNING)  # el informe es la salida
+    logging.getLogger("alembic").setLevel(logging.WARNING)  # las migraciones de cada base de datos aislada
     report = EXPERIMENTS[args.experiment](settings or load_settings(), **experiment_kwargs(args))
     path = write_report(report, args.out)
     for name, ok in report.hypothesis.items():
