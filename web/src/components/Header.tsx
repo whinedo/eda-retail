@@ -11,13 +11,16 @@ function Pill({ ok, children }: { ok: boolean | null; children: string }) {
 }
 
 // Presentacional: estado de la infraestructura y de los procesos.
-export function Header({ health }: { health: HealthState }) {
+export function Header({ health, jaegerUrl }: { health: HealthState; jaegerUrl: string }) {
   return (
     <header className="header">
       <div className="header__title">
         <strong>EDA Retail</strong>
         <span>Incidencias logísticas · PoC académica</span>
       </div>
+      <a className="header__link" href={jaegerUrl} target="_blank" rel="noopener noreferrer">
+        Jaeger
+      </a>
       <ul className="header__status" aria-label="Estado de la infraestructura">
         {health.kind === "loading" && <Pill ok={null}>Comprobando…</Pill>}
         {health.kind === "offline" && <Pill ok={false}>Backend: sin conexión</Pill>}

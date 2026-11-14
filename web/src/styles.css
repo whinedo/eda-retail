@@ -685,3 +685,16 @@ button:disabled {
 .metric strong {
   font-size: 18px;
 }
+
+.header__link {
+  margin-left: auto;
+  margin-right: 12px;
+  color: var(--llm-fg);
+  font-size: 13px;
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.header__link:hover {
+  text-decoration: underline;
+}

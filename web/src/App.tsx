@@ -7,6 +7,7 @@ import { NodeDetailPanel } from "./components/NodeDetail";
 import type { Highlight } from "./components/SystemMap";
 import { SystemMapPanel } from "./components/SystemMapPanel";
 import { type OpenStream, openEventSource } from "./useCommandRun";
+import { useJaegerUrl } from "./useConfig";
 import { useHealth } from "./useHealth";
 import { useLiveEvents } from "./useLiveEvents";
 
@@ -14,6 +15,7 @@ import { useLiveEvents } from "./useLiveEvents";
 export default function App({ client, openStream = openEventSource }: { client?: ApiClient; openStream?: OpenStream }) {
   const api = useMemo(() => client ?? createApiClient(), [client]);
   const health = useHealth(api);
+  const jaegerUrl = useJaegerUrl(api);
   const events = useLiveEvents(api, openStream);
   const [selectedNode, setSelectedNode] = useState<string | null>(null);
   // Comunicación en curso: el último evento recibido en vivo resalta su camino en el mapa.
@@ -25,7 +27,7 @@ export default function App({ client, openStream = openEventSource }: { client?:
 
   return (
     <div className="app">
-      <Header health={health} />
+      <Header health={health} jaegerUrl={jaegerUrl} />
       <CommandPanel client={api} openStream={openStream} />
       <main className="main">
         <SystemMapPanel
@@ -50,6 +52,7 @@ export default function App({ client, openStream = openEventSource }: { client?:
           node={events.node}
           hasMore={events.hasMore}
           error={events.error}
+          jaegerUrl={jaegerUrl}
           onIncidentChange={events.setIncidentId}
           onClearNode={() => events.setNode(null)}
           onTogglePause={events.paused ? events.resume : events.pause}

@@ -43,6 +43,7 @@ function row(seq: number, overrides: Partial<EventRow> = {}): EventRow {
     offset: null,
     causation_id: null,
     payload: {},
+    trace_id: null,
     ...overrides,
   };
 }
@@ -71,6 +72,7 @@ function Harness({ api }: { api: ApiClient }) {
         <NodeDetailPanel client={api} nodeId={selected} onFilter={events.setNode} onClose={() => setSelected(null)} />
       )}
       <EventsPanel
+        jaegerUrl="http://localhost:16686"
         rows={events.rows}
         paused={events.paused}
         incidentId={events.incidentId}

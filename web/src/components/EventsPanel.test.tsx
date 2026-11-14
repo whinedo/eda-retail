@@ -15,6 +15,7 @@ function row(seq: number, overrides: Partial<EventRow> = {}): EventRow {
     receivers: ["orchestrator", "projectors"],
     incident_id: "INC-0007",
     plan_version: 1,
+    trace_id: null,
     partition: null,
     offset: null,
     causation_id: null,
@@ -31,7 +32,7 @@ function setup(props: Partial<EventsPanelProps> = {}) {
     onLoadMore: vi.fn(),
   };
   render(
-    <EventsPanel rows={[row(1303)]} paused={false} incidentId="" node={null} hasMore={false} error={null} {...handlers} {...props} />,
+    <EventsPanel rows={[row(1303)]} paused={false} incidentId="" node={null} hasMore={false} error={null} jaegerUrl="http://localhost:16686" {...handlers} {...props} />,
   );
   return { ...handlers, user: userEvent.setup() };
 }
@@ -48,6 +49,7 @@ const COLUMNS = [
   "event_id",
   "causation_id",
   "payload",
+  "traza",
 ];
 
 const cells = (seq: number) =>
@@ -150,5 +152,23 @@ describe("Panel de eventos intercambiados", () => {
     setup({ hasMore: false });
 
     expect(screen.queryByRole("button", { name: "Cargar más" })).not.toBeInTheDocument();
+  });
+
+  it("Ver la traza de un evento: el enlace abre la traza en Jaeger en otra pestaña", () => {
+    setup({ rows: [row(1303, { trace_id: "4bf92f3577b34da6a3ce929d0e0e4736" })] });
+
+    const link = screen.getByRole("link", { name: "ver traza" });
+
+    expect(link).toHaveAttribute("href", "http://localhost:16686/trace/4bf92f3577b34da6a3ce929d0e0e4736");
+    expect(link).toHaveAttribute("target", "_blank");
+    expect(link.getAttribute("rel")).toContain("noopener");
+  });
+
+  it("Evento sin traza: la columna muestra — y no hay enlace", () => {
+    setup({ rows: [row(1303, { trace_id: null })] });
+
+    expect(screen.queryByRole("link", { name: "ver traza" })).not.toBeInTheDocument();
+    const cells = screen.getAllByRole("cell");
+    expect(cells[cells.length - 1]).toHaveTextContent("—");
   });
 });

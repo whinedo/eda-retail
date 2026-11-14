@@ -38,6 +38,7 @@ from eda_retail.web.health import HealthChecker, check_kafka, check_ollama, chec
 from eda_retail.web.nodes import node_detail
 from eda_retail.web.stream import event_stream, start_seq
 from eda_retail.web.topology import EDGES, NODES, node
+from eda_retail.web.traces import jaeger_ui_url
 
 # Orígenes admitidos: http(s) en localhost, 127.0.0.1 o ::1, con cualquier puerto
 # (el servidor de Vite en desarrollo y el propio backend).
@@ -157,6 +158,10 @@ def create_app(
             "nodes": [n.as_dict() for n in NODES],
             "edges": [{"source": source, "target": target} for source, target in EDGES],
         }
+
+    @app.get("/api/config")
+    def config() -> dict:
+        return {"jaeger_ui_url": jaeger_ui_url()}
 
     @app.get("/api/health")
     def health_report() -> dict:

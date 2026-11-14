@@ -7,6 +7,7 @@ import uuid
 import psycopg
 import pytest
 from fastapi.testclient import TestClient
+from psycopg.types.json import Jsonb
 
 from eda_retail.events.envelope import new_event
 from eda_retail.infra.event_store import append_events
@@ -206,3 +207,33 @@ def test_node_detail(conn, database_url: str):
     assert "ShipmentDelayed" in body["emits"]
     assert body["llm"]["calls"] >= 0
     assert isinstance(body["up"], bool)
+
+
+def _set_trace_context(conn, seq: int, context: dict | None) -> None:
+    with conn.transaction():
+        conn.execute("UPDATE outbox SET trace_context = %s WHERE seq = %s", (Jsonb(context) if context else None, seq))
+
+
+def test_event_trace_id_in_page_and_stream(conn, client: TestClient, database_url: str):
+    """Ver la traza de un evento: la página y el stream llevan el trace_id de outbox.trace_context"""
+    incident = _incident()
+    seq = _append(conn, incident, "ShipmentDelayed", {"incident_id": incident})
+    _set_trace_context(conn, seq, {"traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"})
+
+    [row] = client.get("/api/events", params={"incident_id": incident}).json()["events"]
+    stream = TestClient(create_app(database_url=database_url, stream_max_polls=1), base_url="http://localhost")
+    text = stream.get("/api/events/stream", params={"after_seq": seq - 1}).text
+
+    assert row["trace_id"] == "4bf92f3577b34da6a3ce929d0e0e4736"
+    assert '"trace_id": "4bf92f3577b34da6a3ce929d0e0e4736"' in text
+
+
+def test_event_without_trace_context(conn, client: TestClient):
+    """Evento sin traza: trace_id es null"""
+    incident = _incident()
+    seq = _append(conn, incident, "ShipmentDelayed", {"incident_id": incident})
+    _set_trace_context(conn, seq, None)
+
+    [row] = client.get("/api/events", params={"incident_id": incident}).json()["events"]
+
+    assert row["trace_id"] is None
