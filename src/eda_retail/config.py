@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
+from decimal import Decimal
 
 
 def _env_bool(name: str, default: bool) -> bool:
@@ -11,6 +12,11 @@ def _env_bool(name: str, default: bool) -> bool:
     if raw is None or raw == "":
         return default
     return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _env_decimal(name: str) -> Decimal:
+    raw = os.environ.get(name)
+    return Decimal(raw) if raw else Decimal(0)
 
 
 def _database_url() -> str:
@@ -55,6 +61,12 @@ class Settings:
     otlp_endpoint: str = field(
         default_factory=lambda: os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4318")
     )
+    # Precios para la consulta de coste (la vista guarda solo hechos del log). Por defecto 0:
+    # Ollama es local.
+    llm_price_in_per_1k: Decimal = field(default_factory=lambda: _env_decimal("LLM_PRICE_IN_PER_1K"))
+    llm_price_out_per_1k: Decimal = field(default_factory=lambda: _env_decimal("LLM_PRICE_OUT_PER_1K"))
+    effect_cost_claim: Decimal = field(default_factory=lambda: _env_decimal("EFFECT_COST_CLAIM"))
+    effect_cost_reissue: Decimal = field(default_factory=lambda: _env_decimal("EFFECT_COST_REISSUE"))
 
 
 def load_settings() -> Settings:

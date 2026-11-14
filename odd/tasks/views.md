@@ -22,8 +22,8 @@ Assumptions (marked):
 
 | ID | Specs | Route | Status | Commit |
 | --- | --- | --- | --- | --- |
-| T1 | S1, S3, S4 migration 0006 + round-trip test | inline | done (RED 2 failed → GREEN 237 passed) | (pending commit) |
-| T2 | S1, S4, S5 cost projector + query | inline | pending | |
+| T1 | S1, S3, S4 migration 0006 + round-trip test | inline | done (RED 2 failed → GREEN 237 passed) | 78a2987 |
+| T2 | S1, S4, S5 cost projector + query | inline | done (RED collection error → GREEN 242 passed) | (pending commit) |
 | T3 | S2, S5 audit projector + query | inline | pending | |
 | T4 | S3, S4, S5 carrier projector + query | inline | pending | |
 | T5 | S6 rebuild with fingerprint + CLI with four projectors | inline | pending | |
