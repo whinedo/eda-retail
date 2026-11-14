@@ -66,6 +66,10 @@ class Settings:
     command_http_timeout_s: float = field(
         default_factory=lambda: float(os.environ.get("COMMAND_HTTP_TIMEOUT_S", "5"))
     )
+    # Plazo de un aviso aparcado por el intérprete hasta que llegue su pedido (design.md §4.3).
+    pending_notice_timeout_s: float = field(
+        default_factory=lambda: float(os.environ.get("PENDING_NOTICE_TIMEOUT_S", "300"))
+    )
     tracing_enabled: bool = field(default_factory=lambda: _env_bool("TRACING_ENABLED", True))
     otlp_endpoint: str = field(
         default_factory=lambda: os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4318")
