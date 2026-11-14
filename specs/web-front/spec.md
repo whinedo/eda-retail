@@ -146,7 +146,15 @@ Al seleccionar un nodo el front SHALL abrir un panel con su descripción, el est
 
 ### Requirement: Panel de eventos intercambiados
 
-El panel SHALL mostrar los eventos más recientes primero, con las columnas emisor, destino, tipo de evento y timestamp, y además seq, incident_id, plan, partición/offset, event_id, causation_id y payload. La tabla MUST ser más ancha que el panel y tener desplazamiento horizontal a la derecha, con la cabecera fija en el desplazamiento vertical. SHALL permitir filtrar por incidencia y pausar la actualización en vivo.
+El panel SHALL mostrar los eventos más recientes primero, con las columnas emisor, destino, tipo de evento y timestamp, y además seq, incident_id, plan, partición/offset, event_id, causation_id y payload. La tabla MUST ser más ancha que el panel y tener desplazamiento horizontal a la derecha, con la cabecera fija en el desplazamiento vertical. SHALL permitir filtrar por incidencia y pausar la actualización en vivo. La altura del panel SHALL poder cambiarse, solo en vertical, con un separador entre el mapa y el panel: arrastrándolo o, con el separador enfocado, con las flechas arriba y abajo (20 px por pulsación) e Inicio y Fin. La altura MUST quedar entre 96 px (la barra y la cabecera de la tabla) y la que deja al mapa al menos 160 px; el mapa ocupa el resto. La altura elegida se recuerda en ese navegador.
+
+#### Scenario: Reducir el panel para ver el mapa
+
+- **GIVEN** el panel de eventos a 340 px de alto
+- **WHEN** el usuario arrastra el separador 200 px hacia abajo
+- **THEN** el panel mide 140 px y el mapa gana esos 200 px
+- **AND** el ancho de las columnas no cambia
+- **AND** si sigue arrastrando hacia abajo, el panel no baja de 96 px
 
 #### Scenario: Desplazamiento lateral
 

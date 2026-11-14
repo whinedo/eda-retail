@@ -1,15 +1,17 @@
-import { useCallback, useMemo, useState } from "react";
+import { type CSSProperties, useCallback, useMemo, useState } from "react";
 import { type ApiClient, createApiClient } from "./api/client";
 import { CommandPanel } from "./components/CommandPanel";
 import { EventsPanel } from "./components/EventsPanel";
 import { Header } from "./components/Header";
 import { NodeDetailPanel } from "./components/NodeDetail";
+import { PanelResizer } from "./components/PanelResizer";
 import type { Highlight } from "./components/SystemMap";
 import { SystemMapPanel } from "./components/SystemMapPanel";
 import { type OpenStream, openEventSource } from "./useCommandRun";
 import { useJaegerUrl } from "./useConfig";
 import { useHealth } from "./useHealth";
 import { useLiveEvents } from "./useLiveEvents";
+import { usePanelHeight } from "./usePanelHeight";
 
 // `openStream` debe ser estable entre renders: cambiarlo reabre el stream de eventos.
 export default function App({ client, openStream = openEventSource }: { client?: ApiClient; openStream?: OpenStream }) {
@@ -19,6 +21,7 @@ export default function App({ client, openStream = openEventSource }: { client?:
   const events = useLiveEvents(api, openStream);
   const [selectedNode, setSelectedNode] = useState<string | null>(null);
   const [commandRunning, setCommandRunning] = useState(false);
+  const panel = usePanelHeight();
   const [resetKey, setResetKey] = useState(0);
   const { reset: resetEvents } = events;
   // Reinicio de la vista: solo estado del front; no se escribe nada en el backend.
@@ -38,7 +41,7 @@ export default function App({ client, openStream = openEventSource }: { client?:
     <div className="app">
       <Header health={health} jaegerUrl={jaegerUrl} onReset={resetView} resetDisabled={commandRunning} />
       <CommandPanel client={api} openStream={openStream} resetKey={resetKey} onRunningChange={setCommandRunning} />
-      <main className="main">
+      <main className="main" style={{ "--events-height": `${panel.height}px` } as CSSProperties}>
         <SystemMapPanel
           client={api}
           health={health}
@@ -54,6 +57,7 @@ export default function App({ client, openStream = openEventSource }: { client?:
             onClose={() => setSelectedNode(null)}
           />
         )}
+        <PanelResizer height={panel.height} min={panel.min} max={panel.max} onChange={panel.setHeight} />
         <EventsPanel
           rows={events.rows}
           paused={events.paused}

@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import App from "./App";
@@ -223,5 +223,58 @@ describe("Reinicio de la vista", () => {
     expect(screen.getByRole("log", { name: "Salida" })).toHaveTextContent("Sin ejecuciones todavía");
     expect(api.runCommand).toHaveBeenCalledTimes(writes);
     expect(api.sendInput).not.toHaveBeenCalled();
+  });
+});
+
+describe("Altura del panel de eventos", () => {
+  const height = () => screen.getByRole("main").style.getPropertyValue("--events-height");
+
+  it("Reducir el panel para ver el mapa: arrastrar el separador 200 px abajo lo deja en 140 px, nunca menos de 96", () => {
+    window.localStorage.clear();
+    render(<App client={client()} openStream={openStream} />);
+    const separator = screen.getByRole("separator", { name: "Altura del panel de eventos" });
+    expect(separator).toHaveAttribute("aria-orientation", "horizontal");
+    expect(height()).toBe("340px");
+
+    fireEvent.mouseDown(separator, { clientY: 500 });
+    fireEvent.mouseMove(window, { clientY: 700 });
+    expect(height()).toBe("140px");
+    expect(separator).toHaveAttribute("aria-valuenow", "140");
+    fireEvent.mouseMove(window, { clientY: 900 });
+    fireEvent.mouseUp(window);
+    expect(height()).toBe("96px");
+
+    fireEvent.mouseMove(window, { clientY: 100 });
+    expect(height()).toBe("96px"); // tras soltar, mover el ratón no cambia nada
+  });
+
+  it("con el teclado: flechas de 20 px, Inicio al mínimo, y se recuerda al volver a abrir", () => {
+    window.localStorage.clear();
+    const { unmount } = render(<App client={client()} openStream={openStream} />);
+    const separator = screen.getByRole("separator", { name: "Altura del panel de eventos" });
+
+    fireEvent.keyDown(separator, { key: "ArrowDown" });
+    expect(height()).toBe("320px");
+    fireEvent.keyDown(separator, { key: "ArrowUp" });
+    fireEvent.keyDown(separator, { key: "ArrowUp" });
+    expect(height()).toBe("360px");
+    fireEvent.keyDown(separator, { key: "Home" });
+    expect(height()).toBe("96px");
+    unmount();
+
+    render(<App client={client()} openStream={openStream} />);
+    expect(height()).toBe("96px");
+  });
+
+  it("no deja al mapa menos de 160 px", () => {
+    window.localStorage.clear();
+    render(<App client={client()} openStream={openStream} />);
+    const separator = screen.getByRole("separator", { name: "Altura del panel de eventos" });
+
+    fireEvent.keyDown(separator, { key: "End" });
+
+    // jsdom: ventana de 768 px; cabecera 56 px y separador 6 px → 768 − 56 − 6 − 160.
+    expect(height()).toBe("546px");
+    expect(separator).toHaveAttribute("aria-valuemax", "546");
   });
 });
