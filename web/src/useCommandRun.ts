@@ -85,5 +85,14 @@ export function useCommandRun(client: ApiClient, openStream: OpenStream = openEv
     [client, run],
   );
 
-  return { run, start, sendLine };
+  // Vuelve al estado inicial (sin ejecuciones). Una ejecución en curso no se toca.
+  const reset = useCallback(() => {
+    setRun((current) => {
+      if (current.status === "running") return current;
+      stream.current?.close();
+      return { status: "idle" };
+    });
+  }, []);
+
+  return { run, start, sendLine, reset };
 }

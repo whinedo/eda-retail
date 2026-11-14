@@ -147,6 +147,48 @@ describe("useLiveEvents", () => {
     expect(result.current.hasMore).toBe(false);
   });
 
+  it("Resetear la vista: vacía el panel, quita filtros, pausa y resaltado, y abre el stream sin posición", async () => {
+    const { getEvents, openStream, result } = setup();
+    await waitFor(() => expect(openStream).toHaveBeenCalledTimes(1));
+    act(() => {
+      result.current.setIncidentId("INC-0007");
+      result.current.pause();
+    });
+    await waitFor(() => expect(openStream).toHaveBeenCalledTimes(2));
+    FakeStream.last.emit(row(1304));
+    const calls = getEvents.mock.calls.length;
+
+    act(() => result.current.reset());
+
+    await waitFor(() => expect(openStream).toHaveBeenCalledTimes(3));
+    expect(openStream).toHaveBeenLastCalledWith("/api/events/stream");
+    expect(getEvents).toHaveBeenCalledTimes(calls);
+    expect(result.current.rows).toEqual([]);
+    expect(result.current.incidentId).toBe("");
+    expect(result.current.node).toBeNull();
+    expect(result.current.paused).toBe(false);
+    expect(result.current.lastEvent).toBeNull();
+    expect(result.current.hasMore).toBe(false);
+  });
+
+  it("Eventos tras el reinicio: solo los nuevos, también al cambiar de filtro, y sin Cargar más", async () => {
+    const { getEvents, openStream, result } = setup();
+    await waitFor(() => expect(openStream).toHaveBeenCalledTimes(1));
+    act(() => result.current.reset());
+    await waitFor(() => expect(openStream).toHaveBeenCalledTimes(2));
+    const calls = getEvents.mock.calls.length;
+
+    FakeStream.last.emit(row(1291));
+    expect(seqs(result.current.rows)).toEqual([1291]);
+    expect(result.current.hasMore).toBe(false);
+
+    act(() => result.current.setNode("planner"));
+    await waitFor(() => expect(openStream).toHaveBeenLastCalledWith("/api/events/stream?after_seq=1290"));
+    expect(getEvents).toHaveBeenCalledTimes(calls);
+    FakeStream.last.emit(row(1291));
+    expect(seqs(result.current.rows)).toEqual([1291]);
+  });
+
   it("cierra el stream al desmontar", async () => {
     const { openStream, unmount } = setup();
     await waitFor(() => expect(openStream).toHaveBeenCalled());

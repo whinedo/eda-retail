@@ -11,13 +11,34 @@ function Pill({ ok, children }: { ok: boolean | null; children: string }) {
 }
 
 // Presentacional: estado de la infraestructura y de los procesos.
-export function Header({ health, jaegerUrl }: { health: HealthState; jaegerUrl: string }) {
+export function Header({
+  health,
+  jaegerUrl,
+  onReset,
+  resetDisabled = false,
+}: {
+  health: HealthState;
+  jaegerUrl: string;
+  onReset?: () => void;
+  resetDisabled?: boolean;
+}) {
   return (
     <header className="header">
       <div className="header__title">
         <strong>EDA Retail</strong>
         <span>Incidencias logísticas · PoC académica</span>
       </div>
+      {onReset && (
+        <button
+          type="button"
+          className="header__reset"
+          onClick={onReset}
+          disabled={resetDisabled}
+          title={resetDisabled ? "Espera a que termine el comando" : "Vacía la vista y vuelve a empezar"}
+        >
+          Resetear simulación
+        </button>
+      )}
       <a className="header__link" href={jaegerUrl} target="_blank" rel="noopener noreferrer">
         Jaeger
       </a>

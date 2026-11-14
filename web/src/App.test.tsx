@@ -178,3 +178,50 @@ describe("Panel de eventos en la pantalla", () => {
     expect(link.getAttribute("rel")).toContain("noopener");
   });
 });
+
+describe("Reinicio de la vista", () => {
+  it("Resetear la vista: panel vacío, detalle cerrado, salida en reposo y nada escrito en el backend", async () => {
+    FakeStream.all = [];
+    const topology = {
+      nodes: [{ id: "planner", label: "Planificador", kind: "llm" as const, description: "", monitored: true }],
+      edges: [],
+    };
+    const detail: NodeDetail = {
+      id: "planner", label: "Planificador", kind: "llm", description: "Propone el plan.", monitored: true,
+      up: true, consumes: ["ShipmentDelayed"], emits: ["PlanCreated"], llm: null,
+    };
+    const event: EventRow = {
+      seq: 1290, event_id: "e1290", event_type: "PlanCreated", occurred_at: "2026-11-14T16:00:00+00:00",
+      sender: "planner", receiver: "orchestrator", receivers: ["orchestrator"], incident_id: "INC-1",
+      plan_version: 1, partition: null, offset: null, causation_id: null, payload: {}, trace_id: null,
+    };
+    const api = client({
+      getTopology: vi.fn(async () => topology),
+      getNode: vi.fn(async () => detail),
+      getEvents: vi.fn(async () => ({ events: [event], next_before_seq: null })),
+      runCommand: vi.fn(async () => ({ run_id: "run-1", argv: ["scripts/notice.sh", "seed"] })),
+    });
+    const user = userEvent.setup();
+    render(<App client={api} openStream={openStream} />);
+    await user.click(await screen.findByRole("button", { name: /^seed/ }));
+    const run = FakeStream.all.find((stream) => stream.url === "/api/commands/run-1/stream")!;
+    run.emit("output", { text: "datos cargados\n" });
+    const reset = screen.getByRole("button", { name: "Resetear simulación" });
+    expect(reset).toBeDisabled();
+    run.emit("exit", { code: 0 });
+    await user.click(await screen.findByRole("button", { name: "Planificador" }));
+    expect(await screen.findByRole("button", { name: "Filtrar eventos" })).toBeInTheDocument();
+    const panel = screen.getByRole("region", { name: "Eventos intercambiados" });
+    expect(within(panel).getByText("PlanCreated")).toBeInTheDocument();
+    const writes = (api.runCommand as ReturnType<typeof vi.fn>).mock.calls.length;
+
+    await user.click(reset);
+
+    expect(within(panel).queryByText("PlanCreated")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Filtrar eventos" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Planificador" })).toHaveAttribute("aria-pressed", "false");
+    expect(screen.getByRole("log", { name: "Salida" })).toHaveTextContent("Sin ejecuciones todavía");
+    expect(api.runCommand).toHaveBeenCalledTimes(writes);
+    expect(api.sendInput).not.toHaveBeenCalled();
+  });
+});

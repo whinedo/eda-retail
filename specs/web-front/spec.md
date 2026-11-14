@@ -10,7 +10,7 @@ Mockups validados: `docs/front/1-vista-general.png`, `2-ejecutando-send-loss.png
 
 ### Requirement: Distribución de la pantalla
 
-La pantalla SHALL tener una cabecera con el estado de la infraestructura, un menú de comandos a la izquierda, el mapa de sistemas en el área principal y el panel de eventos intercambiados en la parte inferior.
+La pantalla SHALL tener una cabecera con el estado de la infraestructura, un menú de comandos a la izquierda, el mapa de sistemas en el área principal y el panel de eventos intercambiados en la parte inferior. El menú de comandos SHALL ser una columna estrecha (240 px) para dejar al mapa el mayor espacio posible.
 
 #### Scenario: Vista en reposo
 
@@ -18,6 +18,31 @@ La pantalla SHALL tener una cabecera con el estado de la infraestructura, un men
 - **WHEN** se abre el front
 - **THEN** se muestran el menú, el mapa y el panel de eventos con los últimos eventos
 - **AND** el área de salida del menú indica que no hay ejecuciones
+
+### Requirement: Reinicio de la vista
+
+La cabecera SHALL ofrecer el botón «Resetear simulación», que devuelve la pantalla al punto de partida para lanzar un comando: vacía el panel de eventos, deja el área de salida del menú sin ejecuciones, quita los filtros de incidencia y nodo, cierra el detalle del nodo, quita el camino resaltado del mapa y reanuda el panel si estaba en pausa. Después, el panel SHALL mostrar solo los eventos añadidos al log tras el reinicio. El reinicio es solo de la vista: MUST NOT escribir en la base de datos (el log es inmutable y el front es de solo lectura). El botón SHALL estar desactivado mientras se ejecuta un comando. Al recargar la página se vuelve a ver la página de eventos completa.
+
+#### Scenario: Resetear la vista
+
+- **GIVEN** el panel con eventos, el detalle de un nodo abierto, un filtro de incidencia y la salida de un comando terminado
+- **WHEN** el usuario pulsa «Resetear simulación»
+- **THEN** el panel de eventos queda vacío y sin filtros, el detalle del nodo se cierra y el mapa no resalta ningún camino
+- **AND** el área de salida del menú indica que no hay ejecuciones
+- **AND** no se hace ninguna petición que escriba en el backend
+
+#### Scenario: Eventos tras el reinicio
+
+- **GIVEN** la vista reseteada cuando el log llegaba hasta `seq` 1290
+- **WHEN** se añade al log el evento 1291
+- **THEN** el panel muestra solo el 1291
+- **AND** no ofrece «Cargar más» con los eventos anteriores al reinicio
+
+#### Scenario: Reinicio con un comando en ejecución
+
+- **GIVEN** un comando en ejecución
+- **WHEN** el usuario mira la cabecera
+- **THEN** «Resetear simulación» está desactivado
 
 ### Requirement: Menú de comandos
 

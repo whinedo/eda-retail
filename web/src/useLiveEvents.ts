@@ -23,7 +23,8 @@ function errorMessage(error: unknown): string {
 }
 
 // Contenedor del panel de eventos: primera página, stream SSE desde el `seq` más alto,
-// filtros por incidencia y nodo, pausa con búfer y páginas anteriores.
+// filtros por incidencia y nodo, pausa con búfer y páginas anteriores. `reset` vacía la vista
+// y desde entonces solo sigue los eventos nuevos (no escribe nada en el backend).
 export function useLiveEvents(client: ApiClient, openStream: OpenStream = openEventSource) {
   const [incidentId, setIncidentId] = useState("");
   const [node, setNode] = useState<string | null>(null);
@@ -36,6 +37,10 @@ export function useLiveEvents(client: ApiClient, openStream: OpenStream = openEv
   const buffer = useRef<EventRow[]>([]);
   // Cada cambio de filtro abre una generación nueva; las respuestas de la anterior se descartan.
   const generation = useRef(0);
+  // Tras un reinicio no se pide la página de eventos: solo el stream. `floor` es el `seq` anterior
+  // al primer evento recibido tras el reinicio (null hasta recibirlo: stream sin posición).
+  const [resets, setResets] = useState(0);
+  const floor = useRef<number | null>(null);
 
   useEffect(() => {
     const current = ++generation.current;
@@ -44,6 +49,25 @@ export function useLiveEvents(client: ApiClient, openStream: OpenStream = openEv
     setRows([]);
     setNextBeforeSeq(null);
     setError(null);
+    const follow = (afterSeq: number | undefined) => {
+      source = openStream(eventsStreamUrl(afterSeq));
+      source.addEventListener("event", (message) => {
+        const row = JSON.parse(message.data) as EventRow;
+        if (resets > 0 && floor.current === null) floor.current = row.seq - 1;
+        // El mapa resalta la comunicación más reciente, aunque el panel la filtre o esté en pausa.
+        setLastEvent((last) => (last && last.seq >= row.seq ? last : row));
+        if (!matchesFilters(row, incidentId, node)) return;
+        if (pausedRef.current) buffer.current.push(row);
+        else setRows((rows) => mergeRows(rows, [row]));
+      });
+    };
+    if (resets > 0) {
+      follow(floor.current ?? undefined);
+      return () => {
+        generation.current++;
+        source?.close();
+      };
+    }
     const filters = { incidentId: incidentId || undefined, node: node ?? undefined };
     client
       .getEvents({ limit: PAGE_SIZE, ...filters })
@@ -51,16 +75,7 @@ export function useLiveEvents(client: ApiClient, openStream: OpenStream = openEv
         if (current !== generation.current) return;
         setRows(mergeRows([], page.events));
         setNextBeforeSeq(page.next_before_seq);
-        const highest = page.events.length ? Math.max(...page.events.map((r) => r.seq)) : undefined;
-        source = openStream(eventsStreamUrl(highest));
-        source.addEventListener("event", (message) => {
-          const row = JSON.parse(message.data) as EventRow;
-          // El mapa resalta la comunicación más reciente, aunque el panel la filtre o esté en pausa.
-          setLastEvent((last) => (last && last.seq >= row.seq ? last : row));
-          if (!matchesFilters(row, incidentId, node)) return;
-          if (pausedRef.current) buffer.current.push(row);
-          else setRows((rows) => mergeRows(rows, [row]));
-        });
+        follow(page.events.length ? Math.max(...page.events.map((r) => r.seq)) : undefined);
       })
       .catch((err) => {
         if (current === generation.current) setError(errorMessage(err));
@@ -69,7 +84,7 @@ export function useLiveEvents(client: ApiClient, openStream: OpenStream = openEv
       generation.current++;
       source?.close();
     };
-  }, [client, openStream, incidentId, node]);
+  }, [client, openStream, incidentId, node, resets]);
 
   const pause = useCallback(() => {
     pausedRef.current = true;
@@ -82,6 +97,17 @@ export function useLiveEvents(client: ApiClient, openStream: OpenStream = openEv
     const buffered = buffer.current;
     buffer.current = [];
     setRows((rows) => mergeRows(rows, buffered));
+  }, []);
+
+  const reset = useCallback(() => {
+    floor.current = null;
+    buffer.current = [];
+    pausedRef.current = false;
+    setPaused(false);
+    setLastEvent(null);
+    setIncidentId("");
+    setNode(null);
+    setResets((n) => n + 1);
   }, []);
 
   const loadMore = useCallback(async () => {
@@ -116,6 +142,7 @@ export function useLiveEvents(client: ApiClient, openStream: OpenStream = openEv
     loadMore,
     lastEvent,
     error,
+    reset,
   };
 }
 
