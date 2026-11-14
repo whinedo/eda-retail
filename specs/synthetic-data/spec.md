@@ -29,7 +29,14 @@ Con la misma semilla, el generador MUST producir exactamente el mismo conjunto.
 
 ### Requirement: Datos simulados de negocio
 
-El sistema SHALL simular pedidos, existencias por almacén, transportistas, correo y pagos, sin conexión con sistemas reales.
+El sistema SHALL simular pedidos, existencias por almacén, transportistas, correo y pagos, sin conexión con sistemas reales. Los pedidos y el stock de ejemplo son de `inventory`, que los carga con el comando `SeedSampleData` y publica un `OrderRegistered` por cada pedido nuevo.
+
+#### Scenario: Datos de ejemplo por comando
+
+- **GIVEN** `inventory` sin el pedido P-1001
+- **WHEN** atiende un `SeedSampleData` que lo incluye
+- **THEN** escribe el pedido en `inventory.orders` y `OrderRegistered` de P-1001 en `inventory.outbox`
+- **AND** otro `SeedSampleData` con los mismos datos no escribe ningún `OrderRegistered`
 
 #### Scenario: Reserva de stock simulada
 

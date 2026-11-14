@@ -18,7 +18,7 @@ Cada acción permitida SHALL tener un sistema que atiende con su command handler
 
 ### Requirement: Resultado explícito
 
-Todo `ExecuteStep` SHALL terminar en un `StepCompleted` o en un `StepFailed`. Además del evento genérico, el ejecutor publicará el evento de efecto correspondiente: `CustomerNotified`, `ClaimFiled`, `StockReserved`, `StockReleased`, `ShipmentReissued` o `RefundIssued`.
+Todo `ExecuteStep` SHALL terminar en un `StepCompleted` o en un `StepFailed`. Además del evento genérico, el ejecutor publicará el evento de efecto correspondiente cuando haya efecto: `CustomerNotified`, `ClaimFiled`, `StockReserved`, `StockReleased`, `ShipmentReissued` o `RefundIssued`. Una compensación que no encuentra nada que deshacer termina en `StepCompleted` sin evento de efecto.
 
 #### Scenario: Reclamación creada
 
@@ -26,6 +26,13 @@ Todo `ExecuteStep` SHALL terminar en un `StepCompleted` o en un `StepFailed`. Ad
 - **WHEN** el ejecutor lo procesa
 - **THEN** publica `ClaimFiled` con `claim_id`
 - **AND** publica `StepCompleted` con el mismo `step_id`
+
+#### Scenario: Liberación sin reserva
+
+- **GIVEN** una incidencia cuyo paso `reserve_stock` nunca llegó a reservar
+- **WHEN** `inventory` atiende el `ExecuteStep` de `reserve_stock-comp`
+- **THEN** publica `StepCompleted` con `released` falso
+- **AND** no publica `StockReleased` ni cambia el stock
 
 ### Requirement: Fallos clasificados
 
