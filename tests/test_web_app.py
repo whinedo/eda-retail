@@ -12,7 +12,7 @@ from eda_retail.web.db import read_only_connect
 
 @pytest.fixture
 def client() -> TestClient:
-    return TestClient(create_app())
+    return TestClient(create_app(), base_url="http://localhost")
 
 
 def test_ping_answers_without_origin(client: TestClient):
@@ -93,3 +93,17 @@ def test_read_only_connection_forces_read_only_transactions(monkeypatch: pytest.
 
     assert captured["url"] == "postgresql://eda:eda@localhost:5432/eda"
     assert "default_transaction_read_only=on" in captured["options"]
+
+
+@pytest.mark.parametrize("host", ["evil.example", "localhost.evil.example", "192.168.1.10:8000"])
+def test_foreign_host_is_rejected(host: str):
+    """Host ajeno: se rechaza con 403 (DNS rebinding)"""
+    client = TestClient(create_app(), base_url=f"http://{host}")
+    assert client.get("/api/ping").status_code == 403
+
+
+@pytest.mark.parametrize("host", ["localhost", "localhost:8000", "127.0.0.1:8000", "[::1]:8000"])
+def test_local_host_is_allowed(host: str):
+    """Las cabeceras Host de localhost se admiten, con o sin puerto"""
+    client = TestClient(create_app(), base_url=f"http://{host}")
+    assert client.get("/api/ping").status_code == 200
