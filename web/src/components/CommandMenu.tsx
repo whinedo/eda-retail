@@ -31,13 +31,15 @@ interface Props {
   run: CommandRun;
   // `send --text` deshabilitado salvo que el backend lo admita (WEB_FREE_TEXT).
   freeText?: boolean;
+  // `interactive` deshabilitado salvo que el backend lo admita (WEB_INTERACTIVE).
+  interactive?: boolean;
   onRun: (request: CommandRequest) => void;
   onSendLine: (line: string) => void;
 }
 
 // Presentacional: tarjetas de los comandos de scripts/notice.sh, salida y entrada interactiva.
 // «Preparación» (seed, sin eventos) va aparte de «Avisos» (los comandos que inician el flujo).
-export function CommandMenu({ run, freeText = false, onRun, onSendLine }: Props) {
+export function CommandMenu({ run, freeText = false, interactive = false, onRun, onSendLine }: Props) {
   const [text, setText] = useState("");
   const [timeout, setTimeout] = useState(String(DEFAULT_TIMEOUT));
   const [line, setLine] = useState("");
@@ -135,27 +137,29 @@ export function CommandMenu({ run, freeText = false, onRun, onSendLine }: Props)
           </div>
         )}
 
-        <div className={card("interactive")}>
-          <div className="inline">
-            <button
-              type="button"
-              className="link"
-              disabled={busy || !timeoutOk}
-              onClick={() => launch({ command: "interactive", timeout: timeoutValue })}
-            >
-              <code>interactive --timeout</code>
-            </button>
-            <input
-              type="number"
-              aria-label="timeout"
-              min={1}
-              max={600}
-              value={timeout}
-              onChange={(event) => setTimeout(event.target.value)}
-            />
+        {interactive && (
+          <div className={card("interactive")}>
+            <div className="inline">
+              <button
+                type="button"
+                className="link"
+                disabled={busy || !timeoutOk}
+                onClick={() => launch({ command: "interactive", timeout: timeoutValue })}
+              >
+                <code>interactive --timeout</code>
+              </button>
+              <input
+                type="number"
+                aria-label="timeout"
+                min={1}
+                max={600}
+                value={timeout}
+                onChange={(event) => setTimeout(event.target.value)}
+              />
+            </div>
+            <span>Menú interactivo que sigue cada incidencia hasta su cierre.</span>
           </div>
-          <span>Menú interactivo que sigue cada incidencia hasta su cierre.</span>
-        </div>
+        )}
       </section>
 
       <h2 id="output-title" className="section-label">

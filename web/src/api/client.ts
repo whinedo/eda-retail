@@ -92,6 +92,7 @@ export class ApiError extends Error {
 export interface FrontConfig {
   jaeger_ui_url: string;
   free_text_enabled: boolean;
+  interactive_enabled: boolean;
 }
 
 export interface ApiClient {
