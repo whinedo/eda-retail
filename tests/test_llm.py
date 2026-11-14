@@ -158,3 +158,13 @@ def test_missing_ollama_model_has_a_clear_error():
     request = LlmRequest(agent="interpreter", incident_id="I1", system="s", prompt="p", schema={})
     with pytest.raises(OllamaModelNotFound, match=r"no tiene el modelo 'llama3.1'.*ollama pull llama3.1"):
         client.complete(request)
+
+
+def test_temperature_is_configurable_for_experiments():
+    """La temperatura es 0 por defecto y configurable (repeticiones de E5 y E6)"""
+    sent = []
+    client = OllamaClient(host="http://ollama:11434", model="m", seed=3, temperature=0.7,
+                          post=lambda url, body, timeout: sent.append(body) or _reply(json.dumps(VALID_PLAN)))
+    client.complete(_request())
+    assert sent[0]["options"]["temperature"] == 0.7 and sent[0]["options"]["seed"] == 3
+    assert OllamaClient(host="http://ollama:11434", model="m").temperature == 0.0

@@ -33,7 +33,14 @@ EXPERIMENTS: dict[str, Callable[..., Report]] = {
 # Tamaño del escenario de cada experimento en la spec (E7 elige 10 de ellas al azar).
 DEFAULT_INCIDENTS = {"e1": 50, "e2": 50, "e3": 30, "e4": 200, "e5": 40, "e6": 50, "e7": 50}
 LLM_EXPERIMENTS = {"e5", "e6"}  # con LLM real y repeticiones (spec «Repetición para el componente no determinista»)
-LLMS = {"ollama": lambda data: OllamaClient(), "oracle": lambda data: Oracle(data).client()}
+LLMS = {"oracle": lambda data, repetition: Oracle(data).client()}
+LLM_CHOICES = ("ollama", "oracle")
+DEFAULT_TEMPERATURE = 0.7  # con temperatura 0 y la misma semilla, las repeticiones salen idénticas
+
+
+def ollama_factory(seed: int, temperature: float) -> Callable[..., Any]:
+    """Cada repetición con su propia semilla (`seed + n`) y la temperatura indicada."""
+    return lambda data, repetition: OllamaClient(seed=seed + repetition, temperature=temperature)
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -42,13 +49,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=42, help="semilla del generador y de los fallos (42)")
     parser.add_argument("--incidents", type=int, help="número de incidencias (por defecto, el de la spec)")
     parser.add_argument("--out", default="experiments/results", help="carpeta de los informes")
-    parser.add_argument("--llm", choices=sorted(LLMS), help="LLM de E5 y E6 (ollama por defecto; oracle sin coste)")
+    parser.add_argument("--llm", choices=LLM_CHOICES, help="LLM de E5 y E6 (ollama por defecto; oracle sin coste)")
     parser.add_argument("--repetitions", type=int, help="repeticiones de E5 y E6 (3 por defecto, mínimo 3 en la spec)")
     parser.add_argument("--threshold", type=float, help="umbral de acierto de H5 (0.8 por defecto)")
+    parser.add_argument("--temperature", type=float,
+                        help=f"temperatura de Ollama en E5 y E6 ({DEFAULT_TEMPERATURE} por defecto)")
     args = parser.parse_args(argv)
     if args.experiment not in LLM_EXPERIMENTS and any(
-            v is not None for v in (args.llm, args.repetitions, args.threshold)):
-        parser.error("--llm, --repetitions y --threshold solo se usan en " + ", ".join(sorted(LLM_EXPERIMENTS)))
+            v is not None for v in (args.llm, args.repetitions, args.threshold, args.temperature)):
+        parser.error("--llm, --repetitions, --threshold y --temperature solo se usan en "
+                     + ", ".join(sorted(LLM_EXPERIMENTS)))
     if args.threshold is not None and args.experiment != "e5":
         parser.error("--threshold solo se usa en e5 (H6 no tiene umbral)")
     return args
@@ -61,7 +71,8 @@ def incidents_for(args: argparse.Namespace) -> int:
 def experiment_kwargs(args: argparse.Namespace) -> dict[str, Any]:
     kwargs: dict[str, Any] = {"seed": args.seed, "incidents": incidents_for(args)}
     if args.experiment in LLM_EXPERIMENTS:
-        kwargs["llm"] = LLMS[args.llm or "ollama"]
+        temperature = args.temperature if args.temperature is not None else DEFAULT_TEMPERATURE
+        kwargs["llm"] = LLMS["oracle"] if args.llm == "oracle" else ollama_factory(args.seed, temperature)
         kwargs["repetitions"] = args.repetitions if args.repetitions is not None else 3
         if args.threshold is not None:
             kwargs["threshold"] = args.threshold

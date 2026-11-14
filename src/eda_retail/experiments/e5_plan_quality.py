@@ -31,10 +31,10 @@ from eda_retail.llm.schemas import PlanProposal
 from eda_retail.synthetic.generator import Dataset, SyntheticNotice
 from eda_retail.synthetic.generator import generate as generate_data
 
-LlmFactory = Callable[[Dataset], LlmClient]
+LlmFactory = Callable[[Dataset, int], LlmClient]  # (datos, número de repetición)
 
 
-def _oracle(data: Dataset) -> LlmClient:
+def _oracle(data: Dataset, repetition: int) -> LlmClient:
     return Oracle(data).client()
 
 
@@ -83,7 +83,8 @@ def _repetition(n: int, data: Dataset, llm: LlmClient, rules: BusinessRules) -> 
                                "expected": expected, "proposed": proposed, "reason": reason})
     total = [h for v in hits.values() for h in v]
     return {
-        "repetition": n, "accuracy": sum(total) / len(total) if total else None,
+        "repetition": n, "llm_seed": getattr(llm, "seed", None), "temperature": getattr(llm, "temperature", None),
+        "accuracy": sum(total) / len(total) if total else None,
         "by_cause": {c: sum(v) / len(v) for c, v in sorted(hits.items())},
         "llm_planned": len(total), "code_planned": code_planned, "mismatches": mismatches,
         "llm_calls": len(ev.calls), "tokens_in": sum(c.tokens_in for c in ev.calls),
@@ -98,7 +99,7 @@ def run_e5(base: Settings | None = None, *, seed: int = 42, incidents: int = 40,
     rules = BusinessRules()
     runs, model = [], "unknown"
     for n in range(1, repetitions + 1):
-        client = factory(data)
+        client = factory(data, n)
         model = getattr(client, "model", "unknown")
         runs.append(_repetition(n, data, client, rules))
     accuracies = [r["accuracy"] for r in runs if r["accuracy"] is not None]
@@ -109,6 +110,7 @@ def run_e5(base: Settings | None = None, *, seed: int = 42, incidents: int = 40,
     }
     return Report(
         experiment="E5", seed=seed, model=model,
-        config={"incidents": incidents, "repetitions": repetitions, "threshold": threshold},
+        config={"incidents": incidents, "repetitions": repetitions, "threshold": threshold,
+                "temperature": runs[0]["temperature"] if runs else None},
         metrics=metrics, hypothesis={"H5": mean >= threshold}, runs=runs,
     )

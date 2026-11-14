@@ -47,12 +47,15 @@ class OllamaClient:
         host: str | None = None,
         model: str | None = None,
         seed: int | None = None,
+        temperature: float | None = None,
         timeout: float | None = None,
         post: Post | None = None,
     ) -> None:
         self.host = (host or os.environ.get("OLLAMA_HOST", DEFAULT_HOST)).rstrip("/")
         self.model = model or os.environ.get("LLM_MODEL", DEFAULT_MODEL)
         self.seed = seed if seed is not None else int(os.environ.get("LLM_SEED", "42"))
+        # 0 en el sistema (respuestas repetibles); los experimentos E5 y E6 la suben para medir la variación.
+        self.temperature = temperature if temperature is not None else float(os.environ.get("LLM_TEMPERATURE", "0"))
         self.timeout = timeout if timeout is not None else float(os.environ.get("LLM_TIMEOUT_SECONDS", "120"))
         self._post = post or _http_post
 
@@ -65,7 +68,7 @@ class OllamaClient:
             ],
             "format": request.schema,
             "stream": False,
-            "options": {"temperature": 0, "seed": self.seed, "num_predict": request.max_tokens},
+            "options": {"temperature": self.temperature, "seed": self.seed, "num_predict": request.max_tokens},
         }
 
     def complete(self, request: LlmRequest) -> LlmResponse:

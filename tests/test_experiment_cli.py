@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from eda_retail.experiments.cli import LLMS, experiment_kwargs, incidents_for, parse_args
+from eda_retail.llm.ollama_client import OllamaClient
 
 
 def test_one_command_per_experiment():
@@ -27,7 +28,7 @@ def test_each_experiment_defaults_to_its_spec_size():
 def test_e5_uses_ollama_with_three_repetitions_by_default():
     """E5 se lanza con Ollama y tres repeticiones; --llm oracle lo ejecuta sin coste"""
     kw = experiment_kwargs(parse_args(["e5"]))
-    assert kw["llm"] is LLMS["ollama"] and kw["repetitions"] == 3 and "threshold" not in kw
+    assert isinstance(kw["llm"](None, 1), OllamaClient) and kw["repetitions"] == 3 and "threshold" not in kw
     kw = experiment_kwargs(parse_args(["e5", "--llm", "oracle", "--repetitions", "5", "--threshold", "0.9"]))
     assert kw["llm"] is LLMS["oracle"] and kw["repetitions"] == 5 and kw["threshold"] == 0.9
     assert experiment_kwargs(parse_args(["e1"])) == {"seed": 42, "incidents": 50}
@@ -42,6 +43,17 @@ def test_llm_options_only_for_llm_experiments():
 def test_e6_uses_ollama_with_three_repetitions_and_no_threshold():
     """E6 se lanza con Ollama y tres repeticiones; H6 no tiene umbral"""
     kw = experiment_kwargs(parse_args(["e6"]))
-    assert kw["llm"] is LLMS["ollama"] and kw["repetitions"] == 3 and kw["incidents"] == 50
+    assert isinstance(kw["llm"](None, 1), OllamaClient) and kw["repetitions"] == 3 and kw["incidents"] == 50
     with pytest.raises(SystemExit):
         parse_args(["e6", "--threshold", "0.9"])
+
+
+def test_each_repetition_uses_its_own_seed_and_the_temperature():
+    """Cada repetición con Ollama usa su propia semilla y la temperatura indicada (0.7 por defecto)"""
+    factory = experiment_kwargs(parse_args(["e5", "--seed", "10"]))["llm"]
+    clients = [factory(None, n) for n in (1, 2, 3)]
+    assert [c.seed for c in clients] == [11, 12, 13] and {c.temperature for c in clients} == {0.7}
+    factory = experiment_kwargs(parse_args(["e6", "--temperature", "0.2"]))["llm"]
+    assert factory(None, 1).temperature == 0.2
+    with pytest.raises(SystemExit):
+        parse_args(["e1", "--temperature", "0.5"])

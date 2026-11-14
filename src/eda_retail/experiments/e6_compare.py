@@ -81,23 +81,25 @@ def _aggregate(rows: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def run_e6(base: Settings, *, seed: int = 42, incidents: int = 50, repetitions: int = 3,
-           llm: Callable[[Dataset], LlmClient] | None = None, scenarios: tuple[str, ...] = SCENARIOS) -> Report:
+           llm: Callable[[Dataset, int], LlmClient] | None = None, scenarios: tuple[str, ...] = SCENARIOS) -> Report:
     data = generate(seed, incidents)
-    factory = llm or (lambda d: Oracle(d).client())
+    factory = llm or (lambda d, n: Oracle(d).client())
     runs, model = [], "unknown"
     for n in range(1, repetitions + 1):
         for scenario in scenarios:
             config = RunConfig(seed=seed, incidents=incidents, faults=_faults(scenario, seed))
             for version, runner in (("events", _run_events), ("sync", _run_sync)):
-                client = factory(data)
+                client = factory(data, n)
                 model = getattr(client, "model", "unknown")
                 row = runner(base, config, data, client)
-                runs.append({"repetition": n, "scenario": scenario, **row})
+                runs.append({"repetition": n, "scenario": scenario, "llm_seed": getattr(client, "seed", None),
+                             "temperature": getattr(client, "temperature", None), **row})
     metrics = {s: {v: _aggregate([r for r in runs if r["scenario"] == s and r["version"] == v])
                    for v in ("events", "sync")} for s in scenarios}
     return Report(
         experiment="E6", seed=seed, model=model,
         config={"incidents": incidents, "repetitions": repetitions, "scenarios": list(scenarios),
+                "temperature": runs[0]["temperature"] if runs else None,
                 "faults": {"duplicates": DUPLICATES, "fail_probability": FAILING},
                 "prices": {"in_per_1k": str(base.llm_price_in_per_1k), "out_per_1k": str(base.llm_price_out_per_1k)}},
         metrics=metrics, hypothesis={},
