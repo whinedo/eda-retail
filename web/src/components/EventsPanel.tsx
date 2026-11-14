@@ -8,6 +8,7 @@ export interface EventsPanelProps {
   node: string | null;
   hasMore: boolean;
   error: string | null;
+  jaegerUrl: string;
   onIncidentChange(incidentId: string): void;
   onClearNode(): void;
   onTogglePause(): void;
@@ -29,6 +30,7 @@ const COLUMNS = [
   "event_id",
   "causation_id",
   "payload",
+  "traza",
 ];
 
 // Texto acortado con puntos suspensivos; el valor completo queda en el title.
@@ -44,7 +46,7 @@ function formatTimestamp(iso: string): string {
     .replace(/(Z|[+-]\d\d:\d\d)$/, "");
 }
 
-function EventsRow({ row }: { row: EventRow }) {
+function EventsRow({ row, jaegerUrl }: { row: EventRow; jaegerUrl: string }) {
   return (
     <tr>
       <td title={row.sender}>{row.sender}</td>
@@ -61,6 +63,15 @@ function EventsRow({ row }: { row: EventRow }) {
       <td>{row.causation_id ? <Truncated value={row.causation_id} length={ID_LENGTH} /> : "—"}</td>
       <td>
         <Truncated value={JSON.stringify(row.payload)} length={PAYLOAD_LENGTH} />
+      </td>
+      <td>
+        {row.trace_id ? (
+          <a href={`${jaegerUrl}/trace/${row.trace_id}`} target="_blank" rel="noopener noreferrer" title={row.trace_id}>
+            ver traza
+          </a>
+        ) : (
+          "—"
+        )}
       </td>
     </tr>
   );
@@ -126,7 +137,7 @@ export function EventsPanel(props: EventsPanelProps) {
           </thead>
           <tbody>
             {rows.map((row) => (
-              <EventsRow key={row.seq} row={row} />
+              <EventsRow key={row.seq} row={row} jaegerUrl={props.jaegerUrl} />
             ))}
           </tbody>
         </table>

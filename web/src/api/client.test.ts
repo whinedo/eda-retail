@@ -76,4 +76,11 @@ describe("API client", () => {
     expect(eventsStreamUrl()).toBe("/api/events/stream");
     expect(commandStreamUrl("r 1")).toBe("/api/commands/r%201/stream");
   });
+
+  it("reads the front config", async () => {
+    const fetchFn = fakeFetch(200, { jaeger_ui_url: "http://localhost:16686" });
+
+    expect(await createApiClient(fetchFn).getConfig()).toEqual({ jaeger_ui_url: "http://localhost:16686" });
+    expect(fetchFn.mock.calls[0][0]).toBe("/api/config");
+  });
 });

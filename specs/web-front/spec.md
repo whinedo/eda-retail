@@ -229,7 +229,7 @@ El backend SHALL exponer los eventos nuevos en `GET /api/events/stream` por Serv
 
 ### Requirement: Acceso a las trazas en Jaeger
 
-La cabecera SHALL ofrecer un enlace a la interfaz web de Jaeger, que se abre en una pestaña nueva. Cada fila del panel de eventos SHALL ofrecer un enlace «ver traza» a la traza de ese evento en Jaeger (`<JAEGER_UI_URL>/trace/<trace_id>`). El backend MUST obtener el `trace_id` del `traceparent` guardado en `outbox.trace_context` para ese `seq`, con una consulta de solo lectura. La URL base sale de `JAEGER_UI_URL` (por defecto `http://localhost:16686`, el puerto publicado en `docker-compose.yml`). El front MUST NOT consultar la API de Jaeger: solo enlaza a su interfaz.
+La cabecera SHALL ofrecer un enlace a la interfaz web de Jaeger, que se abre en una pestaña nueva. Cada fila del panel de eventos SHALL ofrecer un enlace «ver traza» a la traza de ese evento en Jaeger (`<JAEGER_UI_URL>/trace/<trace_id>`). El backend MUST obtener el `trace_id` del `traceparent` guardado en `outbox.trace_context` para ese `seq`, con una consulta de solo lectura. La URL base sale de `JAEGER_UI_URL` (por defecto `http://localhost:16686`, el puerto publicado en `docker-compose.yml`); el backend la entrega al front en `GET /api/config` y MUST ignorar un valor que no sea una URL `http` o `https`, usando entonces el valor por defecto. Cada evento de la página y del stream lleva su `trace_id` (o `null`). El front MUST NOT consultar la API de Jaeger: solo enlaza a su interfaz.
 
 #### Scenario: Abrir Jaeger desde la cabecera
 
@@ -249,6 +249,12 @@ La cabecera SHALL ofrecer un enlace a la interfaz web de Jaeger, que se abre en 
 - **WHEN** se muestra en el panel de eventos
 - **THEN** la columna de traza muestra «—» y no hay enlace
 
+#### Scenario: URL de Jaeger no válida
+
+- **GIVEN** `JAEGER_UI_URL=javascript:alert(1)`
+- **WHEN** el front pide `GET /api/config`
+- **THEN** recibe `http://localhost:16686`
+
 ## API prevista
 
 | Método y ruta | Uso |
@@ -258,6 +264,7 @@ La cabecera SHALL ofrecer un enlace a la interfaz web de Jaeger, que se abre en 
 | `GET /api/topology` | Nodos y aristas del mapa |
 | `GET /api/nodes/{id}` | Detalle y métricas de un nodo |
 | `GET /api/health` | Kafka, PostgreSQL, Ollama y procesos |
+| `GET /api/config` | Configuración para el front (`jaeger_ui_url`) |
 | `POST /api/commands` | Ejecuta un comando de la lista blanca; devuelve `run_id` |
 | `GET /api/commands/{run_id}/stream` | SSE con la salida y, al final, el código de salida |
 | `POST /api/commands/{run_id}/input` | Línea para `interactive` |

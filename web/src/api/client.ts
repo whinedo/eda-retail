@@ -39,6 +39,7 @@ export interface EventRow {
   offset: number | null;
   causation_id: string | null;
   payload: Record<string, unknown>;
+  trace_id: string | null;
 }
 
 export interface EventsPage {
@@ -88,8 +89,13 @@ export class ApiError extends Error {
   }
 }
 
+export interface FrontConfig {
+  jaeger_ui_url: string;
+}
+
 export interface ApiClient {
   getHealth(): Promise<Health>;
+  getConfig(): Promise<FrontConfig>;
   getTopology(): Promise<Topology>;
   getEvents(query?: EventsQuery): Promise<EventsPage>;
   getNode(id: string): Promise<NodeDetail>;
@@ -117,6 +123,7 @@ export function createApiClient(fetchFn: FetchFn = (input, init) => fetch(input,
 
   return {
     getHealth: () => call("GET", "/api/health"),
+    getConfig: () => call("GET", "/api/config"),
     getTopology: () => call("GET", "/api/topology"),
     getEvents: (query = {}) => call("GET", `/api/events${eventsQueryString(query)}`),
     getNode: (id) => call("GET", `/api/nodes/${encodeURIComponent(id)}`),

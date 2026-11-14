@@ -45,6 +45,7 @@ function row(seq: number, overrides: Partial<EventRow> = {}): EventRow {
     offset: null,
     causation_id: null,
     payload: {},
+    trace_id: null,
     ...overrides,
   };
 }

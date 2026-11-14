@@ -1,4 +1,4 @@
-import { act, render, screen } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import App from "./App";
@@ -15,6 +15,7 @@ const HEALTH: Health = {
 function client(overrides: Partial<ApiClient> = {}): ApiClient {
   return {
     getHealth: vi.fn(async () => HEALTH),
+    getConfig: vi.fn(async () => ({ jaeger_ui_url: "http://jaeger.local:16686" })),
     getTopology: vi.fn(async () => ({ nodes: [], edges: [] })),
     getEvents: vi.fn(async () => ({ events: [], next_before_seq: null })),
     getNode: vi.fn(async () => Promise.reject(new Error("sin detalle en este test"))),
@@ -104,6 +105,7 @@ describe("Panel de eventos en la pantalla", () => {
             offset: null,
             causation_id: null,
             payload: {},
+            trace_id: null,
           },
         ],
         next_before_seq: null,
@@ -155,7 +157,7 @@ describe("Panel de eventos en la pantalla", () => {
     const row: EventRow = {
       seq: 7, event_id: "e7", event_type: "StepRequested", occurred_at: "2026-11-14T16:00:00+00:00",
       sender: "orchestrator", receiver: "postgres", receivers: ["postgres"], incident_id: "INC-1",
-      plan_version: 1, partition: null, offset: null, causation_id: null, payload: {},
+      plan_version: 1, partition: null, offset: null, causation_id: null, payload: {}, trace_id: null,
     };
 
     events!.emit("event", row);
@@ -164,5 +166,15 @@ describe("Panel de eventos en la pantalla", () => {
       e.getAttribute("data-edge"),
     );
     expect(active).toEqual(["orchestrator->postgres"]);
+  });
+
+  it("Abrir Jaeger desde la cabecera: enlace a JAEGER_UI_URL en una pestaña nueva", async () => {
+    render(<App client={client()} openStream={openStream} />);
+
+    const link = within(screen.getByRole("banner")).getByRole("link", { name: "Jaeger" });
+
+    await waitFor(() => expect(link).toHaveAttribute("href", "http://jaeger.local:16686"));
+    expect(link).toHaveAttribute("target", "_blank");
+    expect(link.getAttribute("rel")).toContain("noopener");
   });
 });

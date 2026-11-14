@@ -10,11 +10,13 @@ from typing import Any
 import psycopg
 
 from eda_retail.web.routing import node_condition, receivers
+from eda_retail.web.traces import trace_id_from_context
 
 DEFAULT_LIMIT = 100
 MAX_LIMIT = 500
 _SELECT = (
-    "SELECT seq, event_id, event_type, occurred_at, correlation_id, causation_id, producer, payload FROM events"
+    "SELECT seq, event_id, event_type, occurred_at, correlation_id, causation_id, producer, payload,"
+    " (SELECT o.trace_context FROM outbox o WHERE o.seq = events.seq) AS trace_context FROM events"
 )
 
 
@@ -79,4 +81,5 @@ def _row(r: dict[str, Any]) -> dict[str, Any]:
         "offset": None,
         "causation_id": str(r["causation_id"]) if r["causation_id"] else None,
         "payload": payload,
+        "trace_id": trace_id_from_context(r.get("trace_context")),
     }
