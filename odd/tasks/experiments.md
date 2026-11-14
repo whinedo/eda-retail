@@ -31,8 +31,8 @@ Assumptions (marked):
 
 | ID | PR | Specs | Route | Status | Commit |
 | --- | --- | --- | --- | --- | --- |
-| T1 | 1 | S1 generator, labels, dataset loading | inline | done (RED collection error → GREEN 264 passed) | (pending commit) |
-| T2 | 2 | S2 fault injection | inline | pending | |
+| T1 | 1 | S1 generator, labels, dataset loading | inline | done (RED collection error → GREEN 264 passed) | dc84a8e |
+| T2 | 2 | S2 fault injection | inline | done (RED collection error → GREEN 272 passed) | (pending commit) |
 | T3 | 3 | S3, S4 harness, report, E1, E2 | inline | pending | |
 | T4 | 4 | S4 E3, E4, E7 | inline | pending | |
 | T5 | 5 | S5 baseline_sync | inline | pending | |
@@ -44,3 +44,4 @@ Route evidence: sequential units, each depends on the previous one; no writer tr
 
 - L1 (2026-11-14, user): "continua. Además se han definido specs para un front que se desarrollará cuando se haya terminado el resto"
 - L2 (2026-11-14, user): "Aprobada" — phase 6 proposal (D1–D7, S1–S6, six stacked PRs) approved.
+- L3 (2026-11-14, user): "mergea tú" — PR #7 (T1) merged after CI passed (6d8aa24).
