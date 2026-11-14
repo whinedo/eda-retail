@@ -6,11 +6,11 @@ Sistema de agentes orientado a eventos que gestiona incidencias de transporte (r
 
 Antes de escribir código, lee lo que afecte a la tarea:
 
-- `specs/README.md`: contexto, catálogo de eventos, catálogo de comandos y decisiones asumidas.
+- `docs/README.md`: contexto, catálogo de eventos, catálogo de comandos y decisiones asumidas.
 - `specs/<capacidad>/spec.md`: requisitos en estilo OpenSpec (SHALL/MUST y escenarios GIVEN/WHEN/THEN). **Cada escenario debe tener un test.**
 - `design.md`: cómo materializa la pila cada concepto (tablas, topics, flujos).
 - `db/init/001_schema.sql`: esquema de PostgreSQL.
-- `specs/diagrama-agentes.*`, `diagrama-saga.*`, `diagrama-cqrs.*`: diagramas.
+- `docs/diagrama-agentes.*`, `diagrama-saga.*`, `diagrama-cqrs.*`: diagramas.
 
 Si el código y una spec se contradicen, manda la spec. Si la spec está mal, se corrige la spec en el mismo cambio y se avisa; no se esquiva en el código.
 

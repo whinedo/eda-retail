@@ -70,13 +70,13 @@ La llamada al LLM se hace **antes** de la transacción: la propuesta llega ya ge
 
 ### 4.1 CQRS: comandos, versión y consultas
 
-El command handler es una librería interna (no un servicio HTTP). Los componentes le envían los comandos del catálogo de `specs/README.md` y él decide.
+El command handler es una librería interna (no un servicio HTTP). Los componentes le envían los comandos del catálogo de `docs/README.md` y él decide.
 
 - **Versión de concurrencia:** `incidents.version`. Cada comando indica `expected_version`; el handler hace `UPDATE incidents SET version = version + 1 WHERE incident_id = ? AND version = ?`. Si no actualiza ninguna fila, rechaza con `concurrency_conflict` y no escribe eventos. El componente reintenta leyendo el estado actual.
 - **Sin event sourcing puro:** el estado de escritura (`incidents`, `plan_steps`) se guarda en tablas y se actualiza en la misma transacción que `events` y `outbox`. El log permite reconstruir las vistas y auditar, pero no se rehidrata el estado de escritura a partir de él.
 - **Consultas:** módulo `queries/` que solo lee tablas `view_*`. Cada respuesta incluye `last_applied_seq` del proyector correspondiente (de `projector_offsets`). Los agentes que necesiten el estado de la incidencia para decidir lo consultan aquí, y los que validan una escritura usan el command handler.
 
-![CQRS](specs/diagrama-cqrs.png)
+![CQRS](docs/diagrama-cqrs.png)
 
 ### 4.2 Saga: operaciones y compensaciones
 
@@ -97,7 +97,7 @@ Al recibir un `PlanRevised`, la orquestación, en una transacción:
 
 Las compensaciones se ejecutan en orden inverso a los pasos originales y usan la misma maquinaria de idempotencia (`effect_keys`) que cualquier otro paso. Si una compensación agota sus reintentos, la incidencia se escala con `compensation_failed`.
 
-![Saga](specs/diagrama-saga.png)
+![Saga](docs/diagrama-saga.png)
 
 ## 5. Relay del outbox
 
@@ -220,4 +220,4 @@ docker compose ps         # postgres y kafka deben estar healthy
 ## 12. Estado de la verificación
 
 - El esquema SQL se ha ejecutado contra PostgreSQL 16 (incluida la columna `version` y los estados de compensación): las tablas se crean, `UPDATE`, `DELETE` y `TRUNCATE` sobre `events` se rechazan, y el inbox y `effect_keys` ignoran las inserciones duplicadas.
-- `docker-compose.yml` es válido como YAML, pero **no se ha ejecutado** (no había Docker disponible). Hay que comprobar al primer arranque que el broker queda `healthy` y que se crean los topics.
+- `docker-compose.yml` se ha ejecutado (2026-11-13): `kafka` y `postgres` quedan `healthy` y `kafka-init` crea `eda.events` (3 particiones) y `eda.dlq` (1 partición) con retención infinita. En el primer arranque falló la creación de topics porque el broker solo anunciaba `localhost:9092`, que dentro de otro contenedor apunta a sí mismo; ahora hay dos listeners: `INTERNAL` (`kafka:19092`, para contenedores) y `EXTERNAL` (`localhost:9092`, para los procesos del host).

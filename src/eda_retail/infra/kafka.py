@@ -1,0 +1,26 @@
+"""Configuración de los clientes de Kafka (design.md §9). Sin transacciones de Kafka."""
+
+from __future__ import annotations
+
+from confluent_kafka import Consumer, Producer
+
+
+def make_producer(bootstrap_servers: str) -> Producer:
+    return Producer(
+        {
+            "bootstrap.servers": bootstrap_servers,
+            "enable.idempotence": True,
+            "acks": "all",
+        }
+    )
+
+
+def make_consumer(bootstrap_servers: str, group_id: str) -> Consumer:
+    return Consumer(
+        {
+            "bootstrap.servers": bootstrap_servers,
+            "group.id": group_id,
+            "enable.auto.commit": False,
+            "auto.offset.reset": "earliest",
+        }
+    )
