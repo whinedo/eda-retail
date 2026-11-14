@@ -5,12 +5,16 @@ la clave y lo repite, el servicio devuelve el resultado anterior en lugar de dup
 (spec idempotency, «Caída entre el efecto y el registro»). Para los tests y los
 experimentos se pueden programar caídas (`down`), tiempos de espera vencidos
 (`timeouts`, el número de llamadas que fallarán) y rechazos de negocio (`reject`).
+
+Con `idempotent=False` (experimento E1 sin idempotencia) el servicio no reconoce la clave y
+repite el efecto; `executions` cuenta cuántas veces se ejecutó cada clave.
 """
 
 from __future__ import annotations
 
 import threading
 import uuid
+from collections import Counter
 from dataclasses import dataclass, field
 
 from eda_retail.executors.base import BusinessError, Transient
@@ -23,7 +27,9 @@ class FakeService:
     down: bool = False
     timeouts: int = 0
     reject: str | None = None  # error de negocio que devolverá cada llamada
+    idempotent: bool = True
     calls: int = 0
+    executions: Counter[str] = field(default_factory=Counter)
     _done: dict[str, str] = field(default_factory=dict)
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
@@ -38,8 +44,10 @@ class FakeService:
                 raise Transient("timeout")
             if self.reject is not None:
                 raise BusinessError(self.reject)
-            if key not in self._done:
-                self._done[key] = f"{self.prefix}-{uuid.uuid4().hex[:8]}"
+            if self.idempotent and key in self._done:
+                return self._done[key]
+            self._done[key] = f"{self.prefix}-{uuid.uuid4().hex[:8]}"
+            self.executions[key] += 1
             return self._done[key]
 
     @property

@@ -35,7 +35,10 @@ packages = ["src/eda_retail"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-markers = ["integration: needs PostgreSQL and Kafka from docker compose"]
+markers = [
+    "integration: needs PostgreSQL and Kafka from docker compose",
+    "slow: runs a whole experiment through the harness",
+]
 
 [tool.ruff]
 line-length = 120

@@ -105,11 +105,13 @@ class FaultyDelivery:
         self.crashed = crashed if crashed is not None else set()
         self._sleep = sleep
         self._handled = 0
+        self.current: Any = None  # último mensaje recibido (el arnés lo salta si es veneno)
 
     def run_once(self, timeout: float = 1.0) -> Any:
         msg = self.consumer.poll(timeout)
         if msg is None:
             return None
+        self.current = msg
         if self.plan.delay_seconds:
             self._sleep(self.plan.delay_seconds)
         outcome = None
