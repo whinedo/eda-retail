@@ -11,11 +11,14 @@ from __future__ import annotations
 
 import codecs
 import json
+import logging
 import os
 import pty
+import select
 import signal
 import subprocess
 import threading
+import time
 import uuid
 from collections.abc import Iterator
 from dataclasses import dataclass, field
@@ -33,6 +36,13 @@ DEFAULT_INTERACTIVE_TIMEOUT = 180
 MAX_TEXT = 2000
 MAX_LINE = 200
 _KEEPALIVE_SECONDS = 15
+_POLL_SECONDS = 1.0
+_KILL_ATTEMPTS = 20
+_KILL_RETRY_SECONDS = 0.05
+# Alias propios para que los tests puedan sustituirlos sin tocar `os` en todo el proceso.
+_read = os.read
+_write = os.write
+log = logging.getLogger("eda_retail.web.commands")
 
 
 class CommandRequest(BaseModel):
@@ -94,6 +104,14 @@ class RunNotAcceptingInput(Exception):
     """La ejecución no es interactiva o ya terminó."""
 
 
+class RunInputFull(Exception):
+    """La entrada del proceso está llena: no la está leyendo."""
+
+
+class RunLaunchError(Exception):
+    """No se pudo lanzar scripts/notice.sh."""
+
+
 @dataclass
 class Run:
     run_id: str
@@ -103,6 +121,10 @@ class Run:
     chunks: list[str] = field(default_factory=list)
     exit_code: int | None = None
     cond: threading.Condition = field(default_factory=threading.Condition)
+    # Protege la escritura en la pseudoterminal y su cierre; es distinto de `cond` para que una
+    # escritura nunca frene la lectura de la salida.
+    input_lock: threading.Lock = field(default_factory=threading.Lock)
+    fd_closed: bool = False
 
 
 class CommandRunner:
@@ -125,14 +147,21 @@ class CommandRunner:
                     process = subprocess.Popen(
                         argv, stdin=slave, stdout=slave, stderr=slave, start_new_session=True, close_fds=True
                     )
+                except OSError as error:
+                    os.close(master)
+                    raise RunLaunchError(error.strerror or str(error)) from error
                 finally:
                     os.close(slave)
+                os.set_blocking(master, False)  # escribir nunca bloquea; la lectura usa select
                 out_fd = master
             else:
-                process = subprocess.Popen(
-                    argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                    start_new_session=True, close_fds=True,
-                )
+                try:
+                    process = subprocess.Popen(
+                        argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                        start_new_session=True, close_fds=True,
+                    )
+                except OSError as error:
+                    raise RunLaunchError(error.strerror or str(error)) from error
                 out_fd = process.stdout.fileno()  # type: ignore[union-attr]
             run = Run(run_id=uuid.uuid4().hex, interactive=interactive, process=process, out_fd=out_fd)
             self._runs = {run.run_id: run}
@@ -151,49 +180,91 @@ class CommandRunner:
 
     def send_line(self, run_id: str, line: str) -> None:
         run = self.get(run_id)
-        with run.cond:
-            if not run.interactive or run.exit_code is not None:
+        if not run.interactive:
+            raise RunNotAcceptingInput(run_id)
+        data = (line + "\n").encode()
+        with run.input_lock:  # no `run.cond`: la salida sigue fluyendo mientras se escribe
+            if run.fd_closed or run.exit_code is not None:
                 raise RunNotAcceptingInput(run_id)
             try:
-                os.write(run.out_fd, (line + "\n").encode())
+                written = _write(run.out_fd, data)
+            except BlockingIOError:
+                raise RunInputFull(run_id) from None
             except OSError:
                 raise RunNotAcceptingInput(run_id) from None
+        if written < len(data):
+            raise RunInputFull(run_id)
+
+    def shutdown(self) -> None:
+        """Termina el comando en curso y su grupo (parada del backend)."""
+        run = self._current
+        if run is not None and run.exit_code is None:
+            _kill_group(run.process)
 
     def _pump(self, run: Run, timer: threading.Timer) -> None:
         decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
-        while True:
-            try:
-                data = os.read(run.out_fd, 4096)
-            except OSError:  # la pseudoterminal devuelve EIO cuando el proceso cierra su lado
-                data = b""
-            text = decoder.decode(data, final=not data)
-            if text:
-                with run.cond:
-                    run.chunks.append(text)
-                    run.cond.notify_all()
-            if not data:
-                break
-        code = run.process.wait()
-        timer.cancel()
-        with run.cond:
-            if run.interactive:
-                os.close(run.out_fd)
-            else:
-                run.process.stdout.close()  # type: ignore[union-attr]
-            run.exit_code = code
-            run.cond.notify_all()
+        code: int | None = None
+        try:
+            while True:
+                ready, _, _ = select.select([run.out_fd], [], [], _POLL_SECONDS)
+                if not ready:
+                    continue
+                try:
+                    data = _read(run.out_fd, 4096)
+                except BlockingIOError:
+                    continue
+                except OSError:  # la pseudoterminal devuelve EIO cuando el proceso cierra su lado
+                    data = b""
+                text = decoder.decode(data, final=not data)
+                if text:
+                    with run.cond:
+                        run.chunks.append(text)
+                        run.cond.notify_all()
+                if not data:
+                    break
+            code = run.process.wait()
+        except Exception:
+            # Sin seguimiento de la salida no hay forma de cerrar la ejecución: se termina el grupo.
+            log.exception("fallo siguiendo la salida de %s", run.run_id)
+            _kill_group(run.process)
+            code = run.process.wait()
+        finally:
+            timer.cancel()
+            with run.input_lock:
+                try:
+                    if run.interactive:
+                        os.close(run.out_fd)
+                    else:
+                        run.process.stdout.close()  # type: ignore[union-attr]
+                except OSError:
+                    pass
+                run.fd_closed = True
+            with run.cond:
+                run.exit_code = code if code is not None else -1
+                run.cond.notify_all()
 
 
 def _kill_group(process: subprocess.Popen) -> None:
+    """Mata el grupo del proceso. Justo tras lanzarlo, el hijo puede no haber creado aún su sesión
+    (el grupo no existe: ESRCH, o macOS responde EPERM): se reintenta un momento y, si el proceso
+    sigue vivo, se mata al menos a él."""
+    for _ in range(_KILL_ATTEMPTS):
+        if process.poll() is not None:
+            return
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+            return
+        except (ProcessLookupError, PermissionError):
+            time.sleep(_KILL_RETRY_SECONDS)
     try:
-        os.killpg(process.pid, signal.SIGKILL)
+        process.kill()
     except ProcessLookupError:
         pass
 
 
 def output_stream(run: Run, last_event_id: str | None = None) -> Iterator[str]:
     """Tramas SSE con la salida (`id` = índice del trozo) y, al final, el código de salida."""
-    index = int(last_event_id) + 1 if last_event_id and last_event_id.isdigit() else 0
+    index = int(last_event_id) + 1 if last_event_id and last_event_id.isascii() and last_event_id.isdigit() else 0
     while True:
         with run.cond:
             while index >= len(run.chunks) and run.exit_code is None:

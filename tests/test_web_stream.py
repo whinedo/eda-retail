@@ -39,6 +39,7 @@ def test_malformed_last_event_id_is_ignored():
     """Un Last-Event-ID que no es un seq se ignora y se usa la siguiente posición"""
     assert start_seq(last_event_id="abc", after_seq=7, current_last=lambda: 9) == 7
     assert start_seq(last_event_id="", after_seq=None, current_last=lambda: 9) == 9
+    assert start_seq(last_event_id="²", after_seq=None, current_last=lambda: 9) == 9  # isdigit() pero no ASCII
 
 
 def test_stream_sends_each_event_once_in_seq_order():

@@ -54,6 +54,18 @@ El menú SHALL ofrecer los comandos de `scripts/notice.sh`: `seed`, `send`, `sen
 - **WHEN** se cumple ese tiempo
 - **THEN** el backend termina el proceso y su grupo, y la salida acaba con un código de salida distinto de 0
 
+#### Scenario: Script que no se puede lanzar
+
+- **GIVEN** `scripts/notice.sh` ausente o sin permiso de ejecución
+- **WHEN** llega una petición de ejecución
+- **THEN** el backend responde 500 con el motivo, no deja recursos abiertos y el menú admite la siguiente ejecución
+
+#### Scenario: Parada del backend
+
+- **GIVEN** un comando en ejecución
+- **WHEN** se para el backend
+- **THEN** el backend termina el proceso y su grupo antes de salir
+
 ### Requirement: Mapa de sistemas
 
 El mapa SHALL mostrar como nodos: `eda-notice`, PostgreSQL, relay, Kafka (`eda.events`), `eda.dlq`, proyector, agentes con LLM (intérprete, planificador, replanificador), orquestador, ejecutores (`notify_customer`, `file_claim`, `reissue_shipment`, `reserve_stock`, `release_stock`, `issue_refund`), Ollama, servicios simulados (correo, aseguradora, transportista, almacén y pagos, los de `eda_retail.executors.services` más las tablas de stock) y Jaeger. Las aristas SHALL representar las comunicaciones de design.md §3 y se distinguirán por tipo de nodo (LLM, código, datos y bus, externo, simulado). El id de cada nodo SHALL coincidir con el emisor o destino que usan los eventos (`intake` para `eda-notice`, `interpreter`, `orchestrator`, `executor-<acción>`, `projectors`…), para poder resaltar la arista de cada evento. `GET /api/topology` SHALL devolver esos nodos (id, etiqueta, tipo, descripción y si se vigila su proceso) y aristas (origen, destino).
@@ -197,7 +209,7 @@ El backend SHALL leer los eventos de la tabla `events` y el estado de las incide
 
 ### Requirement: Comando interactivo
 
-`interactive --timeout N` SHALL ejecutarse con una pseudoterminal y el front SHALL ofrecer una entrada de texto para enviar líneas a su entrada estándar mientras dure la sesión. N MUST estar entre 1 y 600. Cada línea MUST tener como mucho 200 caracteres y ningún salto de línea; enviar una línea a una ejecución que no es interactiva o que ya terminó se rechaza con 409.
+`interactive --timeout N` SHALL ejecutarse con una pseudoterminal y el front SHALL ofrecer una entrada de texto para enviar líneas a su entrada estándar mientras dure la sesión. N MUST estar entre 1 y 600. Cada línea MUST tener como mucho 200 caracteres y ningún salto de línea; enviar una línea a una ejecución que no es interactiva o que ya terminó se rechaza con 409. Enviar una línea MUST NOT bloquear la salida del proceso: si su entrada está llena porque no la lee, la línea se rechaza con 409 y la salida sigue llegando. Si el seguimiento de la salida falla, la ejecución MUST terminar con un código de salida para no dejar el menú ocupado.
 
 #### Scenario: Responder al menú
 
@@ -205,9 +217,15 @@ El backend SHALL leer los eventos de la tabla `events` y el estado de las incide
 - **WHEN** el usuario escribe una opción y envía
 - **THEN** el backend la entrega al proceso y la salida continúa en el área de salida
 
+#### Scenario: Proceso que no lee su entrada
+
+- **GIVEN** una sesión interactiva cuyo proceso no lee la entrada y sigue escribiendo
+- **WHEN** el usuario envía líneas hasta llenar su entrada
+- **THEN** las líneas que no caben se rechazan con 409 y la salida del proceso sigue llegando hasta su código de salida
+
 ### Requirement: Actualización en vivo
 
-El backend SHALL exponer los eventos nuevos en `GET /api/events/stream` por Server-Sent Events, con `seq` como identificador y cada evento con las mismas columnas que la página de eventos, de modo que el cliente retome desde `Last-Event-ID` tras una reconexión sin perder ni duplicar filas. En la primera conexión el navegador no puede enviar `Last-Event-ID`, así que el stream SHALL admitir `after_seq` (el `seq` más alto que el panel ya muestra); si llegan los dos, manda `Last-Event-ID`. Sin ninguno, el stream empieza tras el último `seq` del log. El backend SHALL consultar el log al menos cada 0,5 s para cumplir el plazo de 2 s del panel.
+El backend SHALL exponer los eventos nuevos en `GET /api/events/stream` por Server-Sent Events, con `seq` como identificador y cada evento con las mismas columnas que la página de eventos, de modo que el cliente retome desde `Last-Event-ID` tras una reconexión sin perder ni duplicar filas. Un `Last-Event-ID` que no sea un número ASCII se ignora, en este stream y en el de la salida de los comandos. En la primera conexión el navegador no puede enviar `Last-Event-ID`, así que el stream SHALL admitir `after_seq` (el `seq` más alto que el panel ya muestra); si llegan los dos, manda `Last-Event-ID`. Sin ninguno, el stream empieza tras el último `seq` del log. El backend SHALL consultar el log al menos cada 0,5 s para cumplir el plazo de 2 s del panel.
 
 #### Scenario: Reconexión
 

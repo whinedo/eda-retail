@@ -8,7 +8,8 @@ from __future__ import annotations
 
 import os
 import re
-from collections.abc import Iterator
+from collections.abc import AsyncIterator, Iterator
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Annotated
 
@@ -27,6 +28,8 @@ from eda_retail.web.commands import (
     CommandRequest,
     CommandRunner,
     InputLine,
+    RunInputFull,
+    RunLaunchError,
     RunnerBusy,
     RunNotAcceptingInput,
     RunNotFound,
@@ -99,7 +102,15 @@ def create_app(
     health: HealthChecker | None = None,
 ) -> FastAPI:
     """`stream_max_polls`, `notice_script`, `run_max_seconds` y `health` solo los cambian los tests."""
-    app = FastAPI(title="eda-retail web", docs_url=None, redoc_url=None, openapi_url=None)
+    runner = CommandRunner(notice_script, run_max_seconds)
+
+    @asynccontextmanager
+    async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+        yield
+        runner.shutdown()  # parada del backend: no deja el comando en curso huérfano
+
+    app = FastAPI(title="eda-retail web", docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
+    app.state.runner = runner
     settings = load_settings()
     app.state.database_url = database_url or settings.database_url
     db_url = app.state.database_url
@@ -112,7 +123,6 @@ def create_app(
         }
     )
     app.state.stream_max_polls = stream_max_polls
-    runner = CommandRunner(notice_script, run_max_seconds)
     app.add_middleware(
         CORSMiddleware,
         allow_origin_regex=LOCAL_ORIGIN.pattern,
@@ -182,6 +192,8 @@ def create_app(
             run = runner.start(body)
         except RunnerBusy:
             raise HTTPException(409, "ya hay un comando en ejecución") from None
+        except RunLaunchError as error:
+            raise HTTPException(500, f"no se pudo lanzar {SCRIPT_LABEL}: {error}") from None
         return {"run_id": run.run_id, "argv": [SCRIPT_LABEL, *body.args()]}
 
     @app.get("/api/commands/{run_id}/stream")
@@ -200,6 +212,8 @@ def create_app(
             raise HTTPException(404, "ejecución desconocida") from None
         except RunNotAcceptingInput:
             raise HTTPException(409, "la ejecución no es interactiva o ya terminó") from None
+        except RunInputFull:
+            raise HTTPException(409, "la entrada del proceso está llena: no la está leyendo") from None
         return {"ok": True}
 
     return app
