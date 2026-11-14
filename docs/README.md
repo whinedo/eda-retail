@@ -12,143 +12,154 @@ Regla de diseño: **el LLM propone y el código dispone**. Ningún LLM ejecuta e
 
 ```mermaid
 flowchart LR
-  IN["Aviso del transportista<br/>texto libre o API"]
-  BUS[("Bus de eventos<br/>y log de eventos")]
-  INT["Agente intérprete"]
-  PLN["Agente planificador"]
-  RPL["Replanner"]
-  CH["Command handler<br/>y validador"]
-  ORQ["Orquestación del plan"]
-  EXE["Ejecutores<br/>aviso, reclamación, stock,<br/>reenvío, reembolso"]
+  IN["Aviso del transportista<br/>eda-notice o front"]
+  INK["intake<br/>command handler"]
+  BUS[("Kafka eda.events<br/>solo eventos")]
+  INT["Intérprete<br/>LLM + command handler"]
+  ORQ["Saga<br/>orquestador"]
+  PLN["Planificador<br/>LLM + command handler"]
+  RPL["Replanificador<br/>LLM + command handler"]
+  EXE["Ejecutores e inventory<br/>command handlers"]
   RED["Agente redactor<br/>aviso y reclamación"]
-  IDS[("Almacén de claves<br/>de idempotencia")]
+  IDS[("effect_keys<br/>de cada ejecutor")]
   PRJ["Proyectores"]
-  VW[("Vistas CQRS")]
-  FIN["Cierre de la incidencia<br/>IncidentResolved o escalado"]
+  VW[("Proyecciones<br/>view_orders, cost_per_incident…")]
+  ELOG["event_log<br/>vista del log"]
+  WEB["Front web"]
 
-  IN -- "(1) CarrierNoticeReceived" --> BUS
-  BUS --> INT
-  INT -- "(2) propone ShipmentDelayed" --> CH
-  BUS --> PLN
-  PLN -- "(3) propone PlanCreated" --> CH
-  CH -- "(a) escribe solo eventos válidos" --> BUS
-  BUS --> ORQ
-  ORQ -- "(4) ExecuteStep" --> BUS
-  BUS --> EXE
-  EXE <-- "(5) texto / borrador validado" --> RED
-  EXE <-- "(6) clave" --> IDS
-  EXE -- "(7) StepCompleted o StepFailed" --> BUS
-  BUS -- "(8) StepFailed" --> RPL
-  RPL -- "(9) propone PlanRevised, vuelve a 4" --> CH
-  ORQ -- "(10)" --> FIN
-  BUS -- "(b)" --> PRJ
-  PRJ -- "(c)" --> VW
+  IN == "(1) RegisterCarrierNotice" ==> INK
+  INK -- "(2) CarrierNoticeReceived" --> BUS
+  BUS -- "(2)" --> INT
+  INT -- "(3) ShipmentDelayed" --> BUS
+  BUS -- "eventos (3) (5) (8) (10)" --> ORQ
+  ORQ == "(4) CreatePlan" ==> PLN
+  PLN -- "(5) PlanCreated" --> BUS
+  ORQ == "(6) ExecuteStep" ==> EXE
+  EXE <-- "(7) borrador validado" --> RED
+  EXE <-- "clave" --> IDS
+  EXE -- "(8) StepCompleted o StepFailed<br/>y el evento de efecto" --> BUS
+  ORQ == "(9) RevisePlan" ==> RPL
+  RPL -- "(10) PlanRevised, vuelve a 6" --> BUS
+  ORQ -- "(11) IncidentResolved<br/>o IncidentEscalated" --> BUS
+  BUS -- "(a)" --> PRJ
+  PRJ -- "(a)" --> VW
+  INT -. "(b) consulta" .-> VW
+  PLN -. "(b) consulta" .-> VW
+  BUS -- "(c)" --> ELOG
+  WEB -. "(c) polling" .-> ELOG
 
   classDef llm fill:#E3F0FF,stroke:#2B7DE0,color:#1d1d1f
   classDef code fill:#E6F6EC,stroke:#2E9E5B,color:#1d1d1f
   classDef data fill:#F1F1EE,stroke:#8A8A80,color:#1d1d1f
   classDef ext fill:#FFF3E0,stroke:#E08A2B,color:#1d1d1f
   class INT,PLN,RED,RPL llm
-  class CH,ORQ,EXE,PRJ code
+  class INK,ORQ,EXE,PRJ,ELOG code
   class BUS,IDS,VW data
-  class IN,FIN ext
+  class IN,WEB ext
 ```
 
-Azul: agentes con LLM (proponen). Verde: código determinista (dispone). Gris: datos. Naranja: entrada y salida. Los pasos (1) a (10) siguen el flujo de una incidencia, con el bus entre cada productor y su consumidor; (a) a (c) son la escritura validada y la proyección de las vistas. Los agentes con LLM nunca escriben en el log ni ejecutan efectos.
+Azul: agentes con LLM (proponen). Verde: código determinista (dispone). Gris: datos. Naranja: entrada y front. Flecha gruesa: comando REST síncrono e idempotente (`command_id`), que el command handler del sistema acepta o rechaza. Flecha fina: evento por Kafka. Punteada: consulta de solo lectura a una proyección. Los pasos (1) a (11) siguen una incidencia: la saga invoca un comando, el sistema escribe su estado y su evento en su outbox en una transacción, y la saga reacciona al evento cuando le llega. (a) a (c) son el lado de lectura. Cada sistema solo escribe en su esquema; los agentes con LLM nunca escriben eventos ni ejecutan efectos.
 
 ### Secuencia de la saga
 
 ```mermaid
 sequenceDiagram
-  participant Orq as Orquestación
+  participant Orq as Saga<br/>(orquestador)
+  participant Pl as Planificador<br/>(LLM)
   participant Av as Ejecutor<br/>aviso
   participant Rc as Ejecutor<br/>reclamación
-  participant St as Ejecutor<br/>stock
+  participant St as inventory<br/>(stock)
   participant En as Ejecutor<br/>envío
   participant Rf as Ejecutor<br/>reembolso
-  participant Rp as Replanner<br/>(LLM)
-  participant CH as Command<br/>handler
-  Note over Orq,CH: Plan v1 de una pérdida de paquete: notify_customer, file_claim, reserve_stock y reissue_shipment.<br/>Todos los mensajes viajan por el bus y cada ExecuteStep lleva su idempotency_key.
+  participant Rp as Replanificador<br/>(LLM)
+  Note over Orq,Rp: Flecha continua: comando REST síncrono con command_id (idempotente). La respuesta 202 solo confirma que el sistema lo acepta.<br/>Flecha abierta: evento por Kafka. La saga solo cambia de estado al consumir un evento, y cada comando tiene un plazo.
+  Orq->>Pl: (1) CreatePlan
+  Pl-->>Orq: 202
+  Pl-)Orq: (2) PlanCreated v1 (validado por su handler):<br/>notify_customer, file_claim, reserve_stock, reissue_shipment
   par pasos independientes en paralelo
-    Orq->>Av: (1.a) ExecuteStep notify_customer
+    Orq->>Av: (3.a) ExecuteStep notify_customer
   and
-    Orq->>Rc: (1.b) ExecuteStep file_claim
+    Orq->>Rc: (3.b) ExecuteStep file_claim
   and
-    Orq->>St: (1.c) ExecuteStep reserve_stock
+    Orq->>St: (3.c) ExecuteStep reserve_stock
   end
-  Av-->>Orq: (2.a) StepCompleted (CustomerNotified)
-  Rc-->>Orq: (2.b) StepCompleted (ClaimFiled)
-  St-->>Orq: (2.c) StepCompleted (StockReserved)
-  Orq->>En: (3) ExecuteStep reissue_shipment<br/>(depende de reserve_stock)
+  Av-)Orq: (4.a) StepCompleted (CustomerNotified)
+  Rc-)Orq: (4.b) StepCompleted (ClaimFiled)
+  St-)Orq: (4.c) StepCompleted (StockReserved)
+  Orq->>En: (5) ExecuteStep reissue_shipment<br/>(depende de reserve_stock)
   alt Camino feliz
-    En-->>Orq: (4) StepCompleted (ShipmentReissued)
-    Orq->>Orq: (5) IncidentResolved, outcome resolved
-  else El reenvío falla (carrier_rejected, no reintentable)
-    En-->>Orq: (4) StepFailed
-    Orq->>Rp: (5) StepFailed
-    Rp->>CH: (6) propone el plan v2:<br/>reembolso en lugar de reenvío
-    CH-->>Orq: (7) PlanRevised v2<br/>(validado: sin compensaciones en el plan, importe dentro del máximo)
-    Note over Orq,St: (8) El código deriva la compensación de reserve_stock<br/>y bloquea issue_refund hasta que termine
-    Orq->>St: (9) ExecuteStep release_stock<br/>(step_id reserve_stock-comp)
+    En-)Orq: (6) StepCompleted (ShipmentReissued)
+    Orq->>Orq: (7) IncidentResolved, outcome resolved
+  else El reenvío falla (carrier_rejected, no reintentable) o vence su plazo
+    En-)Orq: (6) StepFailed
+    Orq->>Rp: (7) RevisePlan (plan vigente, paso fallido, revisiones)
+    Rp-->>Orq: 202
+    Rp-)Orq: (8) PlanRevised v2: reembolso en lugar de reenvío<br/>(validado por su handler: sin compensaciones, importe dentro del máximo)
+    Note over Orq,St: (9) El código de la saga deriva la compensación de reserve_stock<br/>y retiene issue_refund hasta que termine
+    Orq->>St: (10) ExecuteStep release_stock<br/>(step_id reserve_stock-comp)
     alt La compensación termina bien
-      St-->>Orq: (10) StepCompleted (StockReleased)
-      Orq->>Rf: (11) ExecuteStep issue_refund<br/>(paso pivote, sin compensación)
+      St-)Orq: (11) StepCompleted (StockReleased)
+      Orq->>Rf: (12) ExecuteStep issue_refund<br/>(paso pivote, sin compensación)
       alt El reembolso termina bien
-        Rf-->>Orq: (12) StepCompleted (RefundIssued)
-        Orq->>Orq: (13) IncidentResolved, outcome refunded
+        Rf-)Orq: (13) StepCompleted (RefundIssued)
+        Orq->>Orq: (14) IncidentResolved, outcome refunded
       else El reembolso falla
-        Rf-->>Orq: (12) StepFailed
-        Orq->>Orq: (13) nueva revisión del plan o<br/>IncidentEscalated si se agotan las revisiones
+        Rf-)Orq: (13) StepFailed
+        Orq->>Orq: (14) nueva revisión del plan o escalado<br/>si se agotan las revisiones
       end
     else La compensación agota sus reintentos
-      St-->>Orq: (10) StepFailed
-      Orq->>Orq: (11) IncidentEscalated, compensation_failed<br/>(no se emite el reembolso)
+      St-)Orq: (11) StepFailed
+      Orq->>Orq: (12) IncidentEscalated, compensation_failed<br/>(no se invoca el reembolso)
     end
   end
 ```
 
-Operaciones y compensaciones de una pérdida de paquete, con los caminos de éxito, de reembolso tras compensar y de escalado.
+Operaciones y compensaciones de una pérdida de paquete, con los caminos de éxito, de reembolso tras compensar y de escalado. Si vence el plazo de un comando, la saga lo trata como un fallo no reintentable del paso (y pide su compensación si es compensable); si vence el de `CreatePlan`, `RevisePlan` o `issue_refund`, escala. Al escalar cancela los pasos pendientes y compensa las reservas cuyo dependiente no se completó.
 
 ### CQRS
 
 ```mermaid
 flowchart LR
   subgraph CMD["Lado de comandos (escritura)"]
-    A["Agentes, orquestación<br/>y ejecutores"]
-    CH["Command handler<br/>valida reglas, esquema<br/>y expected_version"]
-    TX[("PostgreSQL, una transacción<br/>incidents, plan_steps,<br/>events, outbox, inbox")]
+    SG["Saga<br/>(orquestador)"]
+    CH["Command handler del sistema<br/>(Aggregate)<br/>POST /commands/#lt;Comando#gt;"]
+    TX[("PostgreSQL, esquema del sistema<br/>inbox, estado y outbox<br/>en una transacción")]
   end
-  K["Kafka<br/>eda.events"]
+  K["Kafka<br/>eda.events<br/>solo eventos"]
   subgraph QRY["Lado de consultas (lectura)"]
     P["Proyectores<br/>idempotentes"]
-    V[("view_* y<br/>projector_offsets")]
-    Q["Consultas<br/>panel y agentes"]
+    V[("views.view_*<br/>y offsets")]
+    EL["event_log"]
+    EV[("event_log.events<br/>y offsets")]
+    Q["Consultas<br/>front, CLI, experimentos<br/>y otros sistemas"]
   end
-  A -- "(1) comando con<br/>command_id y expected_version" --> CH
-  CH -- "(2) estado y eventos<br/>en la misma transacción" --> TX
-  CH -. "rechaza:<br/>concurrency_conflict,<br/>incident_closed" .-> A
-  TX -- "(3) relay del outbox" --> K
-  K -- "(4) eventos a los<br/>consumidores" --> A
-  TX -- "(5) lee events por seq" --> P
-  P -- "(6) actualiza la vista<br/>y last_seq" --> V
-  Q -- "(7) solo lectura,<br/>responde con last_applied_seq" --> V
+  SG -- "(1) comando con command_id<br/>(idempotente, con reintentos)" --> CH
+  CH -- "(2) inbox, estado y eventos" --> TX
+  CH -. "202 aceptado<br/>o 422 rechazado" .-> SG
+  TX -- "(3) relay de su outbox" --> K
+  K -- "(4) evento de resultado" --> SG
+  K -- "(5) consumen eventos,<br/>offset por partición" --> P
+  K -- "(5)" --> EL
+  P -- "(6) vista y offset<br/>en una transacción" --> V
+  EL -- "(6)" --> EV
+  Q -- "(7) solo lectura,<br/>responde con applied" --> V
+  Q -- "(7) polling del front" --> EV
   classDef code fill:#E6F6EC,stroke:#2E9E5B,color:#1d1d1f
   classDef data fill:#F1F1EE,stroke:#8A8A80,color:#1d1d1f
-  classDef llm fill:#E3F0FF,stroke:#2B7DE0,color:#1d1d1f
-  class CH,P code
-  class TX,V,K data
-  class A,Q llm
+  classDef ext fill:#FFF3E0,stroke:#E08A2B,color:#1d1d1f
+  class SG,CH,P,EL code
+  class TX,V,K,EV data
+  class Q ext
 ```
 
-Lado de comandos (escritura) y lado de consultas (lectura). Los pasos (1) a (4) son el camino de escritura y (5) a (7), el de lectura.
+Lado de comandos (escritura) y lado de consultas (lectura). Los pasos (1) a (4) son el camino de escritura: la saga invoca el comando, el sistema lo acepta o lo rechaza, y el resultado vuelve como evento. Los pasos (5) a (7) son el de lectura: los componentes de consulta consumen Kafka, y las personas y los sistemas consultan sus proyecciones, que van con retraso (consistencia eventual).
 
 ## Patrones de la guía que se ejercitan
 
 | Patrón (guía «Patrones aplicados al desarrollo de agentes») | Capacidad |
 | --- | --- |
 | Planning orientado a eventos (9.2), Plan-and-Execute (3.3), Saga (6.3) | `incident-planning` |
-| Control optimista de concurrencia (5.6) | `cqrs-views` |
-| CQRS (9.4), Outbox (6.4) | `event-backbone`, `cqrs-views` |
+| CQRS (9.4), Outbox e Inbox (6.4) | `event-backbone`, `cqrs-views`, `idempotency` |
 | Idempotency key (6.2) | `idempotency` |
 | Retry con backoff y dead letter (6.6), Backpressure (5.7), Durable execution (6.1) | `resilience` |
 | Guardrails (3.9), Bounded autonomy (3.10) | `llm-boundaries` |
@@ -159,12 +170,12 @@ Lado de comandos (escritura) y lado de consultas (lectura). Los pasos (1) a (4) 
 
 | Capacidad | Resumen |
 | --- | --- |
-| `event-backbone` | Formato del evento, log de eventos, bus, orden y entrega |
+| `event-backbone` | Formato del evento, bus, orden y entrega, invocación de comandos y propiedad de los datos |
 | `incident-interpretation` | Agente intérprete: del aviso en texto libre a `ShipmentDelayed` |
 | `incident-planning` | Planner, replanner, versionado del plan, dependencias, compensación |
 | `step-execution` | Ejecutores de pasos y sus efectos |
 | `idempotency` | Claves, almacén de claves y reglas por efecto |
-| `cqrs-views` | Command handler, proyectores, vistas y reconstrucción |
+| `cqrs-views` | Command handlers de cada sistema, proyecciones, consultas, consistencia eventual y reconstrucción |
 | `resilience` | Reintentos, dead letter, recuperación y backpressure |
 | `llm-boundaries` | Validación de las salidas del LLM y límites de autonomía |
 | `observability-audit` | Trazas, coste por incidencia y auditoría |
@@ -179,17 +190,18 @@ Lado de comandos (escritura) y lado de consultas (lectura). Los pasos (1) a (4) 
 | `ShipmentDelayed` | Agente intérprete | `incident_id`, `order_ids`, `cause`, `estimated_delay_hours`, `severity` |
 | `PlanCreated` | Agente planificador | `incident_id`, `plan_version`, `steps[]` |
 | `PlanRevised` | Replanner | `incident_id`, `plan_version`, `steps[]`, `reason` |
-| `StepCompleted` (v2) | Ejecutor | `step_id`, `plan_version`, `result` |
-| `StepFailed` (v2) | Ejecutor | `step_id`, `plan_version`, `error`, `retryable`, `attempts` |
-| `StepCancelled` | Orquestación | `incident_id`, `plan_version`, `step_id` |
+| `OrderRegistered` | `inventory` | `order_id`, `customer_ref`, `amount` |
+| `StepCompleted` (v2) | Ejecutor o `inventory` | `step_id`, `plan_version`, `result` |
+| `StepFailed` (v2) | Ejecutor o `inventory` | `step_id`, `plan_version`, `error`, `retryable`, `attempts` |
+| `StepCancelled` | Saga (orquestador) | `incident_id`, `plan_version`, `step_id` |
 | `CustomerNotified` | Ejecutor | `order_id`, `message_id` |
 | `ClaimFiled` | Ejecutor | `order_id`, `claim_id` |
-| `StockReserved` | Ejecutor | `order_id`, `warehouse`, `reservation_id` |
-| `StockReleased` | Ejecutor | `reservation_id` |
+| `StockReserved` | `inventory` | `order_id`, `warehouse`, `reservation_id` |
+| `StockReleased` | `inventory` | `reservation_id` |
 | `ShipmentReissued` | Ejecutor | `order_id`, `new_shipment_id` |
 | `RefundIssued` | Ejecutor | `order_id`, `amount`, `refund_id` |
-| `IncidentResolved` | Orquestación | `incident_id`, `outcome` |
-| `IncidentEscalated` | Orquestación y agentes | `incident_id`, `reason` |
+| `IncidentResolved` | Saga (orquestador) | `incident_id`, `outcome` |
+| `IncidentEscalated` | Saga y agentes | `incident_id`, `reason` |
 | `LlmCallRecorded` | Agentes con LLM | `incident_id`, `agent`, `model`, `tokens_in`, `tokens_out`, `latency_ms`, `validation_passed`, `attempt` |
 
 ## Catálogo de comandos
@@ -207,6 +219,8 @@ Lado de comandos (escritura) y lado de consultas (lectura). Los pasos (1) a (4) 
 El orquestador no recibe comandos: es el process manager de la saga, consume eventos e invoca `CreatePlan`, `RevisePlan` y `ExecuteStep`. Cada sistema expone sus comandos por REST (`POST /commands/<Comando>`) y la saga los invoca de forma síncrona desde su `command_outbox`; los comandos nunca viajan por Kafka y su resultado llega como evento. Todo comando es idempotente: el handler lo deduplica con su inbox por `command_id`. Todos llevan `command_id` y como `causation_id` el evento que los originó; los de la saga llevan la `plan_version` vigente, y un plazo guardado en `orchestrator.deadlines`.
 
 ## Procesos
+
+> Esta sección describe los procesos del código actual. Cambiará con las tareas T2 a T10 de `odd/tasks/eda-component-ownership.md` (cada componente con su esquema, su relay, su API de comandos y su proceso).
 
 ### Puesta en marcha
 
@@ -247,12 +261,12 @@ Cada componente es un proceso independiente; los scripts anteriores los lanzan, 
 | `uv run eda-agent interpreter` | Interpreta `CarrierNoticeReceived` y abre la incidencia |
 | `uv run eda-agent planner` | Propone el plan a partir de `ShipmentDelayed` |
 | `uv run eda-agent replanner` | Revisa el plan ante un `StepFailed` no reintentable |
-| `uv run eda-orchestrator` | Saga: consume `ShipmentDelayed`, `PlanCreated`, `PlanRevised`, `StepCompleted`, `StepFailed` e `IncidentEscalated` e invoca por REST `CreatePlan`, `RevisePlan` y `ExecuteStep`, con plazos |
+| `uv run eda-orchestrator` | Traduce `PlanCreated`, `PlanRevised`, `StepCompleted` y `StepFailed` en `ApplyRevision`, `AdvancePlan` o `EscalateIncident` |
 | `uv run eda-notice [interactive --timeout N --no-free-text]` | Modo interactivo: menú para enviar avisos (de ejemplo o texto libre) y seguir cada incidencia en la vista `incident_status` hasta que se cierra; `--no-free-text` quita el texto libre del menú |
 | `uv run eda-notice seed` | Carga pedidos (`P-1001`…`P-1005`) y stock de ejemplo; repetirlo no duplica nada |
 | `uv run eda-notice send [--example delay\|loss\|out_of_stock\|injection] [--text "…"]` | Registra un aviso del transportista: la entrada que pone en marcha el flujo |
 | `uv run eda-web [--port N]` | Backend del front web (API y streams SSE) en `127.0.0.1`, puerto `WEB_PORT` (8000 por defecto); nunca escucha en otra interfaz |
-| `uv run eda-executor <acción>` | Atiende los comandos `ExecuteStep` de una acción (`notify_customer`, `file_claim`, `reserve_stock`, `release_stock`, `reissue_shipment`, `issue_refund`), un proceso por acción |
+| `uv run eda-executor <acción>` | Ejecuta los `StepRequested` de una acción (`notify_customer`, `file_claim`, `reserve_stock`, `release_stock`, `reissue_shipment`, `issue_refund`), un proceso por acción |
 
 Cada proceso escribe en stdout una línea por evento recibido, por comando (aceptado o rechazado, con los eventos que produce) y por reintento (`LOG_LEVEL`, por defecto `INFO`); el detalle completo está en las trazas de Jaeger (`http://localhost:16686`).
 
@@ -271,8 +285,8 @@ Anotadas aquí porque no estaban cerradas en la conversación; se pueden cambiar
 - CQRS sin event sourcing puro: cada sistema guarda su estado de escritura en sus tablas y publica sus eventos desde su outbox en la misma transacción. Las proyecciones (y la vista del log de `event_log`) se construyen consumiendo Kafka y se reconstruyen volviendo a consumir el topic.
 - Saga: solo `reserve_stock` tiene compensación (`release_stock`). `issue_refund` es el paso pivote y se ejecuta el último.
 - Los umbrales numéricos de las hipótesis (capacidad `experiments`) son valores iniciales.
-- Pila fijada: Python, Apache Kafka (Docker, KRaft, un broker) como bus y PostgreSQL (Docker, volumen persistente) como log de eventos, outbox, inbox y almacén de claves. Los detalles están en `../design.md`; el esquema SQL, en `../db/init/001_schema.sql`, y la infraestructura local, en `../docker-compose.yml`.
-- Los requisitos siguen hablando de «el bus», «el log» y «el almacén de claves» como conceptos; `design.md` indica cómo los materializa la pila.
+- Pila fijada: Python, Apache Kafka (Docker, KRaft, un broker) como bus de eventos y PostgreSQL (Docker, volumen persistente) como almacén de cada componente, con un esquema por componente y sin relaciones entre ellos: estado, outbox, inbox, claves de idempotencia y proyecciones. Los detalles están en `../design.md`; el esquema SQL, en `../db/init/001_schema.sql`, y la infraestructura local, en `../docker-compose.yml`.
+- Los requisitos hablan de «el bus», «el log» y «el almacén de claves» como conceptos; `design.md` indica cómo los materializa la pila.
 - El envío de correos, el transportista, el almacén y los pagos son simulados.
 - La `idempotency_key` se calcula con la versión del plan **en la que se creó el paso**, no con la vigente, para que un paso mantenido en una revisión conserve su clave y no se duplique. Esto afina la fórmula `hash(incident_id, plan_version, step_id)` del documento de casos de negocio.
 - La saga es un process manager reactivo en el orquestador: decide al consumir cada evento con el estado de `orchestrator.plan_steps`, invoca comandos por REST y no atiende ninguno. Varias compensaciones se encadenan en orden inverso al de los pasos originales.

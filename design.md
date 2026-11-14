@@ -82,7 +82,7 @@ La llamada al LLM y las consultas a las proyecciones se hacen **antes** de la tr
 - **Presupuesto del LLM:** cada llamada se registra en el `llm_calls` del componente y se publica como `LlmCallRecorded`. El proyector de `cost_per_incident` las suma y cada componente consulta esa proyección antes de llamar al LLM.
 - **Consultas:** las proyecciones (`event_log.events` y `views.view_*`, sección 8) las consultan las personas (el front, `eda-notice interactive` y los experimentos) y los sistemas que necesitan información de otro dominio (pedidos, presupuesto). Cada respuesta incluye la posición aplicada. Nadie lee las tablas de escritura de otro sistema.
 
-![CQRS](docs/diagrama-cqrs.png)
+Diagrama: «CQRS» en `docs/README.md` (en vector, `docs/diagrama-cqrs.pdf`).
 
 ### 4.3 Consistencia eventual
 
@@ -174,7 +174,7 @@ responder 202 (aceptado) o 422 (rechazado)
 
 Las compensaciones se ejecutan en orden inverso a los pasos originales y usan la misma idempotencia (`effect_keys` del ejecutor) que cualquier otro paso. Si una compensación agota sus reintentos, la incidencia se escala con `compensation_failed`.
 
-![Saga](docs/diagrama-saga.png)
+Diagrama: «Secuencia de la saga» en `docs/README.md` (en vector, `docs/diagrama-saga.pdf`).
 
 ## 5. Relay del outbox
 
