@@ -41,6 +41,15 @@ class NoticeInterpretation(LlmOutput):
     severity: Severity
 
 
+def notice_request(incident_id: str, carrier: str, raw_text: str) -> LlmRequest:
+    """Petición al LLM: el texto del aviso va delimitado como datos (contenido no confiable)."""
+    return LlmRequest(
+        agent=Interpreter.name, incident_id=incident_id, system=SYSTEM,
+        prompt=f"Transportista: {carrier}\n<aviso>\n{raw_text}\n</aviso>",
+        schema=strict_schema(NoticeInterpretation), max_tokens=2_000,
+    )
+
+
 def check_interpretation(value: NoticeInterpretation) -> str | None:
     if value.cause == Cause.UNKNOWN and value.severity.rank < Severity.MEDIUM.rank:
         return "una causa unknown exige severity medium o superior"
@@ -61,11 +70,7 @@ class Interpreter:
         incident_id = incident_id_for_notice(p["carrier_notice_id"])
         with conn.transaction():
             budget = self._handler.budget(conn, incident_id)
-        request = LlmRequest(
-            agent=self.name, incident_id=incident_id, system=SYSTEM,
-            prompt=f"Transportista: {p['carrier']}\n<aviso>\n{p['raw_text']}\n</aviso>",
-            schema=strict_schema(NoticeInterpretation), max_tokens=2_000,
-        )
+        request = notice_request(incident_id, p["carrier"], p["raw_text"])
         gen = generate(self._llm, request, NoticeInterpretation, max_generations=self._rules.max_generations,
                        budget=budget, check=check_interpretation)
         common = {"command_id": event.event_id, "expected_version": 0, "producer": self.name,

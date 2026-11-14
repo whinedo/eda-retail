@@ -1,7 +1,7 @@
 """Modo interactivo de `eda-notice`: envía avisos y sigue cómo avanza cada incidencia.
 
-Solo escribe por la entrada normal (`RegisterCarrierNotice`) y solo lee la vista
-`incident_status`, como cualquier cliente del lado de consulta (spec cqrs-views).
+Solo envía comandos por REST (`RegisterCarrierNotice` a `intake`, `SeedSampleData` a `inventory`)
+y solo lee la vista `incident_status`, como cualquier cliente del lado de consulta (spec cqrs-views).
 """
 
 from __future__ import annotations
@@ -11,8 +11,10 @@ from collections.abc import Callable
 
 import psycopg
 
+from eda_retail.infra.command_client import CommandUnavailable
 from eda_retail.queries.incident_status import IncidentStatus, get_incident_status
-from eda_retail.synthetic.sample import EXAMPLES, seed, send_notice
+from eda_retail.synthetic.client import NoticeClient, SeedRejected
+from eda_retail.synthetic.sample import EXAMPLES
 
 FINAL = ("resolved", "escalated")
 _EXAMPLES_MENU = ["\nAvisos de ejemplo:"] + [
@@ -70,6 +72,7 @@ def run(
     conn: psycopg.Connection,
     ask: Callable[[str], str],
     out: Out,
+    client: NoticeClient,
     *,
     timeout: float = 180.0,
     free_text: bool = True,
@@ -87,7 +90,11 @@ def run(
         if choice in ("q", "quit", "salir", ""):
             return
         if choice == "s":
-            orders, stock = seed(conn)
+            try:
+                orders, stock = client.seed()
+            except (CommandUnavailable, SeedRejected) as error:
+                out(f"error: {error}")
+                continue
             out(f"datos de ejemplo: {orders} pedidos y {stock} filas de stock nuevos")
             continue
         if choice == "t" and free_text:
@@ -100,9 +107,13 @@ def run(
         if not text:
             out("aviso vacío: no se envía")
             continue
-        sent = send_notice(conn, text)
-        if not sent.result.accepted:
-            out(f"aviso rechazado: {sent.result.reason}")
+        try:
+            sent = client.register(text)
+        except CommandUnavailable as error:
+            out(f"error: {error}")
+            continue
+        if not sent.accepted:
+            out(f"aviso rechazado: {sent.reason}")
             continue
         out(f"aviso {sent.carrier_notice_id} registrado; incidencia {sent.incident_id}")
         try:

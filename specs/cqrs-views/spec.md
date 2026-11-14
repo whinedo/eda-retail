@@ -199,6 +199,12 @@ Las proyecciones SHALL ser eventualmente consistentes: van por detrás de los du
 - **WHEN** vence su plazo sin que llegue el `OrderRegistered` de P-1007
 - **THEN** el intérprete publica `IncidentEscalated` con `no_valid_orders`
 
+#### Scenario: Pedido proyectado al vencer el plazo
+
+- **GIVEN** un aviso aparcado por el pedido P-1007 cuyo `OrderRegistered` el intérprete consumió antes de aparcarlo
+- **WHEN** vence su plazo y `view_orders` ya tiene P-1007
+- **THEN** el intérprete publica `ShipmentDelayed` con P-1007 en lugar de escalar
+
 ### Requirement: Nueva vista sin tocar la escritura
 
 Añadir una vista nueva MUST NOT requerir cambios en el command handler ni en los eventos existentes.

@@ -35,7 +35,7 @@ PROCESSES=(
   "executor-release_stock|eda-executor release_stock"
   "executor-reissue_shipment|eda-executor reissue_shipment"
   "executor-issue_refund|eda-executor issue_refund"
-  "agent-interpreter|eda-agent interpreter"
+  "interpreter|eda-interpreter"
   "agent-planner|eda-agent planner"
   "agent-replanner|eda-agent replanner"
 )
