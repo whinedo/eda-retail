@@ -311,3 +311,5 @@ E1 compara tres modos de idempotencia: `full` (todo activo), `no_effect_keys` (l
 | `uv run eda-experiment e7` | E7: 50 incidencias con un 50 % de fallos en `reserve_stock`; explica 10 elegidas al azar con `audit_trail` y la cadena de `causation_id` |
 
 Sin `--incidents`, cada experimento usa el tamaño de su escenario en la spec (E1 y E2: 50; E3: 30; E4: 200; E7: 50).
+
+La base síncrona de referencia (`baseline_sync/runner.py`) atiende cada aviso de principio a fin en una sola llamada, con los mismos prompts y comprobaciones de los agentes, las mismas reglas del plan, las mismas acciones de los ejecutores y las mismas compensaciones, pero sin `events`, outbox, inbox, vistas ni Kafka. Guarda el estado de negocio en una base de datos PostgreSQL propia de cada ejecución, así E6 compara las dos versiones con la misma base de datos. Recibe los mismos avisos y los mismos fallos de negocio que la versión de eventos; un aviso repetido devuelve la incidencia ya creada.
