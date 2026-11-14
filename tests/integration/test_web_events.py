@@ -44,7 +44,7 @@ def _step_requested(incident_id: str, action: str) -> dict:
 
 @pytest.fixture
 def client(database_url: str) -> TestClient:
-    return TestClient(create_app(database_url=database_url))
+    return TestClient(create_app(database_url=database_url), base_url="http://localhost")
 
 
 def test_page_backwards(conn, client: TestClient):
@@ -132,7 +132,7 @@ def test_direct_write_is_rejected(database_url: str):
 
 def _stream(database_url: str, **kwargs) -> list[int]:
     headers = kwargs.pop("headers", {})
-    client = TestClient(create_app(database_url=database_url, stream_max_polls=1))
+    client = TestClient(create_app(database_url=database_url, stream_max_polls=1), base_url="http://localhost")
     response = client.get("/api/events/stream", params=kwargs, headers=headers)
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/event-stream")

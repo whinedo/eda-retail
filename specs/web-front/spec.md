@@ -21,7 +21,7 @@ La pantalla SHALL tener una cabecera con el estado de la infraestructura, un men
 
 ### Requirement: Menú de comandos
 
-El menú SHALL ofrecer los comandos de `scripts/notice.sh`: `seed`, `send`, `send --example` (delay, loss, out_of_stock, injection), `send --text` (texto libre) e `interactive --timeout N`. El backend MUST ejecutarlos invocando `scripts/notice.sh` con una lista blanca de argumentos y SHALL mostrar su salida en el menú a medida que se produce.
+El menú SHALL ofrecer los comandos de `scripts/notice.sh`: `seed`, `send`, `send --example` (delay, loss, out_of_stock, injection), `send --text` (texto libre) e `interactive --timeout N`. El backend MUST ejecutarlos invocando `scripts/notice.sh` con una lista blanca de argumentos, sin shell, y SHALL mostrar su salida (estándar y de error) en el menú a medida que se produce. Los ejemplos admitidos son los de `eda_retail.synthetic.sample.EXAMPLES`; el texto libre MUST tener entre 1 y 2000 caracteres. Una ejecución MUST terminar a los 15 minutos como mucho, para que un proceso colgado no bloquee el menú.
 
 #### Scenario: Ejecutar un aviso de ejemplo
 
@@ -47,6 +47,12 @@ El menú SHALL ofrecer los comandos de `scripts/notice.sh`: `seed`, `send`, `sen
 - **GIVEN** que `scripts/notice.sh` avisa de que los agentes no están en marcha
 - **WHEN** el usuario ejecuta `send`
 - **THEN** la salida muestra ese aviso tal cual
+
+#### Scenario: Ejecución que no termina
+
+- **GIVEN** un comando en ejecución que supera el tiempo máximo (15 minutos)
+- **WHEN** se cumple ese tiempo
+- **THEN** el backend termina el proceso y su grupo, y la salida acaba con un código de salida distinto de 0
 
 ### Requirement: Mapa de sistemas
 
@@ -156,7 +162,7 @@ El emisor de un evento SHALL ser el campo `producer` del evento. El destino SHAL
 
 ### Requirement: Acceso de solo lectura y local
 
-El backend SHALL leer los eventos de la tabla `events` y el estado de las incidencias de las vistas `view_*`, sin escribir en ninguna tabla. SHALL escuchar solo en `127.0.0.1`, no admitir orígenes distintos de `localhost` y ejecutar un único comando a la vez.
+El backend SHALL leer los eventos de la tabla `events` y el estado de las incidencias de las vistas `view_*`, sin escribir en ninguna tabla. SHALL escuchar solo en `127.0.0.1`, no admitir orígenes distintos de `localhost` y ejecutar un único comando a la vez. SHALL rechazar con 403 las peticiones cuya cabecera `Host` no sea `localhost`, `127.0.0.1` o `[::1]` (con o sin puerto), para que una web externa no pueda llegar al backend redirigiendo su dominio a 127.0.0.1 (DNS rebinding).
 
 #### Scenario: Escritura directa rechazada
 
@@ -170,9 +176,15 @@ El backend SHALL leer los eventos de la tabla `events` y el estado de las incide
 - **WHEN** llega otra petición de ejecución
 - **THEN** se rechaza con 409
 
+#### Scenario: Host ajeno
+
+- **GIVEN** una petición con la cabecera `Host: evil.example`
+- **WHEN** llega a cualquier endpoint
+- **THEN** se rechaza con 403
+
 ### Requirement: Comando interactivo
 
-`interactive --timeout N` SHALL ejecutarse con una pseudoterminal y el front SHALL ofrecer una entrada de texto para enviar líneas a su entrada estándar mientras dure la sesión. N MUST estar entre 1 y 600.
+`interactive --timeout N` SHALL ejecutarse con una pseudoterminal y el front SHALL ofrecer una entrada de texto para enviar líneas a su entrada estándar mientras dure la sesión. N MUST estar entre 1 y 600. Cada línea MUST tener como mucho 200 caracteres y ningún salto de línea; enviar una línea a una ejecución que no es interactiva o que ya terminó se rechaza con 409.
 
 #### Scenario: Responder al menú
 
@@ -234,7 +246,7 @@ La cabecera SHALL ofrecer un enlace a la interfaz web de Jaeger, que se abre en 
 | `GET /api/nodes/{id}` | Detalle y métricas de un nodo |
 | `GET /api/health` | Kafka, PostgreSQL, Ollama y procesos |
 | `POST /api/commands` | Ejecuta un comando de la lista blanca; devuelve `run_id` |
-| `GET /api/commands/{run_id}/stream` | SSE con la salida |
+| `GET /api/commands/{run_id}/stream` | SSE con la salida y, al final, el código de salida |
 | `POST /api/commands/{run_id}/input` | Línea para `interactive` |
 
 ## Decisiones abiertas

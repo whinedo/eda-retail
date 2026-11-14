@@ -8,15 +8,28 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterator
+from pathlib import Path
 from typing import Annotated
 
 import psycopg
-from fastapi import Depends, FastAPI, Header, Query, Request
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from eda_retail.config import load_settings
+from eda_retail.web.commands import (
+    NOTICE_SCRIPT,
+    RUN_MAX_SECONDS,
+    SCRIPT_LABEL,
+    CommandRequest,
+    CommandRunner,
+    InputLine,
+    RunnerBusy,
+    RunNotAcceptingInput,
+    RunNotFound,
+    output_stream,
+)
 from eda_retail.web.db import read_only_connect
 from eda_retail.web.events import DEFAULT_LIMIT, MAX_LIMIT, events_after, last_seq, list_events
 from eda_retail.web.stream import event_stream, start_seq
@@ -24,18 +37,21 @@ from eda_retail.web.stream import event_stream, start_seq
 # Orígenes admitidos: http(s) en localhost, 127.0.0.1 o ::1, con cualquier puerto
 # (el servidor de Vite en desarrollo y el propio backend).
 LOCAL_ORIGIN = re.compile(r"^https?://(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$")
+# Cabecera Host admitida: frena el DNS rebinding (un dominio ajeno que resuelve a 127.0.0.1).
+LOCAL_HOST = re.compile(r"^(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$")
 
 
 class LocalOriginGuard:
-    """Rechaza con 403 cualquier petición HTTP cuya cabecera Origin no sea de localhost."""
+    """Rechaza con 403 cualquier petición HTTP cuyo Host u Origin no sean de localhost."""
 
     def __init__(self, app: ASGIApp) -> None:
         self.app = app
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] == "http":
+            host = _header(scope, b"host")
             origin = _header(scope, b"origin")
-            if origin is not None and not LOCAL_ORIGIN.match(origin):
+            if host is None or not LOCAL_HOST.match(host) or (origin is not None and not LOCAL_ORIGIN.match(origin)):
                 await _forbidden(send)
                 return
         await self.app(scope, receive, send)
@@ -68,11 +84,18 @@ def _read_only_conn(request: Request) -> Iterator[psycopg.Connection]:
 Conn = Annotated[psycopg.Connection, Depends(_read_only_conn)]
 
 
-def create_app(database_url: str | None = None, *, stream_max_polls: int | None = None) -> FastAPI:
-    """`stream_max_polls` corta el stream tras N lecturas; solo lo usan los tests."""
+def create_app(
+    database_url: str | None = None,
+    *,
+    stream_max_polls: int | None = None,
+    notice_script: Path = NOTICE_SCRIPT,
+    run_max_seconds: float = RUN_MAX_SECONDS,
+) -> FastAPI:
+    """`stream_max_polls`, `notice_script` y `run_max_seconds` solo los cambian los tests."""
     app = FastAPI(title="eda-retail web", docs_url=None, redoc_url=None, openapi_url=None)
     app.state.database_url = database_url or load_settings().database_url
     app.state.stream_max_polls = stream_max_polls
+    runner = CommandRunner(notice_script, run_max_seconds)
     app.add_middleware(
         CORSMiddleware,
         allow_origin_regex=LOCAL_ORIGIN.pattern,
@@ -110,8 +133,38 @@ def create_app(database_url: str | None = None, *, stream_max_polls: int | None 
                 start = start_seq(last_event_id=last_event_id, after_seq=after_seq, current_last=lambda: last_seq(conn))
                 yield from event_stream(lambda after: events_after(conn, after), start, max_polls=max_polls)
 
-        return StreamingResponse(
-            frames(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
-        )
+        return _sse(frames())
+
+    @app.post("/api/commands", status_code=202)
+    def run_command(body: CommandRequest) -> dict:
+        try:
+            run = runner.start(body)
+        except RunnerBusy:
+            raise HTTPException(409, "ya hay un comando en ejecución") from None
+        return {"run_id": run.run_id, "argv": [SCRIPT_LABEL, *body.args()]}
+
+    @app.get("/api/commands/{run_id}/stream")
+    def command_stream(run_id: str, last_event_id: Annotated[str | None, Header()] = None) -> StreamingResponse:
+        try:
+            run = runner.get(run_id)
+        except RunNotFound:
+            raise HTTPException(404, "ejecución desconocida") from None
+        return _sse(output_stream(run, last_event_id))
+
+    @app.post("/api/commands/{run_id}/input", status_code=202)
+    def command_input(run_id: str, body: InputLine) -> dict:
+        try:
+            runner.send_line(run_id, body.line)
+        except RunNotFound:
+            raise HTTPException(404, "ejecución desconocida") from None
+        except RunNotAcceptingInput:
+            raise HTTPException(409, "la ejecución no es interactiva o ya terminó") from None
+        return {"ok": True}
 
     return app
+
+
+def _sse(frames: Iterator[str]) -> StreamingResponse:
+    return StreamingResponse(
+        frames, media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
+    )
