@@ -18,7 +18,7 @@ def llm_metrics(conn: psycopg.Connection, agent: str) -> dict[str, int]:
                coalesce(sum((payload->>'tokens_out')::bigint), 0) AS tokens_out,
                coalesce(round(avg((payload->>'latency_ms')::numeric)), 0) AS avg_latency_ms,
                count(*) FILTER (WHERE (payload->>'validation_passed')::boolean) AS validations_passed
-          FROM events
+          FROM event_log.events
          WHERE event_type = 'LlmCallRecorded' AND payload->>'agent' = %s
         """,
         (agent,),
@@ -28,7 +28,7 @@ def llm_metrics(conn: psycopg.Connection, agent: str) -> dict[str, int]:
 
 def emitted_types(conn: psycopg.Connection, producer: str) -> list[str]:
     rows = conn.execute(
-        "SELECT DISTINCT event_type FROM events WHERE producer = %s ORDER BY event_type", (producer,)
+        "SELECT DISTINCT event_type FROM event_log.events WHERE producer = %s ORDER BY event_type", (producer,)
     ).fetchall()
     return [r["event_type"] for r in rows]
 

@@ -65,6 +65,7 @@ def test_interpolated_table_targets_are_reported():
 def test_component_packages_only_write_their_schema():
     """Escritura fuera de su esquema: el código de cada componente solo escribe en su esquema"""
     for package, schema in ownership.COMPONENT_PACKAGES.items():
+        assert (SRC / package).is_dir(), package
         for path in sorted((SRC / package).rglob("*.py")):
             found = ownership.foreign_writes(path.read_text(), schema)
             assert found == [], f"{path}: {found}"

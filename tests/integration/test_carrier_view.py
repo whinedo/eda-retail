@@ -3,13 +3,12 @@
 from __future__ import annotations
 
 import uuid
-from datetime import timedelta
 
 from eda_retail.events.catalog import build_event
 from eda_retail.events.envelope import EventEnvelope
-from eda_retail.infra.event_store import append_events
-from eda_retail.projectors.carrier_dashboard import PROJECTOR_NAME, build_projector
 from eda_retail.queries.carrier_dashboard import get_carrier_dashboard
+
+from .projection_helpers import catch_up, publish
 
 
 def _event(incident: str, event_type: str, payload: dict) -> EventEnvelope:
@@ -32,11 +31,12 @@ def _incident(carrier: str | None, cause: str, *, claim: bool = False, refund: b
     return events
 
 
-def _catch_up(conn) -> None:
-    # Sin espera en los huecos: la base de tests es compartida y otros tests dejan rollbacks.
-    projector = build_projector(gap_timeout=timedelta(0))
-    while projector.run_once(conn):
-        pass
+def _catch_up(settings, conn) -> None:
+    catch_up(settings, conn, "carrier_dashboard")
+
+
+def _board(settings, conn):
+    return get_carrier_dashboard(conn, topic=settings.events_topic)
 
 
 def _counts(board, carrier: str) -> tuple[int, int, int, int] | None:
@@ -48,59 +48,50 @@ def _carriers() -> tuple[str, str]:
     return f"fast-{uuid.uuid4().hex[:6]}", f"slow-{uuid.uuid4().hex[:6]}"
 
 
-def test_carrier_dashboard_counts_per_carrier(conn):
+def test_carrier_dashboard_counts_per_carrier(conn, settings):
     """El panel cuenta incidencias, retrasos, reclamaciones y reembolsos por transportista"""
     fast, slow = _carriers()
-    with conn.transaction():
-        append_events(conn, [
-            *_incident(fast, "delay"),
-            *_incident(fast, "loss", claim=True, refund=True),
-            *_incident(slow, "delay", claim=True),
-            *_incident(slow, "delay"),
-            *_incident(slow, "damage", refund=True),
-        ])
-    _catch_up(conn)
-    board = get_carrier_dashboard(conn)
+    publish(settings, [
+        *_incident(fast, "delay"),
+        *_incident(fast, "loss", claim=True, refund=True),
+        *_incident(slow, "delay", claim=True),
+        *_incident(slow, "delay"),
+        *_incident(slow, "damage", refund=True),
+    ])
+    _catch_up(settings, conn)
+    board = _board(settings, conn)
     assert _counts(board, fast) == (2, 1, 1, 1)
     assert _counts(board, slow) == (3, 2, 1, 1)
 
 
-def test_carrier_dashboard_without_notice_is_unknown(conn):
+def test_carrier_dashboard_without_notice_is_unknown(conn, settings):
     """Una incidencia sin aviso del transportista cuenta como transportista unknown"""
-    _catch_up(conn)
-    before = _counts(get_carrier_dashboard(conn), "unknown") or (0, 0, 0, 0)
-    with conn.transaction():
-        append_events(conn, _incident(None, "delay", claim=True))
-    _catch_up(conn)
-    after = _counts(get_carrier_dashboard(conn), "unknown")
+    _catch_up(settings, conn)
+    before = _counts(_board(settings, conn), "unknown") or (0, 0, 0, 0)
+    publish(settings, _incident(None, "delay", claim=True))
+    _catch_up(settings, conn)
+    after = _counts(_board(settings, conn), "unknown")
     assert after == (before[0], before[1] + 1, before[2] + 1, before[3])
 
 
-def test_carrier_dashboard_new_projector_replays_history(conn):
+def test_carrier_dashboard_new_projector_replays_history(conn, settings):
     """Vista de reclamaciones por transportista"""
     fast, _ = _carriers()
-    with conn.transaction():
-        append_events(conn, [*_incident(fast, "loss", claim=True), *_incident(fast, "loss", claim=True)])
-    with conn.transaction():  # proyector recién desplegado: sin posición ni filas
-        conn.execute("DELETE FROM projector_offsets WHERE projector = %s", (PROJECTOR_NAME,))
-        conn.execute("DELETE FROM view_carrier_dashboard")
-        conn.execute("DELETE FROM view_carrier_incidents")
-    _catch_up(conn)
-    board = get_carrier_dashboard(conn)
+    publish(settings, [*_incident(fast, "loss", claim=True), *_incident(fast, "loss", claim=True)])
+    # Proyector recién desplegado sobre un topic con historia: sin posición, consume desde el principio.
+    _catch_up(settings, conn)
+    board = _board(settings, conn)
     assert _counts(board, fast) == (2, 0, 2, 0)
-    assert board.last_applied_seq > 0
+    assert board.applied
 
 
-def test_carrier_dashboard_duplicate_event_does_not_change_view(conn):
+def test_carrier_dashboard_duplicate_event_does_not_change_view(conn, settings):
     """Evento duplicado en un proyector"""
     fast, _ = _carriers()
     events = _incident(fast, "delay", claim=True, refund=True)
-    with conn.transaction():
-        seqs = append_events(conn, events)
-    _catch_up(conn)
-    before = _counts(get_carrier_dashboard(conn), fast)
-    projector = build_projector()
-    with conn.transaction():
-        for seq, event in zip(seqs, events, strict=True):
-            projector.apply(conn, seq, event)
-    assert _counts(get_carrier_dashboard(conn), fast) == before == (1, 1, 1, 1)
+    publish(settings, events)
+    _catch_up(settings, conn)
+    before = _counts(_board(settings, conn), fast)
+    publish(settings, events)  # los mismos eventos otra vez, con offsets nuevos
+    _catch_up(settings, conn)
+    assert _counts(_board(settings, conn), fast) == before == (1, 1, 1, 1)

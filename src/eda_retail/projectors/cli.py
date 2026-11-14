@@ -1,8 +1,8 @@
-"""Proceso de los proyectores: `eda-projector`. Lee `events` por `seq`, no Kafka.
+"""Proceso de los proyectores: `eda-projector`. Consume `eda.events` de Kafka.
 
-- `eda-projector`: mantiene las cuatro vistas, cada proyector con su posición.
-- `eda-projector rebuild <vista>`: reconstruye una vista desde el log e imprime las huellas
-  antes y después y el tiempo de reconstrucción (experimento E4).
+- `eda-projector`: mantiene las vistas `views.view_*`, cada proyector con su offset por partición.
+- `eda-projector rebuild <vista>`: reconstruye una vista volviendo a consumir el topic desde el
+  principio e imprime las huellas antes y después y el tiempo de reconstrucción (experimento E4).
 """
 
 from __future__ import annotations
@@ -16,6 +16,7 @@ from eda_retail.config import load_settings
 from eda_retail.infra.db import connect
 from eda_retail.infra.logs import setup_logging
 from eda_retail.infra.tracing import setup_tracing
+from eda_retail.projectors.base import consumer_for
 from eda_retail.projectors.rebuild import rebuild
 from eda_retail.projectors.registry import PROJECTORS, build_all
 
@@ -24,24 +25,28 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Proyectores de las vistas CQRS")
     parser.add_argument("--idle-seconds", type=float, default=0.2, help="espera cuando no hay eventos nuevos")
     commands = parser.add_subparsers(dest="command")
-    rebuild_cmd = commands.add_parser("rebuild", help="reconstruye una vista reproduciendo el log desde seq 1")
+    rebuild_cmd = commands.add_parser("rebuild", help="reconstruye una vista volviendo a consumir el topic desde el principio")
     rebuild_cmd.add_argument("view", choices=sorted(PROJECTORS), help="vista a reconstruir")
     return parser.parse_args(argv)
 
 
-def _run(conn, idle_seconds: float) -> None:
+def _run(settings, conn, idle_seconds: float) -> None:
     log = logging.getLogger("eda_retail.projector")
-    projectors = build_all()
-    while True:
-        advanced = sum(p.run_once(conn) for p in projectors)
-        if advanced:
-            log.info("vistas al día: %d eventos aplicados", advanced)
-        else:
-            time.sleep(idle_seconds)
+    consumers = [consumer_for(p, settings, conn) for p in build_all()]
+    try:
+        while True:
+            advanced = sum(c.run_once(timeout=0) for c in consumers)
+            if advanced:
+                log.info("vistas al día: %d eventos aplicados", advanced)
+            else:
+                time.sleep(idle_seconds)
+    finally:
+        for c in consumers:
+            c.close()
 
 
-def _rebuild(conn, view: str) -> int:
-    result = rebuild(conn, view)
+def _rebuild(settings, conn, view: str) -> int:
+    result = rebuild(settings, conn, view)
     print(f"vista: {result.view}")
     print(f"huella antes:   {result.fingerprint_before}")
     print(f"huella después: {result.fingerprint_after}")
@@ -59,8 +64,8 @@ def main(argv: list[str] | None = None) -> None:
     conn = connect(settings.database_url)
     try:
         if args.command == "rebuild":
-            sys.exit(_rebuild(conn, args.view))
-        _run(conn, args.idle_seconds)
+            sys.exit(_rebuild(settings, conn, args.view))
+        _run(settings, conn, args.idle_seconds)
     finally:
         conn.close()
         if provider is not None:

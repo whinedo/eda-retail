@@ -70,9 +70,9 @@ El experimento E4 SHALL borrar cada vista y reconstruirla volviendo a consumir e
 
 #### Scenario: Reconstrucción completa
 
-- **GIVEN** un log de 200 incidencias y las cuatro vistas pobladas
+- **GIVEN** un log de 200 incidencias y las vistas pobladas
 - **WHEN** se borran y se reproducen
-- **THEN** las cuatro huellas coinciden
+- **THEN** la huella de cada vista coincide con la original
 - **AND** el informe indica el tiempo por vista
 
 ### Requirement: E5 Calidad del plan (hipótesis H5)

@@ -30,7 +30,8 @@ def scratch_db(database_url: str):
 def _columns(url: str, table: str) -> set[str]:
     with psycopg.connect(url) as c:
         rows = c.execute(
-            "SELECT column_name FROM information_schema.columns WHERE table_name = %s", (table,)
+            "SELECT column_name FROM information_schema.columns WHERE table_schema = 'public' AND table_name = %s",
+            (table,),
         ).fetchall()
     return {r[0] for r in rows}
 

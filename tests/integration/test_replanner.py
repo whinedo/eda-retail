@@ -14,7 +14,7 @@ from eda_retail.llm.fake import FakeLlmClient
 from eda_retail.projectors.base import load_event
 
 from .command_helpers import RULES, events_of, handler, open_incident
-from .test_incident_status import _catch_up, _status_projector
+from .projection_helpers import project
 from .test_plans import LOSS_PLAN, create, revise
 from .test_steps import record, request
 
@@ -48,8 +48,8 @@ def _last_failed(conn, incident: str):
     return load_event(row)
 
 
-def _replan(conn, failed, outputs, rules=RULES, **kw):
-    _catch_up(conn, _status_projector())
+def _replan(settings, conn, failed, outputs, rules=RULES, **kw):
+    project(settings, conn, "incident_status", failed.correlation_id)
     h = CommandHandler(rules)
     fake = FakeLlmClient(outputs)
     AgentRunner(Replanner(fake, h, **kw), h).process(conn, failed)
@@ -60,10 +60,10 @@ def _of_type(conn, incident, event_type):
     return [e for e in events_of(conn, incident) if e["event_type"] == event_type]
 
 
-def test_out_of_stock(conn):
+def test_out_of_stock(conn, settings):
     """Sin stock en el almacén"""
     incident, failed = _out_of_stock(conn)
-    fake = _replan(conn, failed, [REFUND_PLAN])
+    fake = _replan(settings, conn, failed, [REFUND_PLAN])
     [revised] = _of_type(conn, incident, "PlanRevised")
     actions = [s["action"] for s in revised["payload"]["steps"]]
     assert revised["payload"]["plan_version"] == 2
@@ -74,11 +74,11 @@ def test_out_of_stock(conn):
     assert "S1" in prompt and "completed" in prompt and "out_of_stock" in prompt  # el plan sale de la vista
 
 
-def test_step_kept_between_versions(conn):
+def test_step_kept_between_versions(conn, settings):
     """Paso mantenido entre versiones"""
     incident, failed = _out_of_stock(conn)
     renamed = {"steps": [_step("S9", "file_claim"), _step("S5", "issue_refund", amount=50.0)]}
-    fake = _replan(conn, failed, [renamed, REFUND_PLAN])
+    fake = _replan(settings, conn, failed, [renamed, REFUND_PLAN])
     [revised] = _of_type(conn, incident, "PlanRevised")
     assert "S2" in [s["step_id"] for s in revised["payload"]["steps"]]
     assert "step_id_changed" in fake.requests[1].prompt  # el código exige reutilizar S2
@@ -86,25 +86,25 @@ def test_step_kept_between_versions(conn):
     assert calls == [False, True]
 
 
-def test_revisions_exhausted(conn):
+def test_revisions_exhausted(conn, settings):
     """Revisiones agotadas"""
     rules = replace(RULES, max_plan_revisions=1)
     incident, _ = _out_of_stock(conn)
     assert revise(conn, incident, [_step("S2", "file_claim"), _step("S5", "issue_refund", amount=50.0)]).accepted
     assert request(conn, incident, "S2").accepted
     assert record(conn, incident, "S2", outcome="failed", error="carrier_rejected", retryable=False).accepted
-    fake = _replan(conn, _last_failed(conn, incident), [], rules=rules)
+    fake = _replan(settings, conn, _last_failed(conn, incident), [], rules=rules)
     assert fake.requests == []
     assert [e["payload"]["reason"] for e in _of_type(conn, incident, "IncidentEscalated")] == ["max_revisions"]
 
 
-def test_retryable_failure_is_ignored(conn):
+def test_retryable_failure_is_ignored(conn, settings):
     """Un StepFailed reintentable no se replanifica (lo reintenta la orquestación)"""
     incident, _ = open_incident(conn)
     create(conn, incident, LOSS_PLAN)
     assert request(conn, incident, "S2").accepted
     assert record(conn, incident, "S2", outcome="failed", error="timeout", retryable=True).accepted
-    fake = _replan(conn, _last_failed(conn, incident), [])
+    fake = _replan(settings, conn, _last_failed(conn, incident), [])
     assert fake.requests == [] and not _of_type(conn, incident, "PlanRevised")
 
 

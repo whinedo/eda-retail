@@ -3,15 +3,15 @@
 from __future__ import annotations
 
 import uuid
-from datetime import timedelta
+from dataclasses import replace
 from decimal import Decimal
 
 from eda_retail.config import Settings
 from eda_retail.events.catalog import build_event
 from eda_retail.events.envelope import EventEnvelope
-from eda_retail.infra.event_store import append_events
-from eda_retail.projectors.cost_per_incident import build_projector
 from eda_retail.queries.cost_per_incident import Prices, get_incident_cost
+
+from .projection_helpers import catch_up, publish
 
 PRICES = Prices(
     llm_in_per_1k=Decimal("0.5"), llm_out_per_1k=Decimal("1.5"),
@@ -38,62 +38,58 @@ def _effects(incident: str) -> list[EventEnvelope]:
     ]
 
 
-def _catch_up(conn) -> None:
-    # Sin espera en los huecos: la base de tests es compartida y otros tests dejan rollbacks.
-    projector = build_projector(gap_timeout=timedelta(0))
-    while projector.run_once(conn):
-        pass
+def _catch_up(settings, conn) -> None:
+    catch_up(settings, conn, "cost_per_incident")
+
+
+def _cost(settings, conn, incident: str):
+    return get_incident_cost(conn, incident, PRICES, topic=settings.events_topic)
 
 
 def _incident() -> str:
     return f"I-{uuid.uuid4().hex[:8]}"
 
 
-def test_cost_with_plan_revision(conn):
+def test_cost_with_plan_revision(conn, settings):
     """Incidencia con una revisión del plan"""
     incident = _incident()
-    with conn.transaction():
-        append_events(conn, [
-            _llm(incident, "interpreter", 300, 40),
-            _llm(incident, "planner", 500, 200),
-            _llm(incident, "replanner", 600, 100, passed=False),  # rechazada: también cuenta
-            _llm(incident, "replanner", 600, 160),
-            *_effects(incident),
-        ])
-    _catch_up(conn)
-    cost = get_incident_cost(conn, incident, PRICES)
+    publish(settings, [
+        _llm(incident, "interpreter", 300, 40),
+        _llm(incident, "planner", 500, 200),
+        _llm(incident, "replanner", 600, 100, passed=False),  # rechazada: también cuenta
+        _llm(incident, "replanner", 600, 160),
+        *_effects(incident),
+    ])
+    _catch_up(settings, conn)
+    cost = _cost(settings, conn, incident)
     assert (cost.llm_calls, cost.tokens_in, cost.tokens_out) == (4, 2000, 500)
     assert (cost.claims, cost.reissues, cost.refunds_amount) == (1, 1, Decimal("25.50"))
     assert cost.llm_cost == Decimal(2000) / 1000 * Decimal("0.5") + Decimal(500) / 1000 * Decimal("1.5")
     assert cost.effects_cost == Decimal(4) + Decimal(7) + Decimal("25.50")
 
 
-def test_cost_duplicate_event_does_not_change_view(conn):
+def test_cost_duplicate_event_does_not_change_view(conn, settings):
     """Evento duplicado en un proyector"""
     incident = _incident()
-    with conn.transaction():
-        seqs = append_events(conn, [_llm(incident, "planner", 500, 200), *_effects(incident)])
-    _catch_up(conn)
-    before = get_incident_cost(conn, incident, PRICES)
-    projector = build_projector()
     events = [_llm(incident, "planner", 500, 200), *_effects(incident)]
-    with conn.transaction():
-        for seq, event in zip(seqs, events, strict=True):
-            projector.apply(conn, seq, event)  # el mismo seq otra vez
-    after = get_incident_cost(conn, incident, PRICES)
-    assert after == before
+    publish(settings, events)
+    _catch_up(settings, conn)
+    before = _cost(settings, conn, incident)
+    publish(settings, events)  # los mismos eventos otra vez, con offsets nuevos
+    _catch_up(settings, conn)
+    after = _cost(settings, conn, incident)
+    assert after.applied != before.applied  # la posición avanza con los mensajes reenviados
+    assert replace(after, applied=before.applied) == before  # la vista no cambia
 
 
-def test_cost_read_right_after_write(conn):
+def test_cost_read_right_after_write(conn, settings):
     """Lectura justo después de escribir"""
     incident = _incident()
-    with conn.transaction():
-        append_events(conn, [_llm(incident, "interpreter", 10, 5)])
-    _catch_up(conn)
-    with conn.transaction():
-        [seq] = append_events(conn, [_llm(incident, "planner", 10, 5)])
-    cost = get_incident_cost(conn, incident, PRICES)
-    assert cost.last_applied_seq < seq
+    publish(settings, [_llm(incident, "interpreter", 10, 5)])
+    _catch_up(settings, conn)
+    [e1] = publish(settings, [_llm(incident, "planner", 10, 5)])
+    cost = _cost(settings, conn, incident)
+    assert cost.applied.get(e1.partition, -1) < e1.offset
     assert cost.llm_calls == 1  # todavía sin el evento nuevo
 
 

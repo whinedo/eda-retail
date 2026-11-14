@@ -30,7 +30,7 @@ def receivers(event_type: str, payload: dict[str, Any]) -> list[str]:
 
 
 def node_condition(node: str) -> tuple[str, list[Any]]:
-    """Condición SQL sobre `events` para los eventos que `node` emite o consume."""
+    """Condición SQL sobre `event_log.events` para los eventos que `node` emite o consume."""
     if node == PROJECTORS:
         return "TRUE", []
     consumes: list[str] = []

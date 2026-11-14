@@ -46,17 +46,16 @@ def explain(h: Harness, incident_id: str) -> list[dict]:
     ).fetchall()
     h.conn.commit()
     by_id = {str(r["event_id"]): r for r in rows}
-    by_seq = {r["seq"]: r for r in rows}
     plans = {}
     for e in trail.entries:
         if e.decision in _PLANS:
-            reason = e.reason if e.decision == "PlanRevised" else _origin(by_id, by_seq[e.seq])
+            reason = e.reason if e.decision == "PlanRevised" else _origin(by_id, by_id[str(e.event_id)])
             plans[e.plan_version] = {"agent": e.actor, "reason": reason}
     decisions = []
     for e in trail.entries:
         if e.decision.startswith("StepRequested:"):
             plan = plans.get(e.plan_version, {})
-            decisions.append({"seq": e.seq, "action": e.decision.split(":", 1)[1], "plan_version": e.plan_version,
+            decisions.append({"event_id": str(e.event_id), "action": e.decision.split(":", 1)[1], "plan_version": e.plan_version,
                               "agent": plan.get("agent"), "reason": plan.get("reason")})
     return decisions
 
@@ -65,7 +64,7 @@ def run_e7(base: Settings, *, seed: int = 42, incidents: int = 50, sample: int =
     config = RunConfig(seed=seed, incidents=incidents, faults=FaultPlan(seed=seed, fail_probability=FAILING))
     with started(base, config) as h:
         model = h.result(h.elapsed).model
-        ids = sorted(r["incident_id"] for r in h.conn.execute("SELECT incident_id FROM view_incident_status"))
+        ids = sorted(r["incident_id"] for r in h.conn.execute("SELECT incident_id FROM views.view_incident_status"))
         h.conn.commit()
         chosen = random.Random(seed).sample(ids, min(sample, len(ids)))
         explained = [{"incident_id": i, "decisions": explain(h, i)} for i in chosen]

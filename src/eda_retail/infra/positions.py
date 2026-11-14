@@ -1,0 +1,183 @@
+"""Consumidor de Kafka con la posición en PostgreSQL, para los componentes de consulta (design.md §8,
+spec cqrs-views "Vistas en PostgreSQL con posición en Kafka" y "Reconstrucción de vistas").
+
+`event_log` y cada proyector guardan en `<schema>.offsets` el último offset aplicado de cada
+partición, en la misma transacción que su vista. Por eso no se confirma nada en Kafka: al
+arrancar se asignan todas las particiones del topic en el offset guardado + 1, y un mensaje cuyo
+offset no es posterior al guardado (Kafka lo reentrega) no se aplica otra vez.
+
+Supuesto (odd/tasks/eda-component-ownership.md, L21): el número de particiones del topic no
+cambia mientras el proceso corre; una partición nueva exige reiniciarlo.
+"""
+
+from __future__ import annotations
+
+import logging
+import time
+from collections.abc import Callable, Iterable, Mapping
+from dataclasses import dataclass
+
+import psycopg
+from confluent_kafka import OFFSET_BEGINNING, Consumer, Message, TopicPartition
+
+from eda_retail.infra.schemas import qualified
+
+log = logging.getLogger(__name__)
+
+# Aplica un mensaje a la vista dentro de la transacción abierta. Un mensaje que no se puede
+# aplicar (envenenado) se ignora sin lanzar: su offset avanza igual.
+ApplyMessage = Callable[[psycopg.Connection, Message], None]
+
+_TRACE_HEADERS = ("traceparent", "tracestate")
+_METADATA_TIMEOUT = 10.0
+
+
+@dataclass(frozen=True)
+class Position:
+    topic: str
+    partition: int
+    offset: int
+
+
+def position_of(msg: Message) -> Position:
+    return Position(msg.topic(), msg.partition(), msg.offset())
+
+
+def trace_context_of(msg: Message) -> dict[str, str] | None:
+    """Contexto W3C (`traceparent`, `tracestate`) de las cabeceras, o None si no viene."""
+    headers = {k: v.decode() for k, v in (msg.headers() or []) if k in _TRACE_HEADERS and v is not None}
+    return headers or None
+
+
+def start_offsets(stored: Mapping[int, int], partitions: Iterable[int]) -> dict[int, int]:
+    """Offset por el que empezar cada partición: el siguiente al guardado, o el principio."""
+    return {p: stored[p] + 1 if stored.get(p, -1) >= 0 else OFFSET_BEGINNING for p in partitions}
+
+
+def is_new(offset: int, stored: int | None) -> bool:
+    """True si el mensaje va después del último offset aplicado de su partición."""
+    return stored is None or offset > stored
+
+
+def caught_up(applied: Mapping[int, int], highs: Mapping[int, int]) -> bool:
+    """True si cada partición llegó a su marca de agua alta (`high` = offset siguiente al último)."""
+    return all(applied.get(p, -1) >= high - 1 for p, high in highs.items() if high > 0)
+
+
+class PositionedConsumer:
+    """Consume `topic` y aplica cada mensaje junto con su offset en una transacción de PostgreSQL."""
+
+    def __init__(
+        self,
+        conn: psycopg.Connection,
+        kafka_consumer: Consumer,
+        topic: str,
+        *,
+        schema: str,
+        consumer: str,
+        apply: ApplyMessage,
+    ) -> None:
+        self.consumer = consumer
+        self._conn = conn
+        self._kafka = kafka_consumer
+        self._topic = topic
+        self._offsets = qualified(schema, "offsets")
+        self._apply = apply
+        self._consumed: dict[int, int] = {}  # último offset leído por partición (aplicado o no)
+        self._assigned = False
+
+    # -- posición guardada -------------------------------------------------------------
+    def stored_offsets(self) -> dict[int, int]:
+        with self._conn.transaction():
+            rows = self._conn.execute(
+                f"SELECT kafka_partition, kafka_offset FROM {self._offsets} WHERE consumer = %s AND kafka_topic = %s",
+                (self.consumer, self._topic),
+            ).fetchall()
+        return {r["kafka_partition"]: r["kafka_offset"] for r in rows if r["kafka_offset"] >= 0}
+
+    def partitions(self) -> list[int]:
+        metadata = self._kafka.list_topics(self._topic, timeout=_METADATA_TIMEOUT)
+        return sorted(metadata.topics[self._topic].partitions)
+
+    def assign(self) -> None:
+        """(Re)asigna todas las particiones en la posición guardada."""
+        stored = self.stored_offsets()
+        start = start_offsets(stored, self.partitions())
+        self._kafka.assign([TopicPartition(self._topic, p, offset) for p, offset in start.items()])
+        self._consumed = dict(stored)
+        self._assigned = True
+
+    # -- aplicación ----------------------------------------------------------------------
+    def handle(self, msg: Message) -> bool:
+        """Aplica el mensaje y guarda su offset en la misma transacción. False si ya estaba aplicado."""
+        key = (self.consumer, msg.topic(), msg.partition())
+        with self._conn.transaction():
+            self._conn.execute(
+                f"INSERT INTO {self._offsets} (consumer, kafka_topic, kafka_partition, kafka_offset) "
+                "VALUES (%s, %s, %s, -1) ON CONFLICT DO NOTHING",
+                key,
+            )
+            stored = self._conn.execute(
+                f"SELECT kafka_offset FROM {self._offsets} "
+                "WHERE consumer = %s AND kafka_topic = %s AND kafka_partition = %s FOR UPDATE",
+                key,
+            ).fetchone()["kafka_offset"]
+            if not is_new(msg.offset(), stored):
+                return False
+            self._apply(self._conn, msg)
+            self._conn.execute(
+                f"UPDATE {self._offsets} SET kafka_offset = %s "
+                "WHERE consumer = %s AND kafka_topic = %s AND kafka_partition = %s",
+                (msg.offset(), *key),
+            )
+        return True
+
+    def run_once(self, timeout: float = 1.0, max_messages: int = 500) -> int:
+        """Lee un lote y lo aplica; devuelve cuántos mensajes aplicó."""
+        if not self._assigned:
+            self.assign()
+        applied = 0
+        for msg in self._kafka.consume(max_messages, timeout):
+            if msg.error():
+                log.warning("%s: error de Kafka: %s", self.consumer, msg.error())
+                continue
+            try:
+                applied += self.handle(msg)
+            except Exception:
+                # La transacción se deshizo: se vuelve a leer este mensaje en la siguiente vuelta.
+                self._kafka.seek(TopicPartition(msg.topic(), msg.partition(), msg.offset()))
+                raise
+            self._consumed[msg.partition()] = msg.offset()
+        return applied
+
+    def high_watermarks(self) -> dict[int, int]:
+        return {
+            p: self._kafka.get_watermark_offsets(TopicPartition(self._topic, p), timeout=_METADATA_TIMEOUT)[1]
+            for p in self.partitions()
+        }
+
+    def catch_up(self, timeout: float = 60.0) -> int:
+        """Consume hasta las marcas de agua altas de ahora; devuelve cuántos mensajes aplicó."""
+        if not self._assigned:
+            self.assign()
+        highs = self.high_watermarks()
+        deadline = time.monotonic() + timeout
+        applied = 0
+        while not caught_up(self._consumed, highs):
+            if time.monotonic() >= deadline:
+                raise TimeoutError(f"{self.consumer}: no llegó a {highs} en {timeout} s")
+            applied += self.run_once(timeout=0.5)
+        return applied
+
+    def reset(self, tables: Iterable[str]) -> None:
+        """Vacía las tablas de la vista y su posición, y vuelve a asignar desde el principio."""
+        with self._conn.transaction():
+            for table in tables:
+                self._conn.execute(f"DELETE FROM {table}")
+            self._conn.execute(
+                f"DELETE FROM {self._offsets} WHERE consumer = %s AND kafka_topic = %s", (self.consumer, self._topic)
+            )
+        self.assign()
+
+    def close(self) -> None:
+        self._kafka.close()

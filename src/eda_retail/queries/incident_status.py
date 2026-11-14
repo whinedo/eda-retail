@@ -1,7 +1,7 @@
-"""Consulta de `incident_status` (spec cqrs-views): solo lee `view_*` y `projector_offsets`.
+"""Consulta de `incident_status` (spec cqrs-views): solo lee `views.view_*` y `views.offsets`.
 
-Cada respuesta lleva `last_applied_seq`, la posición del proyector que alimenta la vista,
-para que el cliente sepa cuán actual es (consistencia eventual declarada).
+Cada respuesta lleva `applied`, el offset aplicado por partición del proyector que alimenta la
+vista, para que el cliente sepa cuán actual es (consistencia eventual declarada).
 """
 
 from __future__ import annotations
@@ -24,27 +24,25 @@ class IncidentStatus:
     plan_version: int
     steps: list[dict[str, Any]]
     escalation_reason: str | None
-    last_applied_seq: int
+    applied: dict[int, int]
 
     def step(self, step_id: str) -> dict[str, Any] | None:
         return next((s for s in self.steps if s["step_id"] == step_id), None)
 
 
-def last_applied_seq(conn: psycopg.Connection) -> int:
-    return positions.last_applied_seq(conn, PROJECTOR_NAME)
-
-
-def get_incident_status(conn: psycopg.Connection, incident_id: str) -> IncidentStatus | None:
+def get_incident_status(
+    conn: psycopg.Connection, incident_id: str, *, topic: str | None = None
+) -> IncidentStatus | None:
     with conn.transaction():
-        position = last_applied_seq(conn)
+        position = positions.applied(conn, PROJECTOR_NAME, topic)
         row = conn.execute(
             "SELECT incident_id, status, plan_version, steps, escalation_reason "
-            "FROM view_incident_status WHERE incident_id = %s",
+            "FROM views.view_incident_status WHERE incident_id = %s",
             (incident_id,),
         ).fetchone()
     if row is None:
         return None
-    return IncidentStatus(**row, last_applied_seq=position)
+    return IncidentStatus(**row, applied=position)
 
 
 def wait_for_incident_status(

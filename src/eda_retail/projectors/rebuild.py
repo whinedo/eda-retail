@@ -1,14 +1,15 @@
 """Reconstrucción de vistas (spec cqrs-views, «Reconstrucción de vistas»; experimento E4).
 
-`rebuild` pone la vista al día de forma incremental, calcula su huella, la vacía, pone la
-posición del proyector a 0, reproduce `events` desde `seq` 1 (sin depender de Kafka) y
-vuelve a calcular la huella: las dos deben coincidir. Registra el tiempo de reconstrucción.
+`rebuild` pone la vista al día consumiendo el topic hasta sus marcas de agua altas, calcula su
+huella, vacía las tablas de la vista, su posición (`views.offsets`) y sus eventos aplicados
+(`views.applied_events`), vuelve a consumir `eda.events` desde el principio (retención infinita)
+hasta las mismas marcas y calcula de nuevo la huella: las dos deben coincidir. Registra el tiempo
+de reconstrucción.
 
-Supuesto A3 (odd/tasks/views.md): la reconstrucción se lanza sin escritores activos, así que
-un hueco en `seq` es un rollback antiguo y se salta sin esperar (`gap_timeout` 0).
+Se lanza con el proceso `eda-projector` parado, para que nadie más escriba en la vista.
 
-La huella es el sha256 de las filas de las tablas de la vista ordenadas por su clave, sin
-las columnas que no salen del log (`updated_at`).
+La huella es el sha256 de las filas de las tablas de la vista ordenadas por su clave, sin las
+columnas que no salen del log (`updated_at`).
 """
 
 from __future__ import annotations
@@ -18,11 +19,11 @@ import json
 import logging
 import time
 from dataclasses import dataclass
-from datetime import timedelta
 
 import psycopg
 
-from eda_retail.projectors.base import Projector
+from eda_retail.config import Settings
+from eda_retail.projectors.base import consumer_for
 from eda_retail.projectors.registry import PROJECTORS
 
 log = logging.getLogger(__name__)
@@ -53,31 +54,21 @@ def fingerprint(conn: psycopg.Connection, view: str) -> str:
     return digest.hexdigest()
 
 
-def _catch_up(conn: psycopg.Connection, projector: Projector) -> int:
-    applied = 0
-    while advanced := projector.run_once(conn):
-        applied += advanced
-    return applied
-
-
-def rebuild(conn: psycopg.Connection, view: str) -> RebuildResult:
+def rebuild(settings: Settings, conn: psycopg.Connection, view: str) -> RebuildResult:
     spec = PROJECTORS[view]
-    projector = spec.build(gap_timeout=timedelta(0))
-    _catch_up(conn, projector)
-    before = fingerprint(conn, view)
-    start = time.perf_counter()
-    with conn.transaction():
-        for table in spec.tables:
-            conn.execute(f"DELETE FROM {table}")
-        conn.execute(
-            """
-            INSERT INTO projector_offsets (projector, last_seq) VALUES (%s, 0)
-            ON CONFLICT (projector) DO UPDATE SET last_seq = 0
-            """,
-            (projector.name,),
-        )
-    applied = _catch_up(conn, projector)
-    seconds = time.perf_counter() - start
+    projector = spec.build()
+    consumer = consumer_for(projector, settings, conn)
+    try:
+        consumer.catch_up()
+        before = fingerprint(conn, view)
+        start = time.perf_counter()
+        with conn.transaction():
+            conn.execute("DELETE FROM views.applied_events WHERE projector = %s", (projector.name,))
+        consumer.reset(spec.tables)
+        applied = consumer.catch_up()
+        seconds = time.perf_counter() - start
+    finally:
+        consumer.close()
     after = fingerprint(conn, view)
     log.info("vista %s reconstruida: %d eventos en %.3f s, huella %s", view, applied, seconds,
              "idéntica" if before == after else "distinta")

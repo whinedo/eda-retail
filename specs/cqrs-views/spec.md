@@ -153,7 +153,7 @@ El componente de consulta `event_log` SHALL mantener la vista `event_log.events`
 
 #### Scenario: Orden de una incidencia
 
-- **GIVEN** una incidencia con `ShipmentDelayed`, el comando `CreatePlan` y `PlanCreated`, publicados por tres componentes distintos en ese orden causal
+- **GIVEN** una incidencia con `CarrierNoticeReceived`, `ShipmentDelayed` y `PlanCreated`, publicados por tres componentes distintos (`intake`, `interpreter`, `planner`) en ese orden causal
 - **WHEN** `event_log` los consume
 - **THEN** sus `seq` son crecientes en ese mismo orden
 
