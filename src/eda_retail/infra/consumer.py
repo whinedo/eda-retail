@@ -17,10 +17,11 @@ from collections.abc import Callable, Mapping
 
 import psycopg
 from confluent_kafka import Consumer, Message, TopicPartition
+from opentelemetry.trace import SpanKind
 
 from eda_retail.config import Settings
 from eda_retail.events.envelope import EventEnvelope
-from eda_retail.infra import inbox
+from eda_retail.infra import inbox, tracing
 from eda_retail.infra.db import connect
 from eda_retail.infra.kafka import make_consumer
 
@@ -87,6 +88,25 @@ class EventConsumer:
         handler = self._handlers.get(event.event_type)
         if handler is None:
             return Outcome.IGNORED
+        headers = {k: v.decode() for k, v in (msg.headers() or []) if v is not None}
+        attributes = tracing.event_attributes(event) | {
+            "messaging.system": "kafka",
+            "messaging.destination.name": msg.topic(),
+            "messaging.consumer.group.name": self.name,
+            "messaging.kafka.partition": msg.partition(),
+            "messaging.kafka.offset": msg.offset(),
+        }
+        with tracing.tracer().start_as_current_span(
+            f"{event.event_type} process",
+            context=tracing.extract(headers),
+            kind=SpanKind.CONSUMER,
+            attributes=attributes,
+        ) as span:
+            outcome = self._process(event, handler)
+            span.set_attribute("eda.outcome", outcome.value)
+        return outcome
+
+    def _process(self, event: EventEnvelope, handler: Handler) -> Outcome:
         with self._conn.transaction():
             if not inbox.register(self._conn, self.name, event.event_id, enabled=self._inbox_enabled):
                 return Outcome.DUPLICATE

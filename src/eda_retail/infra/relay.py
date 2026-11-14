@@ -14,14 +14,17 @@ import time
 
 import psycopg
 from confluent_kafka import KafkaError, Producer
+from opentelemetry.trace import SpanKind
 
 from eda_retail.config import Settings, load_settings
 from eda_retail.events.envelope import EventEnvelope
+from eda_retail.infra import tracing
 from eda_retail.infra.db import connect
 from eda_retail.infra.kafka import make_producer
+from eda_retail.infra.tracing import setup_tracing
 
 _SELECT_PENDING = """
-SELECT o.seq, e.event_id, e.event_type, e.event_version, e.occurred_at,
+SELECT o.seq, o.trace_context, e.event_id, e.event_type, e.event_version, e.occurred_at,
        e.correlation_id, e.causation_id, e.producer, e.payload
 FROM outbox o JOIN events e USING (seq)
 WHERE o.published_at IS NULL
@@ -69,14 +72,10 @@ class OutboxRelay:
             if not rows:
                 return 0
             for row in rows:
-                envelope = EventEnvelope.model_validate({k: v for k, v in row.items() if k != "seq"})
-                self._producer.produce(
-                    self._topic,
-                    key=envelope.correlation_id.encode(),
-                    value=encode_message(row["seq"], envelope),
-                    headers=[("event_type", envelope.event_type.encode())],
-                    on_delivery=on_delivery,
+                envelope = EventEnvelope.model_validate(
+                    {k: v for k, v in row.items() if k not in ("seq", "trace_context")}
                 )
+                self._produce(row["seq"], envelope, row["trace_context"], on_delivery)
             pending = self._producer.flush(flush_timeout)
             if pending or errors:
                 # Rollback: las filas siguen pendientes y el lote se republica.
@@ -86,6 +85,29 @@ class OutboxRelay:
                 ([row["seq"] for row in rows],),
             )
         return len(rows)
+
+    def _produce(self, seq: int, envelope: EventEnvelope, trace_context, on_delivery) -> None:
+        """Produce un mensaje dentro del span `<event_type> publish`, hijo del de escritura."""
+        attributes = tracing.event_attributes(envelope) | {
+            "messaging.system": "kafka",
+            "messaging.destination.name": self._topic,
+            "eda.seq": seq,
+        }
+        with tracing.tracer().start_as_current_span(
+            f"{envelope.event_type} publish",
+            context=tracing.extract(trace_context),
+            kind=SpanKind.PRODUCER,
+            attributes=attributes,
+        ):
+            headers = [("event_type", envelope.event_type.encode())]
+            headers += [(k, v.encode()) for k, v in (tracing.inject_current() or {}).items()]
+            self._producer.produce(
+                self._topic,
+                key=envelope.correlation_id.encode(),
+                value=encode_message(seq, envelope),
+                headers=headers,
+                on_delivery=on_delivery,
+            )
 
     def replay_from(self, seq: int) -> int:
         """Marca como no publicadas las filas desde `seq` (republicación tras perder el topic)."""
@@ -109,13 +131,17 @@ def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Relay del outbox hacia Kafka")
     parser.add_argument("--replay-from", type=int, help="republica desde este seq")
     args = parser.parse_args(argv)
-    relay = OutboxRelay.from_settings(load_settings())
+    settings = load_settings()
+    provider = setup_tracing("relay", settings)
+    relay = OutboxRelay.from_settings(settings)
     try:
         if args.replay_from is not None:
             print(f"filas marcadas para republicar: {relay.replay_from(args.replay_from)}")
         relay.run_forever()
     finally:
         relay.close()
+        if provider is not None:
+            provider.shutdown()
 
 
 if __name__ == "__main__":
