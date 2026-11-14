@@ -22,7 +22,7 @@ Branch: `feat/web-front` · Delivery: ask-on-risk · Runner: `uv run pytest` (ba
 
 | ID | Specs | Route | Status | Commit |
 | --- | --- | --- | --- | --- |
-| T1 | S2, S8 backend skeleton `src/eda_retail/web/` (FastAPI app, config, localhost binding, `eda-web` script) | | pending | |
+| T1 | S2, S8 backend skeleton `src/eda_retail/web/` (FastAPI app, config, localhost binding, `eda-web` script) | inline | done (RED ModuleNotFoundError eda_retail.web → GREEN 12 passed; non-integration suite 108 passed) | feat(web-front): backend skeleton |
 | T2 | S7, S8 events API (`/api/events`, sender/receiver from catalogue, filters, pagination) | | pending | |
 | T3 | S6 SSE stream by `seq` with `Last-Event-ID` | | pending | |
 | T4 | S4, S10 command runner (whitelist, single run, streamed output, pty for `interactive`) | | pending | |
@@ -42,4 +42,5 @@ Order: T1 → T2 → T3 → T4 → T5 (backend), then T6 → T7 → T8 → T9; T
 - L1 (2026-11-14) user: "quiero preparar un front también para este proyecto ... a la izquierda un menú con los comandos del cli scripts/notice.sh y ocupando el espacio principal el mapa de sistemas ... en la parte inferior los eventos que se intercambian con emisor, destino, tipo de evento y timestamp (tiene que tener un scroll lateral derecha)"
 - L2 (2026-11-14) user chose "Prototipo navegable + spec", "FastAPI + React/Vite" and "Ejecutarlo de verdad". User: "el código lo desarrollará Code".
 - L3 (2026-11-14) user: "adelante el diseño es perfecto" on the three mockups (`docs/front/*.png`).
+- L4 (2026-11-14) T1 in worktree `eda-retail-worktrees/web-front` (E6 running in the main checkout). New deps: `fastapi`, `uvicorn`; dev `httpx2` (Starlette deprecates `httpx` for `TestClient`). `eda-web` always binds 127.0.0.1 (`WEB_PORT`, `--port`). `LocalOriginGuard` returns 403 for any non-localhost `Origin` (preflight included) before CORS. `read_only_connect` sets `default_transaction_read_only=on`. `WEB_PORT` pending in `.env.example` (deny rule). Integration suite not run (needs Postgres on 5432 during E6). Follow-up for T4: also check the `Host` header against DNS rebinding (needs a spec line).
 - L5 (2026-11-14) user: "sería interesante que desde el front se pudiera acceder a la interfaz web de Jaeger para revisar la observabilidad"; chose "Enlace y traza por evento". `outbox` rows are kept after publishing and `outbox.trace_context` holds the W3C `traceparent`, so every published event keeps its trace id.
