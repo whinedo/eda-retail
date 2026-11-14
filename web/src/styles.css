@@ -759,3 +759,16 @@ body.resizing {
   cursor: row-resize;
   user-select: none;
 }
+
+.examples {
+  margin: 4px 0 0;
+  padding-left: 16px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.examples strong {
+  font-family: var(--mono);
+  font-weight: 600;
+}
