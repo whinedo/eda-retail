@@ -106,9 +106,27 @@ El sistema MUST NOT emitir `issue_refund` mientras queden compensaciones pendien
 #### Scenario: Reembolso con una compensación pendiente
 
 - **GIVEN** una incidencia con un `reserve_stock` completado, un plan revisado que cancela el reenvío y un `release_stock` aún sin completar
-- **WHEN** la orquestación evalúa los pasos pendientes
+- **WHEN** la orquestación consume un evento de la incidencia
 - **THEN** no emite el `StepRequested` de `issue_refund`
 - **AND** lo emite cuando `release_stock` ha terminado en `StepCompleted`
+
+### Requirement: Saga reactiva
+
+La saga SHALL avanzar solo por eventos: cada transición de sus pasos ocurre cuando el orquestador, único dueño de `orchestrator.plan_steps`, consume un evento (`PlanCreated`, `PlanRevised`, `StepCompleted`, `StepFailed`, `IncidentEscalated`) y deja los eventos siguientes en su outbox en la misma transacción. Ningún otro componente MUST escribir el estado de la saga, y el orquestador MUST NOT consultar ni esperar el estado de otros componentes: los resultados le llegan como eventos.
+
+#### Scenario: Resultado de un paso
+
+- **GIVEN** un `reserve_stock` en estado `requested` del que depende un `reissue_shipment`
+- **WHEN** el orquestador consume el `StepCompleted` de `reserve_stock` publicado por `inventory`
+- **THEN** marca el paso `completed` y deja en su outbox el `StepRequested` de `reissue_shipment`, en la misma transacción
+- **AND** `inventory` no ha escrito ninguna tabla del orquestador
+
+#### Scenario: Compensación terminada
+
+- **GIVEN** un `reserve_stock` en `compensating` y un `issue_refund` retenido
+- **WHEN** el orquestador consume el `StepCompleted` de `reserve_stock-comp`
+- **THEN** marca el original `compensated`
+- **AND** emite el `StepRequested` de `issue_refund`
 
 ### Requirement: Compensación determinista
 

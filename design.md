@@ -110,10 +110,21 @@ La orquestación gobierna la saga y es la única que escribe `orchestrator.plan_
 | `reissue_shipment` | Ninguna | |
 | `issue_refund` | Ninguna | Paso pivote: se emite el último y solo sin compensaciones pendientes |
 
-Al consumir un `PlanRevised`, la orquestación, en una transacción:
-1. Marca como `cancelled` los pasos pendientes que el plan nuevo no mantiene.
-2. Para cada paso `completed` compensable cuyo dependiente se ha cancelado, inserta un paso con `step_id = <original>-comp` y `compensates = <original>`, lo marca `compensating` en el original y escribe su `StepRequested` en su outbox.
-3. Retiene `issue_refund` hasta que no queden pasos `compensating`.
+La saga es **reactiva**: es un *process manager* dentro del orquestador. Cada transición ocurre al consumir un evento, en una transacción que actualiza `orchestrator.plan_steps` y deja los eventos siguientes en su outbox. Nadie más escribe el estado de la saga, y el orquestador no consulta ni espera a nadie: los ejecutores, el replanificador y los agentes le informan con eventos.
+
+| Evento consumido | Transición de la saga | Eventos que emite |
+| --- | --- | --- |
+| `ShipmentDelayed` | Crea la incidencia `open` | — |
+| `PlanCreated` | Guarda los pasos `pending` de la versión 1 | `StepRequested` de los pasos sin dependencias |
+| `StepCompleted` (versión vigente) | Paso `completed`; desbloquea sus dependientes | `StepRequested` de los desbloqueados; `IncidentResolved` si ya no quedan pasos |
+| `StepCompleted` de una compensación | El original pasa a `compensated` | Si no quedan `compensating`, el `StepRequested` de `issue_refund` que estaba retenido |
+| `StepFailed` no reintentable (versión vigente) | Paso `failed`; la saga espera una revisión (el replanificador reacciona al mismo evento) | `IncidentEscalated` con `max_revisions` si ya no quedan revisiones |
+| `StepFailed` de una compensación | — | `IncidentEscalated` con `compensation_failed`; nunca emite el reembolso |
+| `PlanRevised` (versión vigente + 1) | Cancela los pendientes que el plan nuevo no mantiene y añade los nuevos pasos; para cada paso compensable completado cuyo dependiente se cancela, añade `<original>-comp` y marca el original `compensating` | `StepCancelled`, `StepRequested` de compensaciones y de pasos desbloqueados; `issue_refund` queda retenido mientras haya `compensating` |
+| `IncidentEscalated` (de otro componente) | Incidencia `escalated`; cancela los pasos pendientes | `StepCancelled` |
+| Resultado o revisión de una versión ya superada, o de una incidencia cerrada | Ninguna: se registra en el inbox como obsoleto | — |
+
+Los reintentos de un paso con fallo transitorio los hace el propio ejecutor (spec `resilience`); a la saga solo le llega el resultado final.
 
 Las compensaciones se ejecutan en orden inverso a los pasos originales y usan la misma idempotencia (`effect_keys` del ejecutor) que cualquier otro paso. Si una compensación agota sus reintentos, la incidencia se escala con `compensation_failed`.
 

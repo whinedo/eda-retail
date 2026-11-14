@@ -10,6 +10,7 @@ Risk: item 1 (persisted format and data move to per-component schemas), item 3 (
 - S4 User (L5): "habrá tantos command handlers como sistemas que actúen por comandos y cada uno escribirá en su tabla y en el broker. De ahí que se necesiten outbox table patterns y CQRS" (spec cqrs-views "Escritura solo mediante comandos", "Catálogo de comandos", "Un único dueño por estado"; event-backbone "Publicación atómica con el estado (Outbox)").
 - S5 User (L6): "si no para qué quiero CQRS y no habría consistencia eventual, una casuística con la que hay que lidiar sí o sí en una EDA" — replicas and views lag, and each case is handled explicitly (design.md §4.3; cqrs-views "Consistencia eventual declarada", "Réplica atrasada"; llm-boundaries "Presupuesto por incidencia").
 - S6 User (L7): "puedes montar un sistema adicional (query de CQRS) que mantenga una vista del log de eventos (ordenados correctamente) y que sirva para alimentar el front" (cqrs-views "Vista del log de eventos", "Vistas en PostgreSQL con posición en Kafka", "Reconstrucción de vistas"; web-front "Página de eventos").
+- S7 User (L9): "y las SAGAS? también se verán afectadas por los eventos. ES UNA EDA, todo es reactivo" — the saga is a reactive process manager in the orchestrator; every transition happens on consuming an event (spec incident-planning "Saga reactiva"; design.md §4.2 event → transition table).
 
 ## Tasks
 
@@ -21,7 +22,7 @@ Risk: item 1 (persisted format and data move to per-component schemas), item 3 (
 | T4 | S3, S4 | `intake` (own `carrier_notices` + outbox) and `inventory` (`orders`, `stock`, `reservations`; `SeedSampleData` emits `OrderRegistered`; runs `reserve_stock`/`release_stock`) | pending | pending | |
 | T5 | S2, S4, S5 | `interpreter`: own command handler, `interpretations`, `llm_calls`, replicas `orders` and `budgets`; retry while an order is not replicated yet | pending | pending | |
 | T6 | S2, S4 | `planner`: own command handler (plan validation with its `orders` replica), `plans`, replicas | pending | pending | |
-| T7 | S4, S5 | `orchestrator`: owns `incidents` and `plan_steps`, consumes `ShipmentDelayed`/`PlanCreated`/`PlanRevised`/step results/escalations, discards stale proposals; `StepRequested` carries what executors need | pending | pending | |
+| T7 | S4, S5, S7 | `orchestrator` (reactive saga): owns `incidents` and `plan_steps`, consumes `ShipmentDelayed`/`PlanCreated`/`PlanRevised`/step results/escalations, discards stale proposals; `StepRequested` carries what executors need | pending | pending | |
 | T8 | S2, S4 | `replanner`: own command handler, `revisions`, replica `incidents` (no view reads) | pending | pending | |
 | T9 | S4 | executors: own effect tables, `effect_keys`, `ExecuteStep` handler, replicas `orders` and `budgets` | pending | pending | |
 | T10 | S1, S3 | remove the shared command handler and shared tables; data move; README, scripts (`run-agents.sh` starts `event_log` and `inventory`), web topology | pending | pending | |
@@ -39,3 +40,4 @@ Order: T1 (approve design and specs) → T2 → T3 → T4 → T5–T9 (one per P
 - L6 (2026-11-14) User: "si no para qué quiero CQRS y no habría consistencia eventual, una casuística con la que hay que lidiar sí o sí en una EDA. Si pido una EDA no montes una mierda". Added design.md §4.3 with each lag case and how it is handled.
 - L7 (2026-11-14) User: "puedes montar un sistema adicional (query de CQRS) que mantenga una vista del log de eventos (ordenados correctamente) y que sirva para alimentar el front". `event_log` becomes a query component; projectors also consume Kafka (no component reads another one's tables); positions are Kafka offsets per partition, rebuild re-consumes the topic (infinite retention).
 - L8 (2026-11-14) T1 written: design.md and specs updated; implementation not started. Next: approval of the design/spec PR, then T2.
+- L9 (2026-11-14) User: "y las SAGAS? también se verán afectadas por los eventos. ES UNA EDA, todo es reactivo,". Verified: today the saga advances through writes, not events: the orchestrator sends `AdvancePlan`/`ApplyRevision` to the shared handler and executors write `plan_steps` directly with `RecordStepResult`. design.md §4.2 now has the event → transition → emitted events table, and incident-planning has "Saga reactiva".
