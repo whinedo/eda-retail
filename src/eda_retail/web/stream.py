@@ -16,8 +16,9 @@ IDLE_SECONDS = 0.5  # el panel debe mostrar un evento nuevo en menos de 2 s
 
 def start_seq(*, last_event_id: str | None, after_seq: int | None, current_last: Callable[[], int]) -> int:
     """Último `seq` que el cliente ya tiene: Last-Event-ID, luego after_seq, luego el final del log."""
-    if last_event_id and last_event_id.strip().isdigit():
-        return int(last_event_id)
+    value = (last_event_id or "").strip()
+    if value.isascii() and value.isdigit():  # '²'.isdigit() es True, pero int('²') falla
+        return int(value)
     if after_seq is not None:
         return after_seq
     return current_last()

@@ -214,3 +214,133 @@ def _alive(pid: int) -> bool:
     except ProcessLookupError:
         return False
     return True
+
+
+# --- Endurecimiento del runner (T13: judgment-day W1-W3 y sugerencias S3-S4 sobre el PR #21) ---
+
+
+def _open_fds() -> int:
+    import os
+
+    return len(os.listdir("/dev/fd"))
+
+
+@pytest.mark.parametrize("command", [{"command": "interactive", "timeout": 5}, {"command": "seed"}])
+def test_script_that_cannot_be_launched(tmp_path: Path, command: dict):
+    """Script que no se puede lanzar: 500 con el motivo, sin recursos abiertos y el menú sigue libre"""
+    missing = tmp_path / "notice.sh"
+    client = _client(missing)
+    before = _open_fds()
+
+    response = client.post("/api/commands", json=command)
+
+    assert response.status_code == 500
+    assert "notice.sh" in response.json()["detail"]
+    assert _open_fds() <= before
+    _script(tmp_path, ECHO_ARGS)
+    run = client.post("/api/commands", json={"command": "seed"})
+    assert run.status_code == 202
+    assert _output(client, run.json()["run_id"])[1] == 0
+
+
+def test_send_line_does_not_hold_the_run_lock(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """Enviar una línea no bloquea la salida: la escritura no retiene el lock de la ejecución"""
+    import threading
+
+    from eda_retail.web import commands
+
+    app = create_app(notice_script=_script(tmp_path, "#!/usr/bin/env bash\nread -r line\necho \"got:$line\"\n"))
+    client = TestClient(app, base_url="http://localhost")
+    run_id = client.post("/api/commands", json={"command": "interactive", "timeout": 30}).json()["run_id"]
+    run = app.state.runner.get(run_id)
+    real_write = commands._write
+    lock_free: list[bool] = []
+
+    def spying_write(fd, data):
+        probe = threading.Thread(target=lambda: lock_free.append(run.cond.acquire(timeout=1) and not run.cond.release()))
+        probe.start()
+        probe.join()
+        return real_write(fd, data)
+
+    monkeypatch.setattr(commands, "_write", spying_write)
+    client.post(f"/api/commands/{run_id}/input", json={"line": "hola"})
+    monkeypatch.setattr(commands, "_write", real_write)
+
+    assert lock_free == [True]
+    assert "got:hola" in _output(client, run_id)[0]
+
+
+def test_process_that_does_not_read_its_input(tmp_path: Path):
+    """Proceso que no lee su entrada: las líneas que no caben dan 409 y la salida sigue llegando"""
+    import threading
+
+    body = "#!/usr/bin/env bash\nfor i in $(seq 1 15); do echo \"tick $i\"; sleep 0.1; done\n"
+    client = _client(_script(tmp_path, body))
+    run_id = client.post("/api/commands", json={"command": "interactive", "timeout": 30}).json()["run_id"]
+    statuses: list[int] = []
+
+    def flood():
+        for _ in range(60):
+            statuses.append(client.post(f"/api/commands/{run_id}/input", json={"line": "x" * 200}).status_code)
+
+    sender = threading.Thread(target=flood, daemon=True)
+    sender.start()
+    started = time.monotonic()
+    output, code = _output(client, run_id)
+    sender.join(timeout=10)
+
+    assert "tick 15" in output and code == 0
+    assert time.monotonic() - started < 10
+    assert not sender.is_alive(), "las peticiones de entrada no deben quedarse bloqueadas"
+    assert set(statuses) <= {202, 409}
+
+
+def test_backend_shutdown_kills_the_running_command(tmp_path: Path):
+    """Parada del backend: el comando en curso y su grupo terminan antes de salir"""
+    pid_file = tmp_path / "child.pid"
+    script = _script(tmp_path, f"#!/usr/bin/env bash\nsleep 60 &\necho $! > '{pid_file}'\nwait\n")
+
+    with TestClient(create_app(notice_script=script), base_url="http://localhost") as client:
+        assert client.post("/api/commands", json={"command": "seed"}).status_code == 202
+        _wait_until(pid_file.exists)
+        _wait_until(lambda: pid_file.read_text().strip() != "")
+        child = int(pid_file.read_text())
+
+    _wait_until(lambda: not _alive(child))
+
+
+def test_output_follower_failure_still_ends_the_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """Si el seguimiento de la salida falla, la ejecución termina con un código y el menú queda libre"""
+    from eda_retail.web import commands
+
+    def broken_read(fd, size):
+        raise RuntimeError("lectura rota")
+
+    # Escribe algo enseguida para que la lectura (rota) se intente antes de que el proceso termine.
+    script = _script(tmp_path, "#!/usr/bin/env bash\necho start\nsleep 30\n")
+    monkeypatch.setattr(commands, "_read", broken_read)
+    # Con `with`, la parada del backend termina también la segunda ejecución del final.
+    with TestClient(create_app(notice_script=script), base_url="http://localhost") as client:
+        run_id = client.post("/api/commands", json={"command": "seed"}).json()["run_id"]
+
+        _, code = _output(client, run_id)
+        monkeypatch.undo()
+
+        assert code != 0
+        assert client.post("/api/commands", json={"command": "seed"}).status_code == 202
+
+
+def test_non_ascii_last_event_id_is_ignored_on_command_stream():
+    """Un Last-Event-ID con dígitos no ASCII se ignora en el stream de la salida"""
+    import subprocess
+
+    from eda_retail.web.commands import Run, output_stream
+
+    run = Run(run_id="r", interactive=False, process=subprocess.Popen(["true"]), out_fd=-1, chunks=["a", "b"])
+    run.process.wait()
+    run.exit_code = 0
+
+    frames = list(output_stream(run, "²"))
+
+    assert frames[0].startswith("id: 0\n")
+    assert frames[-1].startswith("id: 2\nevent: exit")
