@@ -49,6 +49,9 @@ _AGENTS = {
     "replanner": ("Replanificador", "Revisa el plan cuando falla un paso."),
 }
 
+# El intérprete ya es un componente con su propio proceso (T5); el resto de agentes, hasta T6 y T8.
+_PROCESSES = {"interpreter": "eda-interpreter"}
+
 NODES: tuple[Node, ...] = (
     Node("intake", "eda-notice", "code", "CLI de avisos (scripts/notice.sh): registra CarrierNoticeReceived."),
     Node("postgres", "PostgreSQL", "data", "Un esquema por componente: estado, outbox, inbox, el log event_log.events y las vistas views.*."),
@@ -56,7 +59,8 @@ NODES: tuple[Node, ...] = (
     Node("kafka", "Kafka (eda.events)", "data", "Topic único con todos los eventos."),
     Node("dlq", "eda.dlq", "data", "Mensajes que un consumidor no pudo procesar (dead letters)."),
     Node("projectors", "Proyector", "code", "Mantiene las vistas views.view_* consumiendo Kafka, con su offset por partición.", "eda-projector"),
-    *(Node(agent, label, "llm", desc, f"eda-agent {agent}", agent) for agent, (label, desc) in _AGENTS.items()),
+    *(Node(agent, label, "llm", desc, _PROCESSES.get(agent, f"eda-agent {agent}"), agent)
+      for agent, (label, desc) in _AGENTS.items()),
     Node("orchestrator", "Orquestador", "code", "Avanza el plan, pide pasos y deriva compensaciones.",
          "eda-orchestrator"),
     *(

@@ -51,6 +51,7 @@ def test_twelve_processes_are_monitored():
     assert len(MONITORED) == 12
     assert node("relay").process == "eda-relay"
     assert node("planner").process == "eda-agent planner"
+    assert node("interpreter").process == "eda-interpreter"
     assert node("executor-issue_refund").process == "eda-executor issue_refund"
 
 
