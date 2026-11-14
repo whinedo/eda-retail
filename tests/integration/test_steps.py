@@ -24,6 +24,11 @@ def request(conn, incident: str, step_id: str):
 
 
 def record(conn, incident: str, step_id: str, outcome: str = "completed", **kw):
+    if "plan_version" not in kw:
+        kw["plan_version"] = conn.execute(
+            "SELECT plan_version FROM incidents WHERE incident_id = %s", (incident,)
+        ).fetchone()["plan_version"]
+        conn.commit()
     result = handler().handle(
         conn,
         RecordStepResult(command_id=uuid.uuid4(), expected_version=version_of(conn, incident), producer="executor",
@@ -134,7 +139,8 @@ def test_failed_step_result(conn):
     result = record(conn, incident, "S3", outcome="failed", error="out_of_stock", retryable=False)
     assert result.accepted
     [ev] = result.events
-    assert ev.payload == {"step_id": "S3", "error": "out_of_stock", "retryable": False}
+    assert ev.event_version == 2
+    assert ev.payload == {"step_id": "S3", "plan_version": 1, "error": "out_of_stock", "retryable": False, "attempts": 1}
     assert plan_steps(conn, incident)["S3"]["status"] == "failed"
 
 

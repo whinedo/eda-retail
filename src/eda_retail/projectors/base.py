@@ -24,6 +24,7 @@ from opentelemetry import trace
 
 from eda_retail.events.catalog import CATALOG, PayloadError, PersonalDataError, validate_payload
 from eda_retail.events.envelope import EventEnvelope
+from eda_retail.events.upcasters import UPCASTERS
 from eda_retail.events.versioning import Upcasters
 from eda_retail.infra import tracing
 
@@ -51,7 +52,7 @@ class Projector:
     ) -> None:
         self.name = name
         self._handlers = dict(handlers)
-        self._upcasters = upcasters or Upcasters()
+        self._upcasters = upcasters or UPCASTERS
         self.gap_timeout = gap_timeout
         self.batch_size = batch_size
         self._gap_seen: dict[int, float] = {}  # seq tras el que hay un hueco -> cuándo se vio

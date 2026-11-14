@@ -180,8 +180,9 @@ Lado de comandos (escritura) y lado de consultas (lectura). Los pasos (1) a (4) 
 | `PlanCreated` | Agente planificador | `incident_id`, `plan_version`, `steps[]` |
 | `PlanRevised` | Replanner | `incident_id`, `plan_version`, `steps[]`, `reason` |
 | `StepRequested` | Orquestación del plan | `incident_id`, `plan_version`, `step_id`, `action`, `params`, `idempotency_key` |
-| `StepCompleted` | Ejecutor | `step_id`, `result` |
-| `StepFailed` | Ejecutor | `step_id`, `error`, `retryable` |
+| `StepCompleted` (v2) | Ejecutor | `step_id`, `plan_version`, `result` |
+| `StepFailed` (v2) | Ejecutor | `step_id`, `plan_version`, `error`, `retryable`, `attempts` |
+| `StepCancelled` | Orquestación | `incident_id`, `plan_version`, `step_id` |
 | `CustomerNotified` | Ejecutor | `order_id`, `message_id` |
 | `ClaimFiled` | Ejecutor | `order_id`, `claim_id` |
 | `StockReserved` | Ejecutor | `order_id`, `warehouse`, `reservation_id` |
@@ -199,9 +200,11 @@ Lado de comandos (escritura) y lado de consultas (lectura). Los pasos (1) a (4) 
 | `RegisterCarrierNotice` | Entrada | `CarrierNoticeReceived` |
 | `OpenIncident` | Intérprete | `ShipmentDelayed` |
 | `CreatePlan` | Planificador | `PlanCreated` |
-| `RevisePlan` | Replanner | `PlanRevised` y las compensaciones que se deriven |
+| `RevisePlan` | Replanner | `PlanRevised` |
+| `ApplyRevision` | Orquestación, al recibir `PlanRevised` | `StepCancelled` de los pasos no mantenidos; deriva en código los pasos `-comp` |
+| `AdvancePlan` | Orquestación | Los `StepRequested` de todos los pasos listos, o `IncidentResolved` si el plan terminó |
 | `RequestStep` | Orquestación | `StepRequested` |
-| `RecordStepResult` | Ejecutores | `StepCompleted` o `StepFailed` y el evento de efecto |
+| `RecordStepResult` | Ejecutores | `StepCompleted` o `StepFailed` y el evento de efecto (con la `plan_version` del `StepRequested`; uno obsoleto queda en el log sin cambiar el plan) |
 | `CloseIncident` | Orquestación | `IncidentResolved` |
 | `EscalateIncident` | Cualquiera | `IncidentEscalated` (si la incidencia aún no existe, la crea escalada a partir de su aviso) |
 | `RecordLlmCall` | Agentes con LLM | `LlmCallRecorded` (no usa `expected_version` y admite incidencias cerradas) |
@@ -210,7 +213,31 @@ Todos llevan `command_id` y `expected_version` (`RecordLlmCall` lo ignora: es un
 
 ## Procesos
 
-Cada componente es un proceso independiente (con `docker compose up -d` levantado):
+### Puesta en marcha
+
+Con Docker y Ollama instalados, y `.env` creado a partir de `.env.example` (fija `LLM_MODEL` a un modelo descargado, p. ej. `qwen2.5:7b-instruct`):
+
+```bash
+docker compose up -d           # kafka, postgres y jaeger
+scripts/run-agents.sh          # terminal 1: todos los procesos, con un log por proceso en logs/
+scripts/notice.sh              # terminal 2: CLI interactivo de avisos
+tail -f logs/*.log             # terminal 3: seguir el flujo
+scripts/stop-all.sh            # al terminar: para los procesos y los contenedores
+```
+
+En el CLI interactivo, `s` carga los datos de ejemplo (pedidos `P-1001`…`P-1005` y su stock) y `1`…`4` envían un aviso de ejemplo; después se muestra cómo avanza la incidencia hasta que se resuelve o se escala. Las trazas completas están en Jaeger: `http://localhost:16686`.
+
+### Scripts
+
+| Script | Qué hace |
+| --- | --- |
+| `scripts/run-agents.sh [--logs DIR] [--no-migrate]` | Comprueba que kafka y postgres están en marcha y que Ollama tiene `LLM_MODEL`, aplica las migraciones y arranca todos los procesos cargando `.env`; deja un log por proceso en `logs/` y los para todos con Ctrl+C o si alguno termina |
+| `scripts/notice.sh [argumentos de eda-notice]` | Abre `eda-notice` (por defecto, el modo interactivo) con la misma configuración (`.env`) |
+| `scripts/stop-all.sh [--dry-run] [--keep-docker]` | Para todos los procesos de la PoC y después los contenedores (`docker compose stop`, sin borrar datos); `--keep-docker` deja los contenedores y `--dry-run` solo muestra qué pararía |
+
+### Comandos
+
+Cada componente es un proceso independiente; los scripts anteriores los lanzan, pero también se pueden arrancar uno a uno (añade `--env-file .env` a `uv run` para cargar la configuración):
 
 | Comando | Qué hace |
 | --- | --- |
@@ -219,6 +246,15 @@ Cada componente es un proceso independiente (con `docker compose up -d` levantad
 | `uv run eda-agent interpreter` | Interpreta `CarrierNoticeReceived` y abre la incidencia |
 | `uv run eda-agent planner` | Propone el plan a partir de `ShipmentDelayed` |
 | `uv run eda-agent replanner` | Revisa el plan ante un `StepFailed` no reintentable |
+| `uv run eda-orchestrator` | Traduce `PlanCreated`, `PlanRevised`, `StepCompleted` y `StepFailed` en `ApplyRevision`, `AdvancePlan` o `EscalateIncident` |
+| `uv run eda-notice` | Modo interactivo: menú para enviar avisos (de ejemplo o texto libre) y seguir cada incidencia en la vista `incident_status` hasta que se cierra |
+| `uv run eda-notice seed` | Carga pedidos (`P-1001`…`P-1005`) y stock de ejemplo; repetirlo no duplica nada |
+| `uv run eda-notice send [--example delay\|loss\|out_of_stock\|injection] [--text "…"]` | Registra un aviso del transportista: la entrada que pone en marcha el flujo |
+| `uv run eda-executor <acción>` | Ejecuta los `StepRequested` de una acción (`notify_customer`, `file_claim`, `reserve_stock`, `release_stock`, `reissue_shipment`, `issue_refund`), un proceso por acción |
+
+Cada proceso escribe en stdout una línea por evento recibido, por comando (aceptado o rechazado, con los eventos que produce) y por reintento (`LOG_LEVEL`, por defecto `INFO`); el detalle completo está en las trazas de Jaeger (`http://localhost:16686`).
+
+Los ejecutores reintentan los errores transitorios hasta `STEP_MAX_ATTEMPTS` (por defecto 3) con espera exponencial y jitter (`STEP_BACKOFF_BASE_SECONDS`, por defecto 0,5; `STEP_BACKOFF_MAX_SECONDS`, por defecto 10) y procesan como mucho `EXECUTOR_MAX_CONCURRENCY` pasos a la vez (por defecto 5). Un evento con esquema inválido o que agota sus reintentos va a la tabla `dead_letters`, y el relay lo publica en `eda.dlq` (`DLQ_TOPIC`).
 
 Los agentes llaman a un modelo local de Ollama (`OLLAMA_HOST`, por defecto `http://localhost:11434`; `LLM_MODEL`, por defecto `llama3.1`; `LLM_SEED`, por defecto 42; `LLM_TIMEOUT_SECONDS`, por defecto 120) con `temperature` 0 para que las ejecuciones sean repetibles. Los tests usan siempre el cliente simulado.
 
@@ -233,6 +269,9 @@ Anotadas aquí porque no estaban cerradas en la conversación; se pueden cambiar
 - Los requisitos siguen hablando de «el bus», «el log» y «el almacén de claves» como conceptos; `design.md` indica cómo los materializa la pila.
 - El envío de correos, el transportista, el almacén y los pagos son simulados.
 - La `idempotency_key` se calcula con la versión del plan **en la que se creó el paso**, no con la vigente, para que un paso mantenido en una revisión conserve su clave y no se duplique. Esto afina la fórmula `hash(incident_id, plan_version, step_id)` del documento de casos de negocio.
+- La orquestación decide en el command handler (`ApplyRevision`, `AdvancePlan`) con el estado de `plan_steps`; el orquestador no guarda estado propio. Varias compensaciones se encadenan en orden inverso al de los pasos originales.
+- Un paso que el plan revisado no mantiene y que no llegó a tener efecto (`pending`, `requested` o `failed`) pasa a `cancelled`. Un resultado de una versión anterior del plan queda en el log, pero no se usa para decidir.
+- `StepCompleted` y `StepFailed` v2 llevan la `plan_version` del `StepRequested` que los pidió, para reconocer los resultados obsoletos. Los v1 se leen como de la versión 1 del plan (y `StepFailed` con un intento).
 
 ## Experimentos
 

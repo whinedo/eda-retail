@@ -3,8 +3,11 @@
 Refleja las transiciones del command handler (`command/plans.py`, `command/steps.py`):
 - Un plan revisado conserva el estado de los pasos mantenidos (los `failed` y `cancelled`
   vuelven a `pending`); los pasos que salen del plan siguen en la lista como estaban.
-- Al completarse una compensación (`<step_id>-comp`), el paso compensado pasa de
-  `compensating` a `compensated`.
+- Al pedirse una compensación (`<step_id>-comp`), que deriva el código y no está en el
+  plan, se añade a la lista y el paso original pasa a `compensating`; al completarse, a
+  `compensated`.
+- `StepCancelled` marca el paso `cancelled`. Los `StepCompleted` y `StepFailed` de una
+  `plan_version` anterior a la vigente son obsoletos y no cambian la vista.
 Cada handler fija valores absolutos, así que aplicar dos veces un evento no cambia la vista.
 """
 
@@ -87,15 +90,41 @@ def _plan_revised(conn: psycopg.Connection, seq: int, event: EventEnvelope) -> N
 
 
 def _step_requested(conn: psycopg.Connection, seq: int, event: EventEnvelope) -> None:
-    _set_step(conn, event, event.payload["step_id"], status="requested")
+    p = event.payload
+    if p["step_id"].endswith(COMPENSATION_SUFFIX):
+        steps = _steps(conn, event.correlation_id)
+        original = p["step_id"].removesuffix(COMPENSATION_SUFFIX)
+        if all(s["step_id"] != p["step_id"] for s in steps):
+            steps.append(
+                {"step_id": p["step_id"], "action": p["action"], "params": p["params"], "depends_on": [],
+                 "status": "requested"}
+            )
+        for s in steps:
+            if s["step_id"] == original and s["status"] == "completed":
+                s["status"] = "compensating"
+        _update(conn, event, steps=steps)
+    _set_step(conn, event, p["step_id"], status="requested")
+
+
+def _stale(conn: psycopg.Connection, event: EventEnvelope) -> bool:
+    row = conn.execute(
+        "SELECT plan_version FROM view_incident_status WHERE incident_id = %s", (event.correlation_id,)
+    ).fetchone()
+    return row is not None and event.payload["plan_version"] < row["plan_version"]
 
 
 def _step_completed(conn: psycopg.Connection, seq: int, event: EventEnvelope) -> None:
-    _set_step(conn, event, event.payload["step_id"], status="completed", result=event.payload["result"])
+    if not _stale(conn, event):
+        _set_step(conn, event, event.payload["step_id"], status="completed", result=event.payload["result"])
 
 
 def _step_failed(conn: psycopg.Connection, seq: int, event: EventEnvelope) -> None:
-    _set_step(conn, event, event.payload["step_id"], status="failed", error=event.payload["error"])
+    if not _stale(conn, event):
+        _set_step(conn, event, event.payload["step_id"], status="failed", error=event.payload["error"])
+
+
+def _step_cancelled(conn: psycopg.Connection, seq: int, event: EventEnvelope) -> None:
+    _set_step(conn, event, event.payload["step_id"], status="cancelled")
 
 
 def _resolved(conn: psycopg.Connection, seq: int, event: EventEnvelope) -> None:
@@ -115,6 +144,7 @@ HANDLERS = {
     "StepRequested": _step_requested,
     "StepCompleted": _step_completed,
     "StepFailed": _step_failed,
+    "StepCancelled": _step_cancelled,
     "IncidentResolved": _resolved,
     "IncidentEscalated": _escalated,
 }
