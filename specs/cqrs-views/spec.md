@@ -77,6 +77,18 @@ El sistema SHALL mantener las vistas `incident_status` (estado y paso actual por
 - **WHEN** se consulta `incident_status`
 - **THEN** muestra la versión del plan vigente y el estado de cada paso
 
+#### Scenario: El panel cuenta incidencias, retrasos, reclamaciones y reembolsos por transportista
+
+- **GIVEN** incidencias de dos transportistas, con retrasos, pérdidas, reclamaciones y reembolsos
+- **WHEN** se consulta `carrier_dashboard`
+- **THEN** cada transportista muestra sus incidencias, sus retrasos (causa `delay`), sus reclamaciones y sus reembolsos
+
+#### Scenario: Una incidencia sin aviso del transportista cuenta como transportista unknown
+
+- **GIVEN** una incidencia sin `CarrierNoticeReceived`
+- **WHEN** se proyectan sus eventos
+- **THEN** cuentan para el transportista `unknown`
+
 ### Requirement: Proyectores idempotentes
 
 Los proyectores MUST ser idempotentes: procesar el mismo evento varias veces SHALL dejar la vista en el mismo estado.
@@ -108,6 +120,12 @@ El sistema SHALL poder borrar cualquier vista y reconstruirla reproduciendo la t
 - **WHEN** se borra y se reproduce el log
 - **THEN** la nueva vista tiene la misma huella
 - **AND** el sistema registra el tiempo de reconstrucción
+
+#### Scenario: La huella cambia si la vista cambia: detecta una vista reconstruida distinta
+
+- **GIVEN** una vista modificada sin que haya eventos que lo justifiquen
+- **WHEN** se reconstruye
+- **THEN** la huella anterior y la nueva difieren
 
 ### Requirement: Consistencia eventual declarada
 

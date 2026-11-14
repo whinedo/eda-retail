@@ -156,3 +156,26 @@ def test_step_cancelled_event():
         correlation_id="I1", causation_id=None, producer="x",
     )
     assert ev.event_version == 1
+
+
+def test_projector_upcasters_extend_shared_registry():
+    """Los conversores propios de un proyector amplían el registro compartido, no lo sustituyen"""
+    from eda_retail.projectors.base import Projector
+
+    own = Upcasters()
+    own.register("X", 1)(lambda p: p)
+    seen = []
+    projector = Projector("test", {"StepCompleted": lambda conn, seq, ev: seen.append(ev)}, upcasters=own)
+    projector.apply(None, 1, _v1("StepCompleted", {"step_id": "S1", "result": {}}))
+    assert (seen[0].event_version, seen[0].payload["plan_version"]) == (2, 1)
+    assert ("StepCompleted", 1) not in own._converters  # el registro del llamador no cambia
+
+
+def test_projector_upcasters_reject_shadowing_shared_converter():
+    """Un proyector no puede redefinir en silencio un conversor del registro compartido"""
+    from eda_retail.projectors.base import Projector
+
+    own = Upcasters()
+    own.register("StepCompleted", 1)(lambda p: p)
+    with pytest.raises(ValueError, match="StepCompleted"):
+        Projector("test", {}, upcasters=own)

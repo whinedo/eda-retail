@@ -52,7 +52,8 @@ class Projector:
     ) -> None:
         self.name = name
         self._handlers = dict(handlers)
-        self._upcasters = upcasters or UPCASTERS
+        # Los conversores propios amplían el registro compartido (no lo sustituyen).
+        self._upcasters = UPCASTERS.extended(upcasters) if upcasters else UPCASTERS
         self.gap_timeout = gap_timeout
         self.batch_size = batch_size
         self._gap_seen: dict[int, float] = {}  # seq tras el que hay un hueco -> cuándo se vio

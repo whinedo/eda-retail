@@ -29,7 +29,7 @@ Cada llamada al LLM SHALL registrarse con el agente, el modelo, los tokens de en
 
 ### Requirement: Coste por incidencia
 
-La vista `cost_per_incident` SHALL sumar los tokens, el coste estimado de las llamadas al LLM y el coste de los efectos (reclamaciones, reembolsos, reenvíos) de cada incidencia.
+La vista `cost_per_incident` SHALL sumar los tokens, el coste estimado de las llamadas al LLM y el coste de los efectos (reclamaciones, reembolsos, reenvíos) de cada incidencia. La vista MUST guardar solo hechos del log (llamadas, tokens, reclamaciones, reenvíos e importe reembolsado); la consulta SHALL calcular el coste en dinero con los precios de la configuración (`LLM_PRICE_IN_PER_1K`, `LLM_PRICE_OUT_PER_1K`, `EFFECT_COST_CLAIM`, `EFFECT_COST_REISSUE`; un reembolso cuesta su importe), para que una vista reconstruida sea idéntica aunque cambien los precios.
 
 #### Scenario: Incidencia con una revisión del plan
 
@@ -37,6 +37,18 @@ La vista `cost_per_incident` SHALL sumar los tokens, el coste estimado de las ll
 - **WHEN** se consulta `cost_per_incident`
 - **THEN** incluye las llamadas del planificador y del replanner
 - **AND** el importe de los efectos ejecutados
+
+#### Scenario: Los precios se leen de las variables de entorno
+
+- **GIVEN** `LLM_PRICE_IN_PER_1K`, `LLM_PRICE_OUT_PER_1K`, `EFFECT_COST_CLAIM` y `EFFECT_COST_REISSUE` definidas
+- **WHEN** la consulta calcula el coste
+- **THEN** usa esos precios
+
+#### Scenario: Con la configuración por defecto (Ollama local) los precios son cero
+
+- **GIVEN** ninguna variable de precios definida
+- **WHEN** la consulta calcula el coste
+- **THEN** todos los precios valen 0
 
 ### Requirement: Auditoría de decisiones
 
@@ -47,6 +59,12 @@ La vista `audit_trail` SHALL permitir explicar cada decisión: qué agente propu
 - **GIVEN** una incidencia en la que el replanner sustituyó el reenvío por un reembolso
 - **WHEN** se consulta su auditoría
 - **THEN** aparece el `StepFailed` que lo motivó, el `PlanRevised` y el reembolso resultante
+
+#### Scenario: El texto del aviso es contenido no confiable y no se guarda en la auditoría
+
+- **GIVEN** un `CarrierNoticeReceived` con instrucciones incrustadas en `raw_text`
+- **WHEN** se consulta su auditoría
+- **THEN** aparece la decisión, pero no el texto del aviso
 
 ### Requirement: Auditoría reconstruible
 

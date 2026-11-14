@@ -242,7 +242,8 @@ Cada componente es un proceso independiente; los scripts anteriores los lanzan, 
 | Comando | Qué hace |
 | --- | --- |
 | `uv run eda-relay` | Publica en Kafka las filas pendientes del outbox, en orden de `seq` |
-| `uv run eda-projector` | Mantiene las vistas `view_*` leyendo `events` por `seq` |
+| `uv run eda-projector` | Mantiene las cuatro vistas (`incident_status`, `cost_per_incident`, `audit_trail`, `carrier_dashboard`) leyendo `events` por `seq`, cada proyector con su posición en `projector_offsets` |
+| `uv run eda-projector rebuild <vista>` | Vacía una vista, reproduce el log desde `seq` 1 e imprime la huella antes y después, si son idénticas y el tiempo de reconstrucción (sale con código 1 si difieren). Se lanza sin escritores activos |
 | `uv run eda-agent interpreter` | Interpreta `CarrierNoticeReceived` y abre la incidencia |
 | `uv run eda-agent planner` | Propone el plan a partir de `ShipmentDelayed` |
 | `uv run eda-agent replanner` | Revisa el plan ante un `StepFailed` no reintentable |
@@ -257,6 +258,10 @@ Cada proceso escribe en stdout una línea por evento recibido, por comando (acep
 Los ejecutores reintentan los errores transitorios hasta `STEP_MAX_ATTEMPTS` (por defecto 3) con espera exponencial y jitter (`STEP_BACKOFF_BASE_SECONDS`, por defecto 0,5; `STEP_BACKOFF_MAX_SECONDS`, por defecto 10) y procesan como mucho `EXECUTOR_MAX_CONCURRENCY` pasos a la vez (por defecto 5). Un evento con esquema inválido o que agota sus reintentos va a la tabla `dead_letters`, y el relay lo publica en `eda.dlq` (`DLQ_TOPIC`).
 
 Los agentes llaman a un modelo local de Ollama (`OLLAMA_HOST`, por defecto `http://localhost:11434`; `LLM_MODEL`, por defecto `llama3.1`; `LLM_SEED`, por defecto 42; `LLM_TIMEOUT_SECONDS`, por defecto 120) con `temperature` 0 para que las ejecuciones sean repetibles. Los tests usan siempre el cliente simulado.
+
+La vista `cost_per_incident` guarda solo hechos del log (tokens, reclamaciones, reenvíos e importe reembolsado); la consulta calcula el coste en dinero con `LLM_PRICE_IN_PER_1K` y `LLM_PRICE_OUT_PER_1K` (precio por cada 1000 tokens de entrada y de salida) y `EFFECT_COST_CLAIM` y `EFFECT_COST_REISSUE` (coste de cada reclamación y de cada reenvío); un reembolso cuesta su importe. Todos valen 0 por defecto, porque Ollama es local. Así una vista reconstruida es idéntica aunque cambien los precios.
+
+Las consultas (`queries/`) solo leen tablas `view_*` y `projector_offsets`, nunca escriben y devuelven `last_applied_seq`: `get_incident_status`, `get_incident_cost`, `get_audit_trail` y `get_carrier_dashboard`.
 
 ## Decisiones asumidas
 

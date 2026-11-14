@@ -14,6 +14,7 @@ from typing import Any
 import psycopg
 
 from eda_retail.projectors.incident_status import PROJECTOR_NAME
+from eda_retail.queries import positions
 
 
 @dataclass(frozen=True)
@@ -30,8 +31,7 @@ class IncidentStatus:
 
 
 def last_applied_seq(conn: psycopg.Connection) -> int:
-    row = conn.execute("SELECT last_seq FROM projector_offsets WHERE projector = %s", (PROJECTOR_NAME,)).fetchone()
-    return row["last_seq"] if row else 0
+    return positions.last_applied_seq(conn, PROJECTOR_NAME)
 
 
 def get_incident_status(conn: psycopg.Connection, incident_id: str) -> IncidentStatus | None:
