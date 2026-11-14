@@ -26,3 +26,14 @@ def register(
         (consumer, event_id),
     )
     return cur.rowcount == 1
+
+
+def seen(conn: psycopg.Connection, consumer: str, event_id: uuid.UUID, *, enabled: bool = True) -> bool:
+    """True si el evento ya se procesó. Lectura previa: evita pagar una llamada al LLM por un
+    duplicado. No sustituye a `register`, que es quien decide dentro de la transacción."""
+    if not enabled:
+        return False
+    row = conn.execute(
+        "SELECT 1 FROM inbox WHERE consumer = %s AND event_id = %s", (consumer, event_id)
+    ).fetchone()
+    return row is not None

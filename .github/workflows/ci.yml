@@ -1,0 +1,43 @@
+# Required check for merging to main: the pre-commit hooks (hygiene, ruff, pytest).
+# pytest runs against real PostgreSQL and Kafka (docker compose) and always uses the fake
+# LLM client: no Ollama in CI.
+name: checks
+
+on:
+  push:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Instalar Python y dependencias
+        run: |
+          uv python install 3.12
+          uv sync --locked
+
+      - name: Levantar PostgreSQL y Kafka
+        run: docker compose up -d --wait postgres kafka
+
+      - name: Run pre-commit (hygiene, ruff, pytest)
+        run: uv run pre-commit run --all-files --show-diff-on-failure
+
+      - name: Logs de los servicios
+        if: failure()
+        run: docker compose logs --no-color postgres kafka

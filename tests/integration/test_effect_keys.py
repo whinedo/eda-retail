@@ -160,7 +160,7 @@ def test_two_executors_at_once(connect_db):
     incident, _ = _new_ids()
     key = compute_idempotency_key(incident, "S1", origin_plan_version=1)
     a, b = connect_db(), connect_db()
-    args = dict(key=key, incident_id=incident, step_id="S1", action="reserve_stock", lock_seconds=30)
+    args = {"key": key, "incident_id": incident, "step_id": "S1", "action": "reserve_stock", "lock_seconds": 30}
 
     result: dict[str, ClaimStatus] = {}
     with a.transaction():
@@ -184,7 +184,7 @@ def test_in_progress_key_blocks_until_lock_expires(connect_db):
     incident, _ = _new_ids()
     key = compute_idempotency_key(incident, "S1", origin_plan_version=1)
     conn = connect_db()
-    args = dict(key=key, incident_id=incident, step_id="S1", action="notify_customer")
+    args = {"key": key, "incident_id": incident, "step_id": "S1", "action": "notify_customer"}
     with conn.transaction():
         assert effect_keys.acquire(conn, lock_seconds=30, **args).status is ClaimStatus.ACQUIRED
     with conn.transaction():
@@ -321,5 +321,3 @@ def test_consumer_honours_inbox_switch(settings):
         assert consumer._inbox_enabled is False
     finally:
         consumer.close()
-
-

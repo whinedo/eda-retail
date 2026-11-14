@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import uuid
 from collections import defaultdict
 from dataclasses import replace
@@ -134,7 +135,5 @@ def test_topic_loss(connect_db, settings):
         assert all(v == ["ShipmentDelayed", "PlanCreated"] for v in per_incident.values())
     finally:
         for fut in admin.delete_topics([empty_topic]).values():
-            try:
+            with contextlib.suppress(Exception):  # limpieza best effort
                 fut.result(timeout=30)
-            except Exception:  # noqa: BLE001
-                pass

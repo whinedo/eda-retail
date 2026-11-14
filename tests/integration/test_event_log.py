@@ -47,9 +47,8 @@ def test_event_without_correlation_id(conn):
     assert "correlation_id" in str(excinfo.value)
 
     before = _count(conn, "SELECT count(*) AS n FROM events")
-    with pytest.raises(ValueError, match="correlation_id"):
-        with conn.transaction():
-            append_events(conn, [raw])
+    with pytest.raises(ValueError, match="correlation_id"), conn.transaction():
+        append_events(conn, [raw])
     assert _count(conn, "SELECT count(*) AS n FROM events") == before
 
 
@@ -66,17 +65,15 @@ def test_attempt_to_modify_or_delete_event(conn, statement):
         "UPDATE": "UPDATE events SET producer = 'tampered' WHERE seq = %s",
         "DELETE": "DELETE FROM events WHERE seq = %s",
     }[statement]
-    with pytest.raises(psycopg.errors.RaiseException, match="solo añadir"):
-        with conn.transaction():
-            conn.execute(sql, (seq,))
+    with pytest.raises(psycopg.errors.RaiseException, match="solo añadir"), conn.transaction():
+        conn.execute(sql, (seq,))
     assert conn.execute("SELECT * FROM events WHERE seq = %s", (seq,)).fetchone() == original
 
 
 def test_truncate_is_rejected(conn):
     """Intento de borrar un evento (TRUNCATE)"""
-    with pytest.raises(psycopg.errors.RaiseException, match="solo añadir"):
-        with conn.transaction():
-            conn.execute("TRUNCATE events CASCADE")
+    with pytest.raises(psycopg.errors.RaiseException, match="solo añadir"), conn.transaction():
+        conn.execute("TRUNCATE events CASCADE")
 
 
 def test_seq_is_global_and_increasing(conn):
@@ -90,10 +87,9 @@ def test_seq_is_global_and_increasing(conn):
 def test_failed_transaction_writes_neither_event_nor_outbox(conn):
     """Publicación atómica: un cambio no confirmado no deja evento ni outbox"""
     event = _event(f"I-{uuid.uuid4().hex[:8]}")
-    with pytest.raises(RuntimeError):
-        with conn.transaction():
-            append_events(conn, [event])
-            raise RuntimeError("fallo antes del COMMIT")
+    with pytest.raises(RuntimeError), conn.transaction():
+        append_events(conn, [event])
+        raise RuntimeError("fallo antes del COMMIT")
     assert _count(conn, "SELECT count(*) AS n FROM events WHERE event_id = %s", event.event_id) == 0
     assert _count(conn, "SELECT count(*) AS n FROM outbox") == _count(
         conn, "SELECT count(*) AS n FROM events"

@@ -6,6 +6,8 @@ Reglas (specs incident-planning y llm-boundaries):
 - cada paso con `step_id`, `action`, `params` y `depends_on`; `step_id` único; las
   dependencias existen y no forman ciclos;
 - `issue_refund` con `amount` no superior al máximo configurado (`refund_limit`);
+- `issue_refund` y `reissue_shipment` del mismo pedido son excluyentes, también frente a
+  los pasos ya completados (`refund_and_reissue_conflict`);
 - una revisión mantiene el `step_id` y la versión de origen de los pasos que conserva y
   no vuelve a incluir pasos completados.
 
@@ -28,8 +30,15 @@ COMPENSATION_SUFFIX = "-comp"
 PLANNABLE_ACTIONS = {a.value for a in Action} - {Action.RELEASE_STOCK.value}
 
 
-def validate_plan(ctx: Context, raw_steps: list[dict[str, Any]], *, external_ids: set[str]) -> list[PlanStep]:
-    """Valida los pasos; `external_ids` son pasos ya completados de los que se puede depender."""
+def validate_plan(
+    ctx: Context,
+    raw_steps: list[dict[str, Any]],
+    *,
+    external_ids: set[str],
+    completed: list[dict[str, Any]] | None = None,
+) -> list[PlanStep]:
+    """Valida los pasos; `external_ids` son pasos ya completados de los que se puede depender
+    y `completed` sus filas (acción y params), para las reglas que dependen de lo ya hecho."""
     if not raw_steps:
         raise Rejected("invalid_plan", "el plan no tiene pasos")
     steps: list[PlanStep] = []
@@ -60,7 +69,22 @@ def validate_plan(ctx: Context, raw_steps: list[dict[str, Any]], *, external_ids
     for s in steps:
         if s.action == Action.ISSUE_REFUND:
             _check_refund(ctx, s)
+    _reject_refund_and_reissue(steps, completed or [])
     return steps
+
+
+_EXCLUSIVE = {Action.ISSUE_REFUND.value, Action.REISSUE_SHIPMENT.value}
+
+
+def _reject_refund_and_reissue(steps: list[PlanStep], completed: list[dict[str, Any]]) -> None:
+    """El cliente no puede recibir a la vez el producto reenviado y su importe."""
+    actions: dict[str, set[str]] = {}
+    for action, params in [(s.action, s.params) for s in steps] + [(r["action"], r["params"]) for r in completed]:
+        if action in _EXCLUSIVE:
+            actions.setdefault(str(params.get("order_id")), set()).add(action)
+    for order_id, found in actions.items():
+        if found == _EXCLUSIVE:
+            raise Rejected("refund_and_reissue_conflict", f"pedido {order_id}: reembolso y reenvío a la vez")
 
 
 def _reject_cycles(steps: list[PlanStep]) -> None:
@@ -128,11 +152,13 @@ def _revise_plan(ctx: Context) -> None:
     existing = {
         r["step_id"]: r
         for r in ctx.conn.execute(
-            "SELECT step_id, action, status FROM plan_steps WHERE incident_id = %s", (cmd.incident_id,)
+            "SELECT step_id, action, params, status FROM plan_steps WHERE incident_id = %s", (cmd.incident_id,)
         ).fetchall()
     }
     completed = {sid for sid, r in existing.items() if r["status"] == "completed"}
-    steps = validate_plan(ctx, cmd.steps, external_ids=completed)
+    steps = validate_plan(
+        ctx, cmd.steps, external_ids=completed, completed=[existing[sid] for sid in completed]
+    )
     for s in steps:
         if s.step_id in completed:
             raise Rejected("completed_step_in_plan", f"paso {s.step_id}")

@@ -7,6 +7,7 @@ Kafka propio para no ver mensajes de otros tests.
 
 from __future__ import annotations
 
+import contextlib
 import uuid
 from collections.abc import Iterator
 
@@ -90,10 +91,8 @@ def topic(base_settings: Settings) -> Iterator[str]:
         fut.result(timeout=30)
     yield name
     for fut in admin.delete_topics([name]).values():
-        try:
+        with contextlib.suppress(Exception):  # limpieza best effort
             fut.result(timeout=30)
-        except Exception:  # noqa: BLE001 - limpieza best effort
-            pass
 
 
 @pytest.fixture

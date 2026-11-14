@@ -56,12 +56,11 @@ def test_step_id_unique_within_incident(conn):
             "INSERT INTO plan_steps (incident_id, step_id, origin_plan_version, action) VALUES (%s, 'S1', 1, 'notify_customer')",
             (incident,),
         )
-    with pytest.raises(psycopg.errors.UniqueViolation):
-        with conn.transaction():
-            conn.execute(
-                "INSERT INTO plan_steps (incident_id, step_id, origin_plan_version, action) VALUES (%s, 'S1', 2, 'file_claim')",
-                (incident,),
-            )
+    with pytest.raises(psycopg.errors.UniqueViolation), conn.transaction():
+        conn.execute(
+            "INSERT INTO plan_steps (incident_id, step_id, origin_plan_version, action) VALUES (%s, 'S1', 2, 'file_claim')",
+            (incident,),
+        )
 
 
 def test_compensation_references_step_of_same_incident(conn):
@@ -79,13 +78,12 @@ def test_compensation_references_step_of_same_incident(conn):
             "VALUES (%s, 'S3-comp', 1, 'release_stock', 'S3')",
             (a,),
         )
-    with pytest.raises(psycopg.errors.ForeignKeyViolation):
-        with conn.transaction():
-            conn.execute(
-                "INSERT INTO plan_steps (incident_id, step_id, origin_plan_version, action, compensates) "
-                "VALUES (%s, 'S3-comp', 1, 'release_stock', 'S3')",
-                (b,),  # S3 no existe en b
-            )
+    with pytest.raises(psycopg.errors.ForeignKeyViolation), conn.transaction():
+        conn.execute(
+            "INSERT INTO plan_steps (incident_id, step_id, origin_plan_version, action, compensates) "
+            "VALUES (%s, 'S3-comp', 1, 'release_stock', 'S3')",
+            (b,),  # S3 no existe en b
+        )
 
 
 def test_migration_0003_round_trip(scratch_db):

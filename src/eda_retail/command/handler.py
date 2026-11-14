@@ -33,6 +33,7 @@ from eda_retail.events.catalog import Cause, PayloadError, PersonalDataError, Se
 from eda_retail.events.envelope import EventEnvelope
 from eda_retail.infra import tracing
 from eda_retail.infra.event_store import append_events
+from eda_retail.llm.generation import BUDGET_EXHAUSTED, Budget
 
 _NOTICE_NAMESPACE = uuid.UUID("6f1d7c0e-2b8a-4c55-9d3e-7a1b2c3d4e5f")
 FINAL_STEP_STATUSES = ("completed", "cancelled", "compensated")
@@ -52,6 +53,10 @@ class CommandResult:
     detail: str | None = None
     events: list[EventEnvelope] = field(default_factory=list)
     version: int | None = None
+
+
+class _DryRun(Exception):
+    """Interrumpe un ensayo (`CommandHandler.validate`) antes de escribir eventos."""
 
 
 class Rejected(Exception):
@@ -119,21 +124,43 @@ class CommandHandler:
     def __init__(self, rules: BusinessRules | None = None) -> None:
         self._rules = rules or BusinessRules()
 
-    def check_budget(self, conn: psycopg.Connection, incident_id: str) -> str | None:
-        """`budget_exhausted` si la incidencia ha consumido sus tokens o sus llamadas al LLM.
+    @property
+    def rules(self) -> BusinessRules:
+        return self._rules
 
-        Se consulta antes de pagar otra llamada; una incidencia que aún no existe no ha gastado nada.
+    def budget(self, conn: psycopg.Connection, incident_id: str) -> Budget:
+        """Presupuesto de LLM de la incidencia (supuesto A4: lo valida el lado de escritura).
+
+        Una incidencia que aún no existe (el intérprete antes de abrirla) no ha gastado nada.
         """
         row = conn.execute(
             "SELECT tokens_used, llm_calls FROM incidents WHERE incident_id = %s", (incident_id,)
         ).fetchone()
-        if row is None:
-            return None
-        if row["tokens_used"] >= self._rules.max_tokens_per_incident:
-            return "budget_exhausted"
-        if row["llm_calls"] >= self._rules.max_llm_calls_per_incident:
-            return "budget_exhausted"
-        return None
+        return Budget(
+            tokens_used=row["tokens_used"] if row else 0,
+            llm_calls=row["llm_calls"] if row else 0,
+            max_tokens=self._rules.max_tokens_per_incident,
+            max_calls=self._rules.max_llm_calls_per_incident,
+        )
+
+    def check_budget(self, conn: psycopg.Connection, incident_id: str) -> str | None:
+        """`budget_exhausted` si la incidencia ha consumido sus tokens o sus llamadas al LLM."""
+        return BUDGET_EXHAUSTED if self.budget(conn, incident_id).exhausted() else None
+
+    def current_version(self, conn: psycopg.Connection, incident_id: str) -> int | None:
+        """Token de concurrencia optimista (supuesto A8): el agente lo lee antes de decidir
+        y lo envía como `expected_version`; no es un dato para decidir."""
+        row = conn.execute("SELECT version FROM incidents WHERE incident_id = %s", (incident_id,)).fetchone()
+        return row["version"] if row else None
+
+    def validate(self, conn: psycopg.Connection, command: Command) -> CommandResult:
+        """Ensayo: ¿aceptaría el comando ahora? Ejecuta las reglas y lo deshace todo.
+
+        Sirve a los agentes para comprobar una propuesta del LLM con las mismas reglas que
+        la escritura real, sin duplicarlas. No añade eventos ni gasta `seq` (no deja huecos
+        que hagan esperar a los proyectores).
+        """
+        return self._handle(conn, command, dry_run=True)
 
     def handle(self, conn: psycopg.Connection, command: Command) -> CommandResult:
         with tracing.tracer().start_as_current_span(
@@ -149,7 +176,7 @@ class CommandHandler:
             _record(span, result)
             return result
 
-    def _handle(self, conn: psycopg.Connection, command: Command) -> CommandResult:
+    def _handle(self, conn: psycopg.Connection, command: Command, *, dry_run: bool = False) -> CommandResult:
         ctx = Context(conn, command, self._rules)
         try:
             with conn.transaction():  # savepoint si el llamante ya tiene una transacción
@@ -159,7 +186,11 @@ class CommandHandler:
                 if executor is None:
                     raise Rejected("invalid_command", f"comando no soportado: {command.name}")
                 executor(ctx)
+                if dry_run:
+                    raise _DryRun()
                 append_events(conn, ctx.events)
+        except _DryRun:
+            return CommandResult(True, events=list(ctx.events), version=ctx.version)
         except Rejected as rej:
             return CommandResult(False, rej.reason, rej.detail)
         return CommandResult(True, events=list(ctx.events), version=ctx.version)
@@ -351,4 +382,4 @@ def _close(ctx: Context) -> None:
 
 
 # Los comandos de planes y pasos se registran al importar sus módulos.
-from eda_retail.command import plans, steps  # noqa: E402,F401
+from eda_retail.command import plans, steps  # noqa: F401

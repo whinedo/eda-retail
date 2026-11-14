@@ -208,6 +208,20 @@ Lado de comandos (escritura) y lado de consultas (lectura). Los pasos (1) a (4) 
 
 Todos llevan `command_id` y `expected_version` (`RecordLlmCall` lo ignora: es un hecho de solo añadir). Los comandos solo existen dentro del command handler; lo que se publica y se guarda son los eventos.
 
+## Procesos
+
+Cada componente es un proceso independiente (con `docker compose up -d` levantado):
+
+| Comando | Qué hace |
+| --- | --- |
+| `uv run eda-relay` | Publica en Kafka las filas pendientes del outbox, en orden de `seq` |
+| `uv run eda-projector` | Mantiene las vistas `view_*` leyendo `events` por `seq` |
+| `uv run eda-agent interpreter` | Interpreta `CarrierNoticeReceived` y abre la incidencia |
+| `uv run eda-agent planner` | Propone el plan a partir de `ShipmentDelayed` |
+| `uv run eda-agent replanner` | Revisa el plan ante un `StepFailed` no reintentable |
+
+Los agentes llaman a un modelo local de Ollama (`OLLAMA_HOST`, por defecto `http://localhost:11434`; `LLM_MODEL`, por defecto `llama3.1`; `LLM_SEED`, por defecto 42; `LLM_TIMEOUT_SECONDS`, por defecto 120) con `temperature` 0 para que las ejecuciones sean repetibles. Los tests usan siempre el cliente simulado.
+
 ## Decisiones asumidas
 
 Anotadas aquí porque no estaban cerradas en la conversación; se pueden cambiar sin tocar el resto.

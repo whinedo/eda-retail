@@ -74,9 +74,8 @@ def test_append_stores_trace_context_in_outbox(conn, spans):
     """El contexto de traza se guarda en outbox.trace_context y no en events"""
     incident = f"I-{uuid.uuid4().hex[:8]}"
     event = _ping(incident)
-    with tracing.tracer().start_as_current_span("test.root") as root:
-        with conn.transaction():
-            [seq] = append_events(conn, [event])
+    with tracing.tracer().start_as_current_span("test.root") as root, conn.transaction():
+        [seq] = append_events(conn, [event])
     stored = conn.execute("SELECT trace_context FROM outbox WHERE seq = %s", (seq,)).fetchone()
     traceparent = stored["trace_context"]["traceparent"]
     assert traceparent.split("-")[1] == format(root.get_span_context().trace_id, "032x")
@@ -94,9 +93,8 @@ def test_trace_crosses_outbox_relay_kafka_and_consumer(connect_db, settings, spa
     incident = f"I-{uuid.uuid4().hex[:8]}"
     event = _ping(incident)
     conn = connect_db()
-    with tracing.tracer().start_as_current_span("test.root"):
-        with conn.transaction():
-            append_events(conn, [event])
+    with tracing.tracer().start_as_current_span("test.root"), conn.transaction():
+        append_events(conn, [event])
     _relay_all(settings)
     msg, outcome = _consume(settings, event.event_id, f"g-{uuid.uuid4().hex[:8]}")
     assert outcome is Outcome.PROCESSED
@@ -125,9 +123,8 @@ def test_replay_keeps_trace_context(connect_db, settings, spans):
     """La republicación desde el log conserva la traza original"""
     event = _ping(f"I-{uuid.uuid4().hex[:8]}")
     conn = connect_db()
-    with tracing.tracer().start_as_current_span("test.root"):
-        with conn.transaction():
-            [seq] = append_events(conn, [event])
+    with tracing.tracer().start_as_current_span("test.root"), conn.transaction():
+        [seq] = append_events(conn, [event])
     conn.commit()
     _relay_all(settings)
     relay = OutboxRelay.from_settings(settings)
@@ -191,5 +188,3 @@ def test_tracing_disabled_writes_no_context(conn, monkeypatch):
 def test_setup_tracing_respects_switch(base_settings):
     """TRACING_ENABLED=false: setup_tracing no instala proveedor"""
     assert tracing.setup_tracing("test", replace(base_settings, tracing_enabled=False)) is None
-
-

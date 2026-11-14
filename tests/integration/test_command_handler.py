@@ -44,10 +44,10 @@ def test_repeated_notice(conn):
     assert (again.accepted, again.reason) == (False, "duplicate_notice")
 
     order = add_order(conn)
-    cmd = dict(
-        expected_version=0, producer="interpreter", incident_id=incident, carrier_notice_id=notice,
-        order_ids=[order], cause="delay", estimated_delay_hours=24, severity="low",
-    )
+    cmd = {
+        "expected_version": 0, "producer": "interpreter", "incident_id": incident, "carrier_notice_id": notice,
+        "order_ids": [order], "cause": "delay", "estimated_delay_hours": 24, "severity": "low",
+    }
     assert handler().handle(conn, OpenIncident(command_id=uuid.uuid4(), **cmd)).accepted
     conn.commit()
     dup = handler().handle(conn, OpenIncident(command_id=uuid.uuid4(), **cmd))

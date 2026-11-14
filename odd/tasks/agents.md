@@ -17,26 +17,29 @@ Scenario names quoted verbatim; one test per scenario, docstring = scenario name
 - S8 CLAUDE.md rule 6: the LLM call happens before the transaction opens; inbox + command in one transaction; duplicates are detected before paying for an LLM call.
 
 Assumptions (marked):
-- A1 Model `claude-opus-5-5` by default (`LLM_MODEL`), effort `LLM_EFFORT` (default `medium`), server-side refusal fallback `fallbacks="default"` enabled; structured output via `output_config.format` JSON schema, then pydantic validation in code.
+- A1 (rewritten by L15) LLM via local Ollama `/api/chat` (`OLLAMA_HOST`, `LLM_MODEL` default `llama3.1`, `LLM_SEED` 42, `temperature` 0, `LLM_TIMEOUT_SECONDS` 120); structured output via `format` JSON schema with `$ref` inlined, then pydantic validation in code. No tools are sent.
 - A2 Limits by env: `LLM_MAX_GENERATIONS` 3, `LLM_MAX_TOKENS_PER_INCIDENT` 50000, `LLM_MAX_CALLS_PER_INCIDENT` 10, `MAX_PLAN_REVISIONS` 2.
 - A3 `severity` `low` gets the fixed one-step `notify_customer` plan in code, without calling the LLM.
 - A4 Budget is checked through the command handler (write-side validation), not a view.
 - A5 `EscalateIncident` on an incident that does not exist yet is accepted when it belongs to a registered notice (interpreter exhausting its generations); the incident is created `escalated` with `cause` `unknown`.
 - A6 `RecordLlmCall` does not take part in optimistic concurrency (append-only fact; it does not bump `version`).
 - A7 Plan step `params` from the LLM are `order_id` and optional `amount`.
+- A8 Agents decide from views, but take `expected_version` from the command handler (`current_version`) before the LLM call, outside the transaction: it is a write-side concurrency token, not decision data (design.md §4.1: writes are validated through the handler).
+- A10 The fixed `low` plan has one `notify_customer` step per affected order (one step for the usual single-order notice).
+- A9 Projectors stop at a `seq` gap (an uncommitted lower `seq` would otherwise be lost); a gap still open `gap_timeout` (default 5 s, process monotonic clock) after first seen is treated as a rollback and skipped.
 
 ## Tasks
 
 | ID | Specs | Route | Status | Commit |
 | --- | --- | --- | --- | --- |
 | T1 | S1 (catalog + RecordLlmCall + docs/spec), A5 | inline | done | feat(command): record LLM calls |
-| T2 | S2 (llm/ package) | inline | pending | |
-| T3 | S7 (projector infra + incident_status + query) | inline | pending | |
-| T4 | S8, S3 (agent unit of work + interpreter) | inline | pending | |
-| T5 | S4 (planner) | inline | pending | |
-| T6 | S5 (replanner, budget, max revisions) | inline | pending | |
-| T7 | S6 (writer + draft validation) | inline | pending | |
-| T8 | agent CLI entry point with tracing | inline | pending | |
+| T2 | S2 (llm/ package) | inline | done | feat(llm): bounded, validated generation |
+| T3 | S7 (projector infra + incident_status + query) | inline | done | feat(projectors): incident_status view |
+| T4 | S8, S3 (agent unit of work + interpreter) | inline | done | feat(agents): interpreter and agent unit of work |
+| T5 | S4 (planner) | inline | done | feat(agents): planner |
+| T6 | S5 (replanner, budget, max revisions) | inline | done | feat(agents): replanner + fix(projectors) bbe1b39 |
+| T7 | S6 (writer + draft validation) | inline | done | feat(agents): writer |
+| T8 | agent CLI entry point with tracing | inline | done | feat(agents): eda-agent and eda-projector |
 
 Route evidence: units share the agent runtime and handler; sequential, no Writer trigger reason.
 
@@ -46,3 +49,17 @@ Route evidence: units share the agent runtime and handler; sequential, no Writer
 - L2 (2026-11-13) user chose "Adelantar incident_status (Recomendado)" for the replanner's state.
 - L3 (2026-11-13) user chose "Evento LlmCallRecorded (Recomendado)" for LLM usage in the log.
 - L4 (2026-11-13) T1: RED observed (ImportError RecordLlmCall); GREEN 7/7 in test_llm_calls.py; full suite 102 passed. tests/test_catalog.py EXPECTED_TYPES extended with LlmCallRecorded. No schema change (tokens_used, llm_calls already in incidents).
+- L5 (2026-11-13) T2: RED (ModuleNotFoundError eda_retail.llm); GREEN 8/8 tests/test_llm.py. Escalation events for llm_output_invalid/budget_exhausted are asserted at agent level (T4–T6). .env.example could not be edited (deny rule): LLM_* vars pending there.
+- L6 (2026-11-13) T3: tests and code written in one step (RED not observed separately). GREEN 10/10; suite 120 passed x3. First gap check used DB now() vs app occurred_at and was flaky under clock skew; replaced by a monotonic timer (A9). "Incidencia escalada" second clause (no more StepRequested) is enforced by the handler (incident_closed) and belongs to the phase 4 orchestrator. Risk: item 4 (gap handling).
+- L7 (2026-11-13) T3 independent verifier: PASS, no blockers. Advisories: (a) A9 assumes no transaction holds a seq longer than gap_timeout (consider idle_in_transaction_session_timeout); (b) stale _gap_seen entries in a losing instance (memory only); (c) `-comp`/`compensating` view path untestable until phase 4 adds a compensation event; (d) no test escalates an incident that already has a plan.
+- L8 (2026-11-13) T4: RED (ModuleNotFoundError eda_retail.agents); GREEN 8/8 test_interpreter.py; suite 128 passed. AgentRunner: inbox.seen before the LLM, decide outside transactions, one transaction for inbox + commands + RecordLlmCall; concurrency_conflict rolls back and re-decides (max 3), recording all spent calls. EventConsumer accepts UnitOfWork handlers and exposes process(event). Ambiguous notice: cause unknown with severity low is rejected in code (regenerated), not coerced.
+- L9 (2026-11-13) T5: RED (ModuleNotFoundError agents.planner); GREEN 8/8 test_planner.py. Business check of LLM plans = CommandHandler.validate (dry run of the real command, rolled back before appending events: no seq gaps). Planner-level tests cover llm-boundaries scenarios "Plan sin campo obligatorio", "Tres planes inválidos seguidos", "Presupuesto de tokens agotado" with the escalation event.
+- L10 (2026-11-13) T6: RED (ModuleNotFoundError agents.replanner); GREEN 5/5 test_replanner.py; suite 141 passed. Replanner reads the plan only from incident_status, waits (bounded, view_timeout 5 s) until the view shows the failed step, else raises ViewNotCaughtUp before touching the inbox. max_revisions = plan_version - 1 >= MAX_PLAN_REVISIONS, escalated without an LLM call. step_id stability enforced in code (step_id_changed). Retryable and -comp failures are ignored (orchestrator, phase 4).
+- L11 (2026-11-13) T6 follow-up: 3833d1b was committed with 4 failing tests (pipeline exit masked by `tail`); cause: test_relay appends placeholder payloads and the incident_status projector raised on them. Fixed in bbe1b39: projectors skip events whose payload fails catalog validation (warning + span event), with a test. Suite 142 passed x2.
+- L12 (2026-11-13) user: "activa los check del repositorio" -> chose "CI en GitHub Actions". Added .github/workflows/ci.yml (ebd5a5f): docker compose postgres+kafka, uv sync --locked, pytest. Not run on GitHub yet (no push). Risk: item 5.
+- L13 (2026-11-13) T7: RED (ModuleNotFoundError agents.writer); GREEN 7/7 tests/test_writer.py. StepFailed invalid_draft publication stays with the phase 4 executors.
+- L14 (2026-11-13) T8: RED (ModuleNotFoundError agents.cli); GREEN 4/4 tests/test_agent_cli.py; suite 153 passed. eda-agent <interpreter|planner|replanner> and eda-projector scripts; docs/README.md gets a Procesos section. Real Anthropic calls never exercised yet (user runs them). Phase 3 complete.
+- L15 (2026-11-13) user: "no quiero usar Claude sino ollama". AnthropicClient and the anthropic dependency removed; OllamaClient (stdlib urllib, injectable post) added; tests 154 passed. Real Ollama runs are the user's (~/CLAUDE.md).
+- L16 (2026-11-13) user: "qué checks has configurado? utiliza los mismos que para el nba-cards si tienes dudas". Aligned with nba-cards: .pre-commit-config.yaml (pre-commit-hooks v6.0.0 hygiene, ruff-pre-commit v0.17.3 ruff-check, local pytest via uv), [tool.ruff] line-length 120, dev deps pre-commit + ruff, CI job `checks` runs `uv run pre-commit run --all-files`. Fixed the 24 existing ruff findings (no behavior change); 154 passed. Local hooks were run with --files only, to avoid rewriting the user's uncommitted design.md/docs.
+- L17 (2026-11-13) Real Ollama smoke (qwen2.5:7b-instruct): 3/3 schemas valid on first attempt, injection ignored; planner chained every step and proposed reissue_shipment + issue_refund for the same order; 20-27 s per call. User approved ("sí") a new rule: spec incident-planning "Reembolso y reenvío excluyentes" (2 scenarios), enforced in command/plans.py (refund_and_reissue_conflict, also against completed steps on revise); planner prompt gets a minimal-dependency example. RED 2 failing -> GREEN; suite 158 passed.
+- L18 (2026-11-13) Second Ollama smoke: dependencies now minimal (S1-S3 independent, S4 after S3); model still adds issue_refund next to reissue. Planner prompt now says to refund only when reissue is not possible (aligned with "Pérdida del paquete"); smoke script applies the same exclusion check to show regeneration.
