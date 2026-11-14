@@ -1,4 +1,4 @@
-import { act, render, screen } from "@testing-library/react";
+import { act, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { ApiError, type ApiClient, type CommandRequest } from "../api/client";
@@ -70,6 +70,22 @@ describe("Menú de comandos", () => {
     expect(output()).toHaveTextContent("aviso N-0007 registrado; incidencia INC-0007");
     expect(output()).toHaveTextContent(/terminó con código 0 en \d+,\d s/);
     expect(FakeStream.last!.closed).toBe(true);
+  });
+
+  it("Preparar los datos de ejemplo: seed va solo en Preparación y avisa de que no genera eventos", () => {
+    setup();
+    const prep = screen.getByRole("region", { name: "Preparación" });
+    const notices = screen.getByRole("region", { name: "Avisos" });
+
+    expect(within(prep).getAllByRole("button").map((b) => b.textContent)).toEqual([
+      expect.stringMatching(/^seed/),
+    ]);
+    expect(prep).toHaveTextContent("No genera eventos");
+    expect(within(notices).queryByRole("button", { name: /^seed/ })).not.toBeInTheDocument();
+    expect(within(notices).getByRole("button", { name: /^send\b/ })).toBeInTheDocument();
+    expect(within(notices).getByRole("button", { name: "loss" })).toBeInTheDocument();
+    expect(within(notices).getByRole("button", { name: "Enviar aviso" })).toBeInTheDocument();
+    expect(within(notices).getByRole("button", { name: /^interactive/ })).toBeInTheDocument();
   });
 
   it("ofrece los cuatro ejemplos de scripts/notice.sh", () => {

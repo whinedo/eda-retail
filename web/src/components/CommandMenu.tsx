@@ -24,6 +24,7 @@ interface Props {
 }
 
 // Presentacional: tarjetas de los comandos de scripts/notice.sh, salida y entrada interactiva.
+// «Preparación» (seed, sin eventos) va aparte de «Avisos» (los comandos que inician el flujo).
 export function CommandMenu({ run, onRun, onSendLine }: Props) {
   const [text, setText] = useState("");
   const [timeout, setTimeout] = useState(String(DEFAULT_TIMEOUT));
@@ -54,75 +55,86 @@ export function CommandMenu({ run, onRun, onSendLine }: Props) {
       </h2>
       <p className="commands__script">scripts/notice.sh</p>
 
-      <button type="button" className={card("seed")} disabled={busy} onClick={() => launch({ command: "seed" })}>
-        <code>seed</code>{" "}
-        <span>Carga los pedidos P-1001 a P-1005 y su stock.</span>
-      </button>
-
-      <button type="button" className={card("send")} disabled={busy} onClick={() => launch({ command: "send" })}>
-        <code>send</code>{" "}
-        <span>Aviso de ejemplo: retraso de P-1001.</span>
-      </button>
-
-      <div className={card("example")}>
-        <code>send --example</code>
-        <span>Elige el tipo de aviso y se envía al pulsarlo.</span>
-        <div className="chips">
-          {EXAMPLES.map((example) => (
-            <button
-              key={example}
-              type="button"
-              className={`chip${active === "example" && last?.command === "send" && last.example === example ? " chip--active" : ""}`}
-              disabled={busy}
-              onClick={() => launch({ command: "send", example })}
-            >
-              {example}
-            </button>
-          ))}
-        </div>
-      </div>
-
-      <div className={card("text")}>
-        <code>send --text</code>
-        <label htmlFor="free-text">Texto libre del aviso</label>
-        <textarea
-          id="free-text"
-          rows={3}
-          maxLength={MAX_TEXT}
-          value={text}
-          onChange={(event) => setText(event.target.value)}
-        />
-        <button
-          type="button"
-          className="primary"
-          disabled={busy || text.trim() === ""}
-          onClick={() => launch({ command: "send", text })}
-        >
-          Enviar aviso
+      <section className="commands__group" aria-labelledby="prep-title">
+        <h3 id="prep-title" className="group-label">
+          Preparación
+        </h3>
+        <button type="button" className={card("seed")} disabled={busy} onClick={() => launch({ command: "seed" })}>
+          <code>seed</code>{" "}
+          <span>Carga los pedidos P-1001 a P-1005 y su stock.</span>{" "}
+          <span className="card__note">No genera eventos: son datos de referencia, no hechos del dominio.</span>
         </button>
-      </div>
+      </section>
 
-      <div className={card("interactive")}>
-        <div className="inline">
+      <section className="commands__group" aria-labelledby="notices-title">
+        <h3 id="notices-title" className="group-label">
+          Avisos
+        </h3>
+        <button type="button" className={card("send")} disabled={busy} onClick={() => launch({ command: "send" })}>
+          <code>send</code>{" "}
+          <span>Aviso de ejemplo: retraso de P-1001.</span>
+        </button>
+
+        <div className={card("example")}>
+          <code>send --example</code>
+          <span>Elige el tipo de aviso y se envía al pulsarlo.</span>
+          <div className="chips">
+            {EXAMPLES.map((example) => (
+              <button
+                key={example}
+                type="button"
+                className={`chip${active === "example" && last?.command === "send" && last.example === example ? " chip--active" : ""}`}
+                disabled={busy}
+                onClick={() => launch({ command: "send", example })}
+              >
+                {example}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className={card("text")}>
+          <code>send --text</code>
+          <label htmlFor="free-text">Texto libre del aviso</label>
+          <textarea
+            id="free-text"
+            rows={3}
+            maxLength={MAX_TEXT}
+            value={text}
+            onChange={(event) => setText(event.target.value)}
+          />
           <button
             type="button"
-            className="link"
-            disabled={busy || !timeoutOk}
-            onClick={() => launch({ command: "interactive", timeout: timeoutValue })}
+            className="primary"
+            disabled={busy || text.trim() === ""}
+            onClick={() => launch({ command: "send", text })}
           >
-            <code>interactive --timeout</code>
+            Enviar aviso
           </button>
-          <input
-            type="number"
-            aria-label="timeout"
-            min={1}
-            max={600}
-            value={timeout}
-            onChange={(event) => setTimeout(event.target.value)}
-          />
         </div>
-        <span>Menú interactivo que sigue cada incidencia hasta su cierre.</span>
-      </div>
+
+        <div className={card("interactive")}>
+          <div className="inline">
+            <button
+              type="button"
+              className="link"
+              disabled={busy || !timeoutOk}
+              onClick={() => launch({ command: "interactive", timeout: timeoutValue })}
+            >
+              <code>interactive --timeout</code>
+            </button>
+            <input
+              type="number"
+              aria-label="timeout"
+              min={1}
+              max={600}
+              value={timeout}
+              onChange={(event) => setTimeout(event.target.value)}
+            />
+          </div>
+          <span>Menú interactivo que sigue cada incidencia hasta su cierre.</span>
+        </div>
+      </section>
 
       <h2 id="output-title" className="section-label">
         Salida

@@ -725,3 +725,21 @@ button:disabled {
 .header__reset + .header__link {
   margin-left: 12px;
 }
+
+.commands__group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.group-label {
+  margin: 6px 0 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.card__note {
+  color: var(--muted);
+  font-size: 12px;
+  font-style: italic;
+}
