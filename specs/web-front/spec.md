@@ -106,13 +106,53 @@ El panel SHALL mostrar los eventos más recientes primero, con las columnas emis
 
 ### Requirement: Origen de emisor y destino
 
-El emisor de un evento SHALL derivarse del componente que lo escribió (campo `producer` del evento, o el catálogo en `eda_retail.events.catalog` si no existe) y el destino de los consumidores que el catálogo asigna a ese tipo de evento (design.md §3). Un evento con varios consumidores SHALL mostrarse con el destino principal y el resto en el detalle.
+El emisor de un evento SHALL ser el campo `producer` del evento. El destino SHALL derivarse de los tipos de evento que declara cada componente (design.md §3): los agentes en `eda_retail.agents.cli.AGENTS`, el orquestador en `eda_retail.orchestrator.runner.EVENT_TYPES` y, para `StepRequested`, el ejecutor de la acción del paso (`executor-<acción>`). Los proyectores leen todos los eventos y SHALL figurar siempre como último consumidor. El destino principal es el primer consumidor de esa lista y el resto se muestra en el detalle; un evento que solo leen los proyectores tiene `projectors` como destino.
 
 #### Scenario: Evento con consumidor único
 
 - **GIVEN** un `PlanCreated`
 - **WHEN** se muestra en el panel
 - **THEN** emisor `planner` y destino `orchestrator`
+
+#### Scenario: Paso pedido a un ejecutor
+
+- **GIVEN** un `StepRequested` con acción `notify_customer`
+- **WHEN** se muestra en el panel
+- **THEN** su destino es `executor-notify_customer`
+
+#### Scenario: Evento con varios consumidores
+
+- **GIVEN** un `StepFailed`
+- **WHEN** se muestra en el panel
+- **THEN** su destino principal es `orchestrator` y el detalle añade `replanner` y `projectors`
+
+#### Scenario: Evento sin consumidor de Kafka
+
+- **GIVEN** un `LlmCallRecorded`
+- **WHEN** se muestra en el panel
+- **THEN** su destino es `projectors`
+
+### Requirement: Página de eventos
+
+`GET /api/events` SHALL devolver los eventos de `events` del más reciente al más antiguo, con `limit` entre 1 y 500 (100 por defecto) y `before_seq` para pedir la página anterior. SHALL admitir los filtros `incident_id` (por `correlation_id` o por el `incident_id` del payload) y `node` (eventos que ese nodo emite o consume). La respuesta SHALL incluir `next_before_seq`, el `seq` desde el que pedir la página siguiente, o `null` si no hay más.
+
+#### Scenario: Paginar hacia atrás
+
+- **GIVEN** 5 eventos y `limit=2`
+- **WHEN** el cliente pide la primera página y después la siguiente con `next_before_seq`
+- **THEN** recibe los `seq` más altos primero, sin repetir ni saltar ninguno
+
+#### Scenario: Filtrar por nodo
+
+- **GIVEN** un `StepRequested` de `notify_customer` y otro de `file_claim`
+- **WHEN** se pide `node=executor-notify_customer`
+- **THEN** solo aparece el de `notify_customer`
+
+#### Scenario: Límite fuera de rango
+
+- **GIVEN** cualquier estado del log
+- **WHEN** se pide `limit=0` o `limit=501`
+- **THEN** la API responde 422
 
 ### Requirement: Acceso de solo lectura y local
 
