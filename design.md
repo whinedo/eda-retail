@@ -11,136 +11,153 @@ Complementa las specs de `specs/`. Aquí se concreta cómo materializa la pila c
 | Base de datos | PostgreSQL 16 en Docker, con volumen persistente | Decidido |
 | Cliente Kafka | `confluent-kafka` | Estable, usa librdkafka, permite commit manual de offsets |
 | Cliente PostgreSQL | `psycopg` 3 | Transacciones explícitas y `SKIP LOCKED` |
-| Migraciones | `db/init/001_schema.sql` al crear el volumen; Alembic si el esquema empieza a cambiar | Empezar simple |
+| Migraciones | Alembic; un esquema de PostgreSQL por componente | Cada componente evoluciona sus tablas sin tocar las de otro |
 | Esquemas de eventos | `pydantic` | Validación de las salidas del LLM y de los eventos |
 | LLM | SDK de Anthropic, detrás de una interfaz `LlmClient` con una implementación simulada para tests | Permite ejecutar los experimentos sin coste y con datos deterministas |
 | Tests | `pytest`, con PostgreSQL y Kafka reales en Docker para los de integración | Las garantías (inbox, outbox) solo se prueban con la base real |
 
-## 2. Dónde vive cada concepto de las specs
+## 2. Propiedad de los datos: cada componente, sus tablas
 
-| Concepto de la spec | Materialización |
-| --- | --- |
-| Log de eventos (fuente de verdad) | Tabla `events` de PostgreSQL, solo de añadir (triggers que rechazan `UPDATE`, `DELETE` y `TRUNCATE`) |
-| Outbox | Tabla `outbox` (una fila por evento, con `published_at`) escrita en la misma transacción que el estado y `events` |
-| Bus | Topic `eda.events` de Kafka, 3 particiones, clave `incident_id`, retención infinita |
-| Dead letter queue | Topic `eda.dlq` y tabla `dead_letters` |
-| Inbox | Tabla `inbox (consumer, event_id)` |
-| Almacén de claves de idempotencia | Tabla `effect_keys` |
-| Estado del command handler | Tablas `incidents`, `plan_steps`, `carrier_notices` |
-| Vistas CQRS | Tablas `view_*` y `projector_offsets` |
-| Comandos | Peticiones internas al command handler, con `command_id` y `expected_version` |
-| Saga | Estado de los pasos en `plan_steps` (incluye `compensating` y `compensated`); compensaciones derivadas por la orquestación |
-| Negocio simulado | Tablas `orders`, `stock`, `reservations`, `claims`, `refunds`, `customer_messages` |
+Principio de la PoC: **un componente solo escribe en sus propias tablas, y los componentes solo se comunican por Kafka**. Hay una única base de datos de PostgreSQL (vale para una PoC), pero cada componente tiene su propio esquema (`intake.*`, `planner.*`…) y sus tablas no se relacionan con las de otro: ni claves foráneas, ni joins, ni lecturas de tablas ajenas para decidir. Lo que un componente necesita saber de otro le llega en un evento y lo guarda en una tabla suya (réplica local, *event-carried state transfer*).
 
-La tabla `events` es inmutable, por eso el estado de publicación vive aparte en `outbox`. Kafka no es la fuente de verdad: si se pierde un topic, el relay lo republica desde `events`.
+Cada componente que recibe comandos tiene su **propio command handler**: valida el comando contra su estado, escribe ese estado y los eventos en **su outbox** en la misma transacción (*transactional outbox*), y un relay publica ese outbox en Kafka. Las lecturas para personas (front, CLI) van por las vistas (CQRS); los componentes no deciden leyendo vistas.
 
-## 3. Componentes y grupos de consumidores
+| Componente | Esquema | Escribe (solo) | Réplicas locales (de eventos) |
+| --- | --- | --- | --- |
+| `intake` (entrada de avisos: `eda-notice`, front) | `intake` | `carrier_notices`, `outbox` | — |
+| `interpreter` (agente) | `interpreter` | `interpretations`, `llm_calls`, `inbox`, `outbox` | `orders`, `budgets` |
+| `planner` (agente) | `planner` | `plans`, `llm_calls`, `inbox`, `outbox` | `orders`, `incidents` (causa, gravedad), `budgets` |
+| `replanner` (agente) | `replanner` | `revisions`, `llm_calls`, `inbox`, `outbox` | `incidents` (plan vigente, revisiones), `budgets` |
+| `orchestrator` | `orchestrator` | `incidents`, `plan_steps`, `inbox`, `outbox` | — |
+| `executor-<acción>` | `executor_<acción>` | su tabla de efectos (`customer_messages`, `claims`, `shipments`, `refunds`), `effect_keys`, `llm_calls` (redactor), `inbox`, `outbox` | `orders`, `budgets` |
+| `inventory` (pedidos y stock; ejecuta `reserve_stock` y `release_stock`) | `inventory` | `orders`, `stock`, `reservations`, `effect_keys`, `inbox`, `outbox` | — |
+| `event_log` (consulta) | `event_log` | `events` (vista del log), `offsets` | — |
+| `projectors` (consulta) | `views` | `view_*`, `offsets` | — |
+| `baseline_sync` (base síncrona de E6) | `baseline` | sus tablas | — |
 
-Cada componente es un proceso Python independiente con su propio `group.id` en Kafka y su propio nombre de consumidor en el inbox.
+Cada esquema tiene también su `dead_letters`. Las réplicas locales solo guardan lo que el componente necesita (p. ej. el importe de un pedido para validar un reembolso) y se actualizan en la misma transacción que el inbox.
+
+## 3. Componentes, eventos y grupos de consumidores
+
+Cada componente es un proceso con su propio `group.id` en Kafka. Todos los eventos viajan por el topic `eda.events` con el `event_type` en una cabecera, y cada consumidor ignora los que no le interesan.
 
 | Componente | Consume | Produce | Tipo |
 | --- | --- | --- | --- |
-| `interpreter` | `CarrierNoticeReceived` | `ShipmentDelayed` | LLM + command handler |
-| `planner` | `ShipmentDelayed` | `PlanCreated` | LLM + command handler |
-| `orchestrator` | `PlanCreated`, `PlanRevised`, `StepCompleted`, `StepFailed` | `StepRequested`, `IncidentResolved`, `IncidentEscalated` | Código |
-| `replanner` | `StepFailed` | `PlanRevised` | LLM + command handler |
-| `executor-<acción>` (uno por acción) | `StepRequested` de su acción | `StepCompleted`, `StepFailed` y el evento de efecto | Código (el redactor se invoca desde aquí) |
-| `projectors` | todos, leyendo de `events` por `seq` | Vistas | Código |
-| `relay` | tabla `outbox` | Mensajes a Kafka | Código |
+| `intake` | — (recibe el comando `RegisterCarrierNotice`) | `CarrierNoticeReceived` | Código |
+| `inventory` | `StepRequested` de `reserve_stock` y `release_stock` (y el comando `SeedSampleData`) | `OrderRegistered`, `StockReserved`, `StockReleased`, `StepCompleted`, `StepFailed` | Código |
+| `interpreter` | `CarrierNoticeReceived`, `OrderRegistered`, `LlmCallRecorded` | `ShipmentDelayed` o `IncidentEscalated`, `LlmCallRecorded` | LLM + su command handler |
+| `planner` | `ShipmentDelayed`, `OrderRegistered`, `LlmCallRecorded` | `PlanCreated` o `IncidentEscalated`, `LlmCallRecorded` | LLM + su command handler |
+| `orchestrator` | `ShipmentDelayed`, `PlanCreated`, `PlanRevised`, `StepCompleted`, `StepFailed`, `IncidentEscalated` | `StepRequested`, `StepCancelled`, `IncidentResolved`, `IncidentEscalated` | Código |
+| `replanner` | `StepFailed`, `PlanCreated`, `PlanRevised`, `LlmCallRecorded` | `PlanRevised` o `IncidentEscalated`, `LlmCallRecorded` | LLM + su command handler |
+| `executor-<acción>` | `StepRequested` de su acción, `OrderRegistered`, `LlmCallRecorded` | `StepCompleted`, `StepFailed`, el evento de efecto, `LlmCallRecorded` | Código (el redactor se invoca desde aquí) |
+| `event_log` (consulta) | todos | — (mantiene la vista del log para el front) | Código |
+| `projectors` (consulta) | los que necesita cada vista | — (mantienen sus vistas) | Código |
 
-Todos los eventos viajan por un único topic con el `event_type` en una cabecera del mensaje. Cada consumidor ignora los tipos que no le interesan (el inbox solo registra los que procesa).
+`StepRequested` lleva en su carga lo que el ejecutor necesita del plan (pedido, causa, importe), para que no tenga que consultar el estado del orquestador.
 
-## 4. Flujo de escritura: command handler y outbox
+## 4. Flujo de escritura: un command handler por componente
 
-Toda escritura de un componente es una sola transacción de PostgreSQL:
+Cada escritura de un componente es una transacción de PostgreSQL sobre **su** esquema:
 
 ```
 BEGIN
-  1. INSERT INTO inbox (consumer, event_id) ON CONFLICT DO NOTHING
+  1. INSERT INTO <componente>.inbox (event_id) ON CONFLICT DO NOTHING
        -> si no inserta fila: COMMIT, confirmar offset, terminar (duplicado)
-  2. validar la propuesta (esquema, reglas de negocio, presupuesto)
-  3. actualizar el estado de escritura (incidents, plan_steps...)
-  4. INSERT INTO events (...)   -- uno o varios
-  5. INSERT INTO outbox (seq)   -- uno por evento
+  2. actualizar las réplicas locales que alimenta el evento
+  3. si hay decisión (LLM ya llamado antes de la transacción): el command handler del
+     componente valida el comando contra su estado y sus réplicas
+  4. actualizar su estado (p. ej. orchestrator.plan_steps)
+  5. INSERT INTO <componente>.outbox (event_id, envelope, trace_context, ...)
 COMMIT
 confirmar el offset en Kafka
 ```
 
-La llamada al LLM se hace **antes** de la transacción: la propuesta llega ya generada. Si el proceso cae entre la llamada y el `COMMIT`, el evento se reentrega y se repite la llamada. Cuesta tokens, pero no provoca efectos duplicados.
+La llamada al LLM se hace **antes** de la transacción. Si el proceso cae entre la llamada y el `COMMIT`, el evento se reentrega y se repite la llamada: cuesta tokens, pero no duplica efectos.
 
-### 4.1 CQRS: comandos, versión y consultas
+### 4.1 CQRS: comandos, consistencia y consultas
 
-El command handler es una librería interna (no un servicio HTTP). Los componentes le envían los comandos del catálogo de `docs/README.md` y él decide.
-
-- **Versión de concurrencia:** `incidents.version`. Cada comando indica `expected_version`; el handler hace `UPDATE incidents SET version = version + 1 WHERE incident_id = ? AND version = ?`. Si no actualiza ninguna fila, rechaza con `concurrency_conflict` y no escribe eventos. El componente reintenta leyendo el estado actual.
-- **Sin event sourcing puro:** el estado de escritura (`incidents`, `plan_steps`) se guarda en tablas y se actualiza en la misma transacción que `events` y `outbox`. El log permite reconstruir las vistas y auditar, pero no se rehidrata el estado de escritura a partir de él.
-- **Consultas:** módulo `queries/` que solo lee tablas `view_*`. Cada respuesta incluye `last_applied_seq` del proyector correspondiente (de `projector_offsets`). Los agentes que necesiten el estado de la incidencia para decidir lo consultan aquí, y los que validan una escritura usan el command handler.
+- **Command handlers:** uno por componente que recibe comandos (`intake`, `interpreter`, `planner`, `replanner`, `orchestrator`, `inventory` y cada ejecutor). Cada uno valida solo contra su estado y sus réplicas: el del planificador valida el plan (acciones, ciclos, tope de reembolso con el importe de su réplica de `orders`); el del orquestador aplica la máquina de estados de la saga. No hay un handler común ni una tabla que escriban varios.
+- **Consistencia:** el estado de la incidencia (`incidents`, `plan_steps`) tiene un único dueño, el orquestador, que procesa los eventos de una incidencia en orden (misma partición), así que no necesita concurrencia optimista entre procesos. Los eventos que llegan tarde (de una versión de plan anterior) los descarta el orquestador comparando `plan_version` (spec `incident-planning`, "Eventos obsoletos").
+- **Presupuesto del LLM:** cada llamada se registra en el `llm_calls` del componente y se publica como `LlmCallRecorded`. Los componentes que llaman al LLM mantienen su réplica `budgets` (tokens y llamadas por incidencia) consumiendo esos eventos y comprueban el límite antes de llamar.
+- **Consultas:** las vistas (`event_log.events` y `views.view_*`, sección 8) son para las personas: el front, `eda-notice interactive` y los experimentos. Cada respuesta incluye la posición aplicada de la vista. Ningún componente decide leyendo una vista: lo que necesita lo replica de los eventos.
 
 ![CQRS](docs/diagrama-cqrs.png)
 
+### 4.3 Consistencia eventual
+
+Cada componente ve el estado de los demás a través de eventos, así que lo ve **con retraso**: sus réplicas locales y las vistas van por detrás de los dueños. No es un fallo que haya que evitar, es la condición normal de una EDA, y cada componente la trata de forma explícita:
+
+| Situación | Ejemplo | Cómo se trata |
+| --- | --- | --- |
+| La réplica aún no tiene un dato | El intérprete recibe un aviso de `P-1007` antes que su `OrderRegistered` | El evento no se confirma y se reintenta con backoff (el dato llegará); agotados los reintentos, `IncidentEscalated` con `no_valid_orders`. Nunca se lee la tabla del dueño |
+| Eventos de productores distintos llegan desordenados | `StepCompleted` de un paso de la versión 1 llega después de `PlanRevised` a la versión 2 | El orquestador compara `plan_version` y aplica la regla de "Eventos obsoletos"; el evento se registra en el inbox y no cambia el estado |
+| Duplicados | El relay republica tras una caída | Inbox por componente y `effect_keys` en los ejecutores |
+| Réplica de presupuesto atrasada | Dos agentes llaman al LLM a la vez para la misma incidencia | El límite se comprueba con la réplica `budgets`; el exceso queda acotado a las llamadas en curso, se registra en `LlmCallRecorded` y la siguiente comprobación lo ve. Es una cota blanda documentada, no una garantía fuerte |
+| Vista atrasada respecto a una acción del usuario | El front envía un aviso y la vista `incident_status` aún no lo refleja | Cada consulta devuelve la posición aplicada de la vista; el front y `eda-notice interactive` muestran «actualizando» hasta que la posición incluye el evento esperado, y nunca leen el estado del dueño para «saltarse» el retraso |
+| Decisión con información vieja | El replanificador revisa un plan que el orquestador ya ha cerrado | El dueño (orquestador) valida al consumir `PlanRevised`: si la incidencia está cerrada o la versión no encaja, lo descarta y lo deja en el log como obsoleto |
+
+Regla general: **quien decide sobre un estado es su dueño**, al consumir el evento. Los demás proponen con lo que saben (sus réplicas) y aceptan que su propuesta pueda llegar tarde.
+
 ### 4.2 Saga: operaciones y compensaciones
 
-La orquestación gobierna la saga. La categoría de cada acción y su compensación están en código (tabla en `specs/incident-planning`):
+La orquestación gobierna la saga y es la única que escribe `orchestrator.plan_steps`. La categoría de cada acción y su compensación están en código (tabla en `specs/incident-planning`):
 
 | Acción | Compensación | Notas |
 | --- | --- | --- |
 | `notify_customer` | Ninguna | |
 | `file_claim` | Ninguna | La reclamación sigue siendo válida aunque se reembolse |
-| `reserve_stock` | `release_stock` | Única acción compensable |
+| `reserve_stock` | `release_stock` | Única acción compensable; la ejecuta `inventory` |
 | `reissue_shipment` | Ninguna | |
 | `issue_refund` | Ninguna | Paso pivote: se emite el último y solo sin compensaciones pendientes |
 
-Al recibir un `PlanRevised`, la orquestación, en una transacción:
+Al consumir un `PlanRevised`, la orquestación, en una transacción:
 1. Marca como `cancelled` los pasos pendientes que el plan nuevo no mantiene.
-2. Para cada paso `completed` compensable cuyo dependiente se ha cancelado, inserta un paso con `step_id = <original>-comp` y `compensates = <original>`, lo marca `compensating` en el original y emite su `StepRequested`.
+2. Para cada paso `completed` compensable cuyo dependiente se ha cancelado, inserta un paso con `step_id = <original>-comp` y `compensates = <original>`, lo marca `compensating` en el original y escribe su `StepRequested` en su outbox.
 3. Retiene `issue_refund` hasta que no queden pasos `compensating`.
 
-Las compensaciones se ejecutan en orden inverso a los pasos originales y usan la misma maquinaria de idempotencia (`effect_keys`) que cualquier otro paso. Si una compensación agota sus reintentos, la incidencia se escala con `compensation_failed`.
+Las compensaciones se ejecutan en orden inverso a los pasos originales y usan la misma idempotencia (`effect_keys` del ejecutor) que cualquier otro paso. Si una compensación agota sus reintentos, la incidencia se escala con `compensation_failed`.
 
 ![Saga](docs/diagrama-saga.png)
 
 ## 5. Relay del outbox
 
-Proceso con polling, sin Debezium:
+Cada componente publica **su** outbox: el relay es parte del proceso (un hilo que hace polling de `<componente>.outbox`), sin Debezium:
 
 ```
 loop:
   BEGIN
-    SELECT o.seq, e.* FROM outbox o JOIN events e USING (seq)
-    WHERE o.published_at IS NULL
-    ORDER BY o.seq LIMIT 100
-    FOR UPDATE OF o SKIP LOCKED
-    producir los mensajes a eda.events (clave = correlation_id) y esperar la confirmación
-    UPDATE outbox SET published_at = now() WHERE seq IN (...)
+    SELECT * FROM <componente>.outbox WHERE published_at IS NULL
+    ORDER BY id LIMIT 100 FOR UPDATE SKIP LOCKED
+    producir a eda.events (clave = correlation_id) y esperar la confirmación
+    UPDATE <componente>.outbox SET published_at = now(), kafka_partition, kafka_offset
   COMMIT
   si no hay filas: dormir un intervalo corto (p. ej. 100 ms)
 ```
 
-Garantías y límites:
-- **Al menos una vez:** si el relay cae tras producir y antes del `COMMIT`, republica. Los duplicados los absorbe el inbox.
-- **Orden por incidencia:** el relay lee por `seq` y Kafka conserva el orden dentro de una partición. Con varios relays concurrentes, `SKIP LOCKED` puede intercalar lotes; para la PoC se ejecuta **un solo relay**, que es suficiente y mantiene el orden.
-- **Republicación:** `relay --replay-from <seq>` marca como no publicadas las filas desde `seq` y las vuelve a enviar (útil si se pierde el topic).
+- **Al menos una vez:** si el relay cae tras producir y antes del `COMMIT`, republica; los duplicados los absorbe el inbox de cada consumidor.
+- **Orden:** cada componente publica su outbox en orden y Kafka conserva el orden por partición (`incident_id`). Entre componentes el orden es causal: un evento se produce después de consumir el que lo causa.
+- **Republicación:** si se pierde el topic, cada componente republica su outbox (`--replay-from`); la vista del log de `event_log` conserva el histórico para consultarlo.
 
 ## 6. Consumidores: inbox y confirmación del offset
 
 ```
 poll mensaje de Kafka (enable.auto.commit = false)
-validar esquema; si es inválido -> eda.dlq + dead_letters, confirmar offset
+validar esquema; si es inválido -> eda.dlq + <componente>.dead_letters, confirmar offset
 procesar en una transacción (sección 4)
 confirmar el offset solo tras el COMMIT
 ```
 
 - Si el consumidor cae después del `COMMIT` y antes de confirmar el offset, Kafka reentrega y el inbox lo descarta.
-- Si falla antes del `COMMIT`, no se confirma el offset y se reintenta con backoff exponencial y jitter. Agotados los reintentos, el mensaje va a la dead letter queue y, si pertenece a una incidencia abierta, el sistema publica `IncidentEscalated`.
+- Si falla antes del `COMMIT`, no se confirma el offset y se reintenta con backoff exponencial y jitter. Agotados los reintentos, el mensaje va a la dead letter queue y, si pertenece a una incidencia abierta, el componente publica `IncidentEscalated`.
 
 ## 7. Ejecutores: inbox y `effect_keys`
 
-El inbox evita procesar dos veces un evento. `effect_keys` evita ejecutar dos veces un efecto. Un `StepRequested` nuevo puede pedir un efecto ya ejecutado, y el segundo mecanismo lo para.
+El inbox evita procesar dos veces un evento. `effect_keys` (del propio ejecutor) evita ejecutar dos veces un efecto: un `StepRequested` nuevo puede pedir un efecto ya ejecutado, y el segundo mecanismo lo para.
 
 ```
 BEGIN
   inbox (como en la sección 4)
-  INSERT INTO effect_keys (key, ..., status='in_progress', locked_until = now() + plazo)
+  INSERT INTO <ejecutor>.effect_keys (key, ..., status='in_progress', locked_until = now() + plazo)
      ON CONFLICT DO NOTHING
   si no inserta fila:
      leer la clave existente
@@ -148,28 +165,39 @@ BEGIN
        in_progress y locked_until > now() -> reintentar más tarde (no confirmar offset)
        in_progress y locked_until <= now() -> tomar el relevo y ejecutar
   ejecutar el efecto
-     simulado en PostgreSQL -> en esta misma transacción (garantía fuerte)
+     en sus propias tablas -> en esta misma transacción (garantía fuerte)
      externo simulado (correo, transportista) -> con la misma clave hacia el servicio simulado
-  UPDATE effect_keys SET status='completed', result=...
-  INSERT events (StepCompleted + evento de efecto) + outbox
+  UPDATE <ejecutor>.effect_keys SET status='completed', result=...
+  INSERT INTO <ejecutor>.outbox (StepCompleted + evento de efecto)
 COMMIT
 ```
 
-Restricciones de unicidad que refuerzan la idempotencia incluso sin `effect_keys`: `claims (incident_id, order_id)`, `refunds.step_id`, `customer_messages.step_id`. Para la variante «sin idempotencia» del experimento E1 se desactivan `INBOX_ENABLED` y `EFFECT_KEYS_ENABLED` y, en la base de pruebas, se eliminan también estas restricciones, para medir los duplicados reales.
+Restricciones de unicidad que refuerzan la idempotencia incluso sin `effect_keys`, cada una en la tabla de su ejecutor: `claims (incident_id, order_id)`, `refunds (incident_id, step_id)`, `customer_messages (incident_id, step_id)`. Para la variante «sin idempotencia» del experimento E1 se desactivan `INBOX_ENABLED` y `EFFECT_KEYS_ENABLED` y, en la base de pruebas, se eliminan también estas restricciones.
 
-## 8. Proyectores
+## 8. Lado de consultas: vista del log y proyectores
 
-Cada proyector lee de `events` por `seq` (no de Kafka), así la reconstrucción no depende de la retención del broker:
+El lado de lectura (CQRS) son componentes que consumen Kafka y mantienen **sus propias** vistas. No leen tablas de otros componentes, ni siquiera entre ellos.
+
+| Componente | Esquema | Mantiene | Lo usan |
+| --- | --- | --- | --- |
+| `event_log` | `event_log` | `events`: la vista del log completo, ordenada, con la partición, el offset y el contexto de traza de cada mensaje | El front (panel de eventos, mapa, detalle de nodo) y la auditoría |
+| `projectors` (uno por vista) | `views` | `view_incident_status`, `view_cost_per_incident`, `view_audit_trail`, `view_carrier_dashboard` | El front, `eda-notice interactive` y los experimentos |
+
+Cada uno guarda su posición en Kafka (`offsets`: partición y offset por consumidor) en la misma transacción que su vista, así que aplica cada mensaje exactamente una vez a la vista aunque Kafka lo reentregue.
+
+**Orden del log.** Todos los eventos de una incidencia viajan por la misma partición (clave `incident_id`), y cada uno se publica después de consumir el que lo causa: el orden de la partición es el orden causal de la incidencia. `event_log` asigna un `seq` creciente al guardar cada evento en el orden en que lo consume, así que dentro de una incidencia el `seq` respeta ese orden causal. Entre incidencias distintas el orden es el de llegada, y no importa. La tabla es solo de añadir (triggers que rechazan `UPDATE`, `DELETE` y `TRUNCATE`) y un `event_id` repetido no se guarda dos veces.
 
 ```
 BEGIN
-  SELECT * FROM events WHERE seq > last_seq ORDER BY seq LIMIT 500
-  aplicar los eventos a la vista (idempotente)
-  UPDATE projector_offsets SET last_seq = <último seq aplicado>
+  INSERT INTO event_log.events (seq, event_id, ..., kafka_partition, kafka_offset, trace_context)
+     ON CONFLICT (event_id) DO NOTHING
+  UPDATE event_log.offsets SET "offset" = <offset del mensaje> WHERE "partition" = <partición>
 COMMIT
 ```
 
-Reconstruir una vista = vaciar sus tablas `view_*` y poner `last_seq = 0`. Los proyectores no usan el inbox: su posición está en `projector_offsets`, que se actualiza en la misma transacción que la vista.
+**Posición de las vistas.** Cada respuesta de una consulta incluye la posición aplicada de su vista (`applied`: offset por partición). El cliente que espera ver el efecto de un evento conoce su partición y su offset (los da la vista del log) y sabe si la vista ya lo incluye.
+
+**Reconstrucción.** Kafka guarda los eventos con retención infinita (sección 9). Reconstruir una vista = vaciar sus tablas, poner sus offsets al principio y volver a consumir el topic. La vista reconstruida debe ser idéntica (misma huella).
 
 ## 9. Kafka: configuración
 
@@ -177,7 +205,7 @@ Reconstruir una vista = vaciar sus tablas `view_*` y poner `last_seq = 0`. Los p
 | --- | --- | --- |
 | Topic `eda.events` | 3 particiones, retención infinita | Orden por `incident_id`, reproducción posible |
 | Topic `eda.dlq` | 1 partición, retención infinita | Revisión manual |
-| Productor (relay) | `enable.idempotence=true`, `acks=all` | Sin duplicados por reintentos del productor |
+| Productor (relay de cada componente) | `enable.idempotence=true`, `acks=all` | Sin duplicados por reintentos del productor |
 | Consumidor | `enable.auto.commit=false`, `auto.offset.reset=earliest` | Commit tras el `COMMIT` de PostgreSQL |
 | Garantía de entrega | Al menos una vez, sin transacciones de Kafka | Los duplicados los resuelven inbox y `effect_keys` |
 
@@ -194,12 +222,15 @@ eda-retail/
   src/eda_retail/
     config.py
     events/               modelos pydantic y catálogo de eventos
-    infra/                db.py (psycopg), kafka.py, outbox.py (relay), inbox.py, effect_keys.py
+    infra/                db.py (psycopg), kafka.py y piezas reutilizables por cada componente: outbox y relay, inbox,
+                          effect_keys, dead letters (cada componente las usa sobre su propio esquema)
     llm/                  cliente real y simulado, validación de salidas
     agents/               interpreter.py, planner.py, replanner.py, writer.py
-    command/              command handler y reglas de negocio
+    <componente>/         cada componente con su command handler, sus tablas y sus réplicas
     orchestrator/         orquestación del plan
     executors/            un módulo por acción
+    event_log/            consumidor que guarda el log de eventos
+    inventory/            pedidos, stock y reservas
     projectors/           una vista por módulo
     synthetic/            generador de avisos e inyección de fallos
     baseline_sync/        base síncrona para E6
@@ -228,15 +259,15 @@ Trazas distribuidas con OpenTelemetry (OpenTracing está archivado y se fusionó
 
 | Tipo | Qué se traza | Cómo |
 | --- | --- | --- |
-| Asíncrono | Escritura del evento → relay → Kafka → consumidor → eventos derivados, en una sola traza por incidencia | Span `<event_type> create` al escribir; su contexto W3C (`traceparent`) se guarda en `outbox.trace_context`; el relay abre `<event_type> publish` como hijo y lo pone en las cabeceras del mensaje; el consumidor abre `<event_type> process` como hijo de esas cabeceras |
+| Asíncrono | Escritura del evento → relay → Kafka → consumidor → eventos derivados, en una sola traza por incidencia | Span `<event_type> create` al escribir; su contexto W3C (`traceparent`) se guarda en el outbox del componente (`trace_context`); el relay abre `<event_type> publish` como hijo y lo pone en las cabeceras del mensaje; el consumidor abre `<event_type> process` como hijo de esas cabeceras |
 | Síncrono | Cada sentencia SQL y las operaciones en proceso | Instrumentación de psycopg en `infra/db.connect` y decorador `@traced` |
 
-- El contexto va en `outbox` y no en `events`: el log no cambia, y la republicación (`--replay-from`) conserva la traza original.
+- El contexto va en el outbox de cada componente y en las cabeceras del mensaje; `event_log` lo guarda junto al evento, y la republicación (`--replay-from`) conserva la traza original.
 - Atributos de cada span: `eda.incident_id` (= `correlation_id`), `eda.event_id`, `eda.causation_id`, `eda.event_type`, `eda.producer`; los de consumo añaden `eda.outcome` (`processed`, `duplicate`) y los datos de Kafka. En Jaeger se busca una incidencia con el tag `eda.incident_id`.
 - Las sentencias SQL sin operación en curso (el polling del relay) no se trazan: el sampler descarta los spans CLIENT sin padre.
 - Configuración: `TRACING_ENABLED` (por defecto `true`) y `OTEL_EXPORTER_OTLP_ENDPOINT` (por defecto `http://localhost:4318`). Sin Jaeger el sistema funciona; solo se pierden las trazas.
 - Cada proceso llama a `setup_tracing("<componente>", settings)` al arrancar; el componente es el `service.name` en Jaeger.
-- Esquema: `outbox.trace_context` llega con la migración `0002` de Alembic. Tras `docker compose up -d`, aplicar las migraciones con `uv run alembic upgrade head` (la revisión `0001` no hace nada si el volumen ya tiene el esquema de `db/init/001_schema.sql`).
+- Esquema: cada outbox tiene su columna `trace_context`. Tras `docker compose up -d`, aplicar las migraciones con `uv run alembic upgrade head`.
 - Demo: `uv run python scripts/trace_demo.py` lanza aviso → intérprete → planificador en procesos separados (base `eda_demo`, topic `eda.trace-demo`) e imprime la URL de la traza.
 
 ## 14. Front web
@@ -245,12 +276,12 @@ Interfaz local para operar y observar la PoC (spec `web-front`): un backend Fast
 
 | Parte | Cómo |
 | --- | --- |
-| Acceso | `eda-web` escucha solo en `127.0.0.1`; `LocalOriginGuard` rechaza Host y Origin que no sean de localhost (DNS rebinding). Lee PostgreSQL con `default_transaction_read_only=on`: el front nunca escribe en el log ni salta el command handler |
-| Eventos | `GET /api/events` pagina `events` por `seq` y añade, de `outbox`, el contexto de traza y la partición y el offset que guardó el relay (migración `0007`). `GET /api/events/stream` es SSE: sondea cada 0,5 s tras el último `seq` enviado y reanuda con `Last-Event-ID` |
+| Acceso | `eda-web` escucha solo en `127.0.0.1`; `LocalOriginGuard` rechaza Host y Origin que no sean de localhost (DNS rebinding). Lee PostgreSQL con `default_transaction_read_only=on` y solo el log de `event_log` y las vistas: nunca escribe ni lee las tablas de otros componentes. Los comandos los envía por `intake` (`scripts/notice.sh`) |
+| Eventos | `GET /api/events` pagina `event_log.events` por `seq`, con el contexto de traza y la partición y el offset de Kafka que `event_log` guarda al consumir cada mensaje. `GET /api/events/stream` es SSE: sondea cada 0,5 s tras el último `seq` enviado y reanuda con `Last-Event-ID` |
 | Emisor y destino | Emisor = `producer`. Destino = los componentes que declaran ese tipo de evento (`agents.cli.AGENTS`, `orchestrator.runner.EVENT_TYPES`, `executor-<acción>` para `StepRequested`), con los proyectores siempre al final |
 | Mapa | Topología estática (`web/topology.py`) más el estado de cada proceso (`pgrep -f`, mismos patrones que `run-agents.sh`) y de PostgreSQL, Kafka y Ollama, con 2 s como máximo por comprobación |
 | Comandos | `POST /api/commands` lanza `scripts/notice.sh` con una lista blanca de argumentos y sin shell; una ejecución a la vez, 15 minutos como máximo, salida por SSE. `interactive` corre en una pseudoterminal y recibe líneas por `POST /api/commands/{run_id}/input`. Al parar el backend se termina el grupo de procesos en curso |
-| Trazas | Enlace a Jaeger en la cabecera y por evento (`<JAEGER_UI_URL>/trace/<trace_id>`, con `trace_id` de `outbox.trace_context`) |
+| Trazas | Enlace a Jaeger en la cabecera y por evento (`<JAEGER_UI_URL>/trace/<trace_id>`, con `trace_id` del contexto de traza que guarda `event_log`) |
 
 - Configuración: `WEB_PORT` (backend; Vite reenvía `/api` al mismo puerto), `WEB_FREE_TEXT` y `WEB_INTERACTIVE` (`true` para ofrecer `send --text` e `interactive`; por defecto deshabilitados, porque la PoC es un ejemplo académico) y `JAEGER_UI_URL` (por defecto `http://localhost:16686`; si no es http(s) se usa el valor por defecto).
 - Tests: pytest para el backend (los de `tests/integration/test_web_events.py`, contra PostgreSQL) y Vitest + Testing Library para el front, con un `EventSource` falso. El hook `web` de pre-commit lanza `npm test` y `npm run typecheck`.

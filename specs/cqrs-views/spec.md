@@ -8,57 +8,57 @@ Separar quien acepta cambios (command handler, que añade eventos al log) de qui
 
 ### Requirement: Escritura solo mediante comandos
 
-Todo cambio de estado SHALL pasar por el command handler, que valida las reglas de negocio contra el estado actual y, si se cumplen, añade eventos al log. Un comando rechazado MUST NOT escribir eventos.
+Todo cambio de estado SHALL pasar por el command handler del componente dueño de ese estado. Cada componente que recibe comandos tiene el suyo, que valida las reglas de negocio contra su estado y sus réplicas y, si se cumplen, escribe su estado y los eventos en su outbox en la misma transacción. Un comando rechazado MUST NOT escribir eventos. No existe un command handler común a varios componentes.
 
 #### Scenario: Comando válido
 
-- **GIVEN** una incidencia abierta
-- **WHEN** el command handler recibe el comando de registrar el resultado de un paso
-- **THEN** añade los eventos correspondientes al log
-- **AND** responde que el comando se aceptó
+- **GIVEN** una incidencia abierta en el orquestador
+- **WHEN** el command handler del orquestador recibe el resultado de un paso (de un `StepCompleted`)
+- **THEN** actualiza `orchestrator.plan_steps` y escribe los eventos siguientes en `orchestrator.outbox`
+- **AND** el comando queda aceptado
 
 #### Scenario: Comando sobre una incidencia cerrada
 
-- **GIVEN** una incidencia con `IncidentResolved`
+- **GIVEN** una incidencia con `IncidentResolved` en el orquestador
 - **WHEN** llega un comando de ejecutar un paso
-- **THEN** el command handler lo rechaza con el motivo `incident_closed`
+- **THEN** el command handler del orquestador lo rechaza con el motivo `incident_closed`
 - **AND** no se escribe ningún evento
 
 ### Requirement: Catálogo de comandos
 
-Los comandos SHALL ser peticiones explícitas con destinatario y nombre en imperativo, distintas de los eventos (hechos ya ocurridos). El command handler MUST aceptar al menos: `RegisterCarrierNotice`, `OpenIncident`, `CreatePlan`, `RevisePlan`, `RequestStep`, `RecordStepResult`, `CloseIncident` y `EscalateIncident`. Cada comando SHALL llevar un `command_id`, que será el `event_id` del evento que lo originó.
+Los comandos SHALL ser peticiones explícitas con destinatario y nombre en imperativo, distintas de los eventos (hechos ya ocurridos), y cada uno lo atiende el command handler de un único componente: `intake` (`RegisterCarrierNotice`), `inventory` (`SeedSampleData` y la ejecución de `reserve_stock` y `release_stock`), `interpreter` (`OpenIncident`), `planner` (`CreatePlan`), `replanner` (`RevisePlan`), `orchestrator` (`ApplyRevision`, `AdvancePlan`, `RecordStepResult`, `CloseIncident`, `EscalateIncident`) y cada ejecutor (`ExecuteStep`). Cada comando derivado de un evento SHALL llevar un `command_id`, que será el `event_id` de ese evento.
 
 #### Scenario: Comando derivado de un evento
 
 - **GIVEN** un `ShipmentDelayed` con `event_id` E1 consumido por el planificador
-- **WHEN** el planificador envía el comando `CreatePlan`
+- **WHEN** el planificador envía el comando `CreatePlan` a su propio command handler
 - **THEN** el comando lleva `command_id` E1
 - **AND** el evento resultante `PlanCreated` lleva `causation_id` E1
 
-### Requirement: Concurrencia optimista en el lado de escritura
+### Requirement: Un único dueño por estado
 
-Cada incidencia SHALL tener un número de `version` en el estado de escritura. Todo comando MUST indicar la `expected_version` y el command handler SHALL rechazarlo con el motivo `concurrency_conflict` si no coincide, sin escribir eventos. El componente que lo envió reintentará con el estado actualizado.
+Cada estado SHALL tener un único componente dueño, el único que lo escribe. El estado de la incidencia (`incidents`, `plan_steps`) es del orquestador, que procesa en orden los eventos de cada incidencia (misma partición de Kafka), así que no hay escrituras concurrentes de varios procesos sobre él. Las propuestas de otros componentes (planes, revisiones, resultados de pasos) se deciden al consumirlas: una que llega tarde o se basa en una versión ya superada MUST descartarse sin cambiar el estado.
 
-#### Scenario: Dos comandos simultáneos sobre la misma incidencia
+#### Scenario: Dos revisiones sobre la misma incidencia
 
-- **GIVEN** una incidencia en la versión 4 y dos comandos con `expected_version` 4 enviados a la vez
-- **WHEN** el command handler los procesa
-- **THEN** acepta uno y la versión pasa a 5
-- **AND** rechaza el otro con `concurrency_conflict` sin escribir eventos
+- **GIVEN** una incidencia en la versión de plan 2 y dos `PlanRevised` del replanificador basados en la versión 2
+- **WHEN** el orquestador los consume
+- **THEN** aplica el primero y la versión pasa a 3
+- **AND** descarta el segundo como obsoleto, sin cambiar el estado
 
 ### Requirement: Separación entre el modelo de escritura y el de lectura
 
-El estado de escritura (`incidents`, `plan_steps`) y las vistas (`view_*`) SHALL ser tablas distintas. Los componentes de lectura MUST NOT consultar las tablas de estado de escritura ni hacer joins con ellas. El estado de escritura y los eventos se escriben en la misma transacción.
+El estado de escritura de cada componente y las vistas (`views.view_*`) SHALL ser tablas distintas. Las vistas solo las escriben los proyectores, a partir del log de `event_log`. Los componentes de lectura MUST NOT consultar el estado de escritura de ningún componente ni hacer joins con él.
 
 #### Scenario: Lectura del panel
 
 - **GIVEN** un panel que muestra incidencias abiertas
 - **WHEN** consulta los datos
-- **THEN** la consulta solo lee tablas `view_*`
+- **THEN** la consulta solo lee tablas `views.view_*`
 
 ### Requirement: Lectura solo desde las vistas
 
-Las consultas SHALL leer únicamente de las vistas. Los agentes y el panel MUST NOT leer del log ni del estado de escritura para decidir. La consulta nunca escribe.
+Las consultas de las personas (front, `eda-notice interactive`, experimentos) SHALL leer únicamente de las vistas. Los componentes MUST NOT decidir leyendo vistas, el log ni tablas de otros componentes: deciden con su estado y sus réplicas. La consulta nunca escribe.
 
 #### Scenario: Consulta del estado
 
@@ -66,6 +66,13 @@ Las consultas SHALL leer únicamente de las vistas. Los agentes y el panel MUST 
 - **WHEN** el panel consulta su estado
 - **THEN** la respuesta sale de la vista de estado
 - **AND** no se genera ningún evento
+
+#### Scenario: Decisión del replanificador
+
+- **GIVEN** un `StepFailed` que obliga a revisar el plan
+- **WHEN** el replanificador decide si quedan revisiones
+- **THEN** usa su réplica `replanner.incidents`, alimentada por `PlanCreated` y `PlanRevised`
+- **AND** no consulta la vista `incident_status`
 
 ### Requirement: Vistas mínimas
 
@@ -99,25 +106,25 @@ Los proyectores MUST ser idempotentes: procesar el mismo evento varias veces SHA
 - **WHEN** el proyector recibe de nuevo el mismo evento
 - **THEN** la vista no cambia
 
-### Requirement: Vistas en PostgreSQL con posición del proyector
+### Requirement: Vistas en PostgreSQL con posición en Kafka
 
-Las vistas SHALL residir en tablas de PostgreSQL. Cada proyector MUST registrar en `projector_offsets` el último `seq` aplicado, actualizado en la misma transacción que la vista.
+Las vistas SHALL residir en tablas de PostgreSQL del esquema de su componente de consulta. Cada componente de consulta (proyectores y `event_log`) MUST consumir los eventos de Kafka y registrar en su tabla `offsets` el último offset aplicado de cada partición, actualizado en la misma transacción que la vista. No lee tablas de ningún otro componente.
 
 #### Scenario: Reinicio de un proyector
 
-- **GIVEN** un proyector con `last_seq` 120 registrado
+- **GIVEN** un proyector que aplicó hasta el offset 120 de la partición 1
 - **WHEN** se reinicia
-- **THEN** continúa desde el evento con `seq` 121
-- **AND** no aplica dos veces los eventos anteriores
+- **THEN** continúa desde el offset 121 de esa partición
+- **AND** no aplica dos veces los mensajes anteriores aunque Kafka los reentregue
 
 ### Requirement: Reconstrucción de vistas
 
-El sistema SHALL poder borrar cualquier vista y reconstruirla reproduciendo la tabla `events` desde `seq` 1, sin depender de la retención de Kafka. La vista reconstruida MUST ser idéntica a la que se mantenía de forma incremental.
+El sistema SHALL poder borrar cualquier vista y reconstruirla volviendo a consumir el topic `eda.events` desde el principio (retención infinita). La vista reconstruida MUST ser idéntica a la que se mantenía de forma incremental.
 
 #### Scenario: Reconstrucción de incident_status
 
 - **GIVEN** una vista `incident_status` con su huella calculada
-- **WHEN** se borra y se reproduce el log
+- **WHEN** se borra y se vuelve a consumir el topic desde el principio
 - **THEN** la nueva vista tiene la misma huella
 - **AND** el sistema registra el tiempo de reconstrucción
 
@@ -127,15 +134,38 @@ El sistema SHALL poder borrar cualquier vista y reconstruirla reproduciendo la t
 - **WHEN** se reconstruye
 - **THEN** la huella anterior y la nueva difieren
 
+### Requirement: Vista del log de eventos
+
+El componente de consulta `event_log` SHALL mantener la vista `event_log.events` con todos los eventos consumidos de Kafka, y el front MUST leer los eventos solo de ella. Cada evento SHALL recibir al guardarse un `seq` creciente en el orden de consumo; como los eventos de una incidencia viajan por la misma partición, el `seq` respeta su orden causal dentro de la incidencia. La vista es solo de añadir (la base de datos rechaza `UPDATE`, `DELETE` y `TRUNCATE`) y un `event_id` repetido MUST NOT guardarse dos veces. Guarda también la partición, el offset y el contexto de traza de cada mensaje.
+
+#### Scenario: Orden de una incidencia
+
+- **GIVEN** una incidencia con `ShipmentDelayed`, `PlanCreated` y `StepRequested`, publicados por tres componentes distintos en ese orden causal
+- **WHEN** `event_log` los consume
+- **THEN** sus `seq` son crecientes en ese mismo orden
+
+#### Scenario: Mensaje entregado dos veces
+
+- **GIVEN** un evento ya guardado en `event_log.events`
+- **WHEN** Kafka lo entrega otra vez
+- **THEN** la vista sigue teniendo una sola fila con ese `event_id`
+
 ### Requirement: Consistencia eventual declarada
 
-Las vistas SHALL ser eventualmente consistentes. Cada respuesta de consulta MUST incluir el último `seq` aplicado por el proyector que alimenta la vista (`last_applied_seq`), para que el cliente sepa cuán actual es.
+Las vistas y las réplicas locales de cada componente SHALL ser eventualmente consistentes: van por detrás de los dueños del estado, y cada componente trata ese retraso de forma explícita (design.md §4.3). Cada respuesta de consulta MUST incluir la posición aplicada de la vista (`applied`: offset por partición), para que el cliente sepa cuán actual es.
 
 #### Scenario: Lectura justo después de escribir
 
 - **GIVEN** un comando aceptado que escribió el evento E1
 - **WHEN** el cliente consulta la vista antes de que se aplique E1
-- **THEN** la respuesta indica un `last_applied_seq` anterior al `seq` de E1
+- **THEN** la posición `applied` de la partición de E1 es anterior al offset de E1
+
+#### Scenario: Réplica atrasada
+
+- **GIVEN** un aviso sobre el pedido P-1007 que llega al intérprete antes que el `OrderRegistered` de P-1007
+- **WHEN** el intérprete valida los pedidos con su réplica
+- **THEN** no confirma el evento y lo reintenta con espera exponencial, sin leer las tablas de `inventory`
+- **AND** si agota los reintentos sin el pedido, publica `IncidentEscalated` con `no_valid_orders`
 
 ### Requirement: Nueva vista sin tocar la escritura
 

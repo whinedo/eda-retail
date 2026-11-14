@@ -51,13 +51,13 @@ Si un consumidor cae, SHALL retomar desde su último evento confirmado al reinic
 
 ### Requirement: Estado del plan reconstruible
 
-El estado de cada plan SHALL poder reconstruirse a partir del log. Un componente que se reinicia MUST NOT depender de memoria local para saber en qué paso va una incidencia.
+El estado de cada plan SHALL estar en las tablas de su dueño, el orquestador, y poder reconstruirse a partir del log de `event_log`. Un componente que se reinicia MUST NOT depender de memoria local para saber en qué paso va una incidencia.
 
 #### Scenario: Reinicio del orquestador
 
 - **GIVEN** un orquestador reiniciado con incidencias abiertas
-- **WHEN** reproduce el log
-- **THEN** recupera la versión vigente y los pasos pendientes de cada incidencia
+- **WHEN** vuelve a consumir
+- **THEN** recupera la versión vigente y los pasos pendientes de cada incidencia de `orchestrator.plan_steps`
 
 ### Requirement: Límite de concurrencia
 

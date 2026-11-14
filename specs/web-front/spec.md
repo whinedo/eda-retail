@@ -232,7 +232,7 @@ El emisor de un evento SHALL ser el campo `producer` del evento. El destino SHAL
 
 ### Requirement: Página de eventos
 
-`GET /api/events` SHALL devolver los eventos de `events` del más reciente al más antiguo, con `limit` entre 1 y 500 (100 por defecto) y `before_seq` para pedir la página anterior. SHALL admitir los filtros `incident_id` (por `correlation_id` o por el `incident_id` del payload) y `node` (eventos que ese nodo emite o consume). La respuesta SHALL incluir `next_before_seq`, el `seq` desde el que pedir la página siguiente, o `null` si no hay más.
+`GET /api/events` SHALL devolver los eventos de la vista del log (`event_log.events`, spec `cqrs-views`) del más reciente al más antiguo, con `limit` entre 1 y 500 (100 por defecto) y `before_seq` para pedir la página anterior. SHALL admitir los filtros `incident_id` (por `correlation_id` o por el `incident_id` del payload) y `node` (eventos que ese nodo emite o consume). La respuesta SHALL incluir `next_before_seq`, el `seq` desde el que pedir la página siguiente, o `null` si no hay más.
 
 #### Scenario: Paginar hacia atrás
 

@@ -8,7 +8,7 @@ Garantizar que ningún efecto se ejecuta más de una vez aunque el bus duplique 
 
 ### Requirement: Inbox por consumidor
 
-Cada consumidor SHALL registrar los eventos procesados en una tabla `inbox` con clave única (`consumer`, `event_id`). El registro MUST escribirse en la misma transacción que los cambios de estado y los eventos que produce el procesamiento. Un evento ya registrado SHALL descartarse sin repetir su procesamiento.
+Cada consumidor SHALL registrar los eventos procesados en su propia tabla `<componente>.inbox` con clave única `event_id`. El registro MUST escribirse en la misma transacción que sus cambios de estado y los eventos que deja en su outbox. Un evento ya registrado SHALL descartarse sin repetir su procesamiento.
 
 #### Scenario: Reentrega de Kafka
 

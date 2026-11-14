@@ -44,16 +44,15 @@ El log de eventos SHALL ser de solo añadir. El sistema MUST NOT permitir modifi
 - **THEN** el sistema rechaza la operación
 - **AND** el evento original permanece intacto
 
-### Requirement: Log en PostgreSQL
+### Requirement: Kafka como registro de eventos
 
-El log de eventos SHALL residir en una tabla `events` de PostgreSQL. La base de datos MUST rechazar `UPDATE`, `DELETE` y `TRUNCATE` sobre esa tabla. Cada evento SHALL recibir un número de secuencia global creciente (`seq`).
+Kafka SHALL conservar todos los eventos del topic `eda.events` con retención infinita: es el registro del que se reconstruyen las vistas. En PostgreSQL, el histórico consultable es la vista del log que mantiene el componente de consulta `event_log` (spec `cqrs-views`, "Vista del log de eventos"); ningún componente decide leyéndola.
 
-#### Scenario: Intento de borrar un evento
+#### Scenario: Vista reconstruida desde Kafka
 
-- **GIVEN** un evento escrito en la tabla `events`
-- **WHEN** cualquier sesión ejecuta un `DELETE` o un `UPDATE` sobre él
-- **THEN** la base de datos rechaza la sentencia con un error
-- **AND** el evento permanece intacto
+- **GIVEN** la vista del log vacía y el topic `eda.events` con todos los eventos
+- **WHEN** `event_log` vuelve a consumir el topic desde el principio
+- **THEN** la vista vuelve a tener todos los eventos, una vez cada uno
 
 ### Requirement: Orden por incidencia
 
@@ -93,16 +92,33 @@ El bus MUST entregar cada evento a cada consumidor al menos una vez y reentregar
 - **WHEN** vence el tiempo de confirmación
 - **THEN** el bus reentrega el evento al consumidor
 
+### Requirement: Propiedad de los datos
+
+Cada componente SHALL escribir únicamente en sus propias tablas, agrupadas en un esquema propio de PostgreSQL (`intake`, `interpreter`, `planner`, `replanner`, `orchestrator`, `executor_<acción>`, `inventory`, `event_log`, `views`). Los componentes MUST comunicarse solo por eventos en Kafka: ninguno escribe ni lee para decidir en las tablas de otro, ni hay claves foráneas o joins entre tablas de componentes distintos. Lo que un componente necesita de otro le llega en un evento y lo guarda en una réplica local suya. La base de datos es una sola para la PoC.
+
+#### Scenario: Dato de otro componente
+
+- **GIVEN** un planificador que necesita el importe del pedido P-1002 para validar un reembolso
+- **WHEN** valida el plan
+- **THEN** lee el importe de su réplica `planner.orders`, alimentada por el evento `OrderRegistered` de `inventory`
+- **AND** no consulta ninguna tabla de `inventory`
+
+#### Scenario: Escritura fuera de su esquema
+
+- **GIVEN** el código de cualquier componente
+- **WHEN** se revisan las sentencias SQL que ejecuta
+- **THEN** solo escriben en tablas de su propio esquema
+
 ### Requirement: Publicación atómica con el estado (Outbox)
 
-Cuando un componente cambia su estado y publica un evento, ambas operaciones MUST ocurrir de forma atómica mediante un outbox transaccional: el cambio de estado, la fila de `events` y la fila de `outbox` se escriben en la misma transacción de PostgreSQL. El sistema MUST NOT publicar un evento de un cambio que no se llegó a confirmar, ni confirmar un cambio sin publicar su evento.
+Cuando un componente cambia su estado y publica un evento, ambas operaciones MUST ocurrir de forma atómica mediante su propio outbox transaccional: el cambio de estado y la fila del evento en `<componente>.outbox` se escriben en la misma transacción de PostgreSQL, y el relay de ese componente publica su outbox en Kafka. El sistema MUST NOT publicar un evento de un cambio que no se llegó a confirmar, ni confirmar un cambio sin publicar su evento.
 
 #### Scenario: Fallo entre el cambio y la publicación
 
-- **GIVEN** un componente que ha guardado su cambio de estado y su evento en el outbox
+- **GIVEN** un componente que ha guardado su cambio de estado y su evento en su outbox
 - **WHEN** el proceso cae antes de enviar el evento al bus
-- **THEN** al reiniciar, el relay del outbox publica en Kafka el evento pendiente
-- **AND** el evento aparece una sola vez en el log
+- **THEN** al reiniciar, el relay del componente publica en Kafka el evento pendiente
+- **AND** el evento aparece una sola vez en la vista del log de `event_log`
 
 ### Requirement: Versionado de eventos
 

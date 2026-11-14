@@ -34,7 +34,7 @@ El importe máximo de reembolso, las acciones permitidas y los umbrales de grave
 #### Scenario: Reembolso por encima del máximo
 
 - **GIVEN** un plan que propone reembolsar un importe superior al máximo configurado
-- **WHEN** el command handler lo valida
+- **WHEN** el command handler del planificador lo valida
 - **THEN** rechaza el plan
 - **AND** registra el motivo `refund_limit`
 
@@ -50,7 +50,7 @@ Cuando una salida del LLM sea rechazada, el sistema SHALL pedir una nueva como m
 
 ### Requirement: Presupuesto por incidencia
 
-Cada incidencia SHALL tener un presupuesto máximo de tokens, de llamadas al LLM y de revisiones del plan. Al agotarse cualquiera de ellos, el sistema MUST detener las llamadas y publicar `IncidentEscalated`.
+Cada incidencia SHALL tener un presupuesto máximo de tokens, de llamadas al LLM y de revisiones del plan. Al agotarse cualquiera de ellos, el sistema MUST detener las llamadas y publicar `IncidentEscalated`. Cada componente que llama al LLM comprueba el presupuesto con su réplica `budgets`, alimentada por los `LlmCallRecorded` de todos los componentes; como la réplica es eventualmente consistente, el exceso queda acotado a las llamadas que estén en curso a la vez (cota blanda).
 
 #### Scenario: Presupuesto de tokens agotado
 
