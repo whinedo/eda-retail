@@ -6,6 +6,7 @@ desde un origen ajeno reciba 403 antes de llegar a ningún endpoint.
 
 from __future__ import annotations
 
+import os
 import re
 from collections.abc import Iterator
 from pathlib import Path
@@ -18,6 +19,7 @@ from fastapi.responses import StreamingResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from eda_retail.config import load_settings
+from eda_retail.llm.ollama_client import DEFAULT_HOST as DEFAULT_OLLAMA_HOST
 from eda_retail.web.commands import (
     NOTICE_SCRIPT,
     RUN_MAX_SECONDS,
@@ -32,7 +34,10 @@ from eda_retail.web.commands import (
 )
 from eda_retail.web.db import read_only_connect
 from eda_retail.web.events import DEFAULT_LIMIT, MAX_LIMIT, events_after, last_seq, list_events
+from eda_retail.web.health import HealthChecker, check_kafka, check_ollama, check_postgres
+from eda_retail.web.nodes import node_detail
 from eda_retail.web.stream import event_stream, start_seq
+from eda_retail.web.topology import EDGES, NODES, node
 
 # Orígenes admitidos: http(s) en localhost, 127.0.0.1 o ::1, con cualquier puerto
 # (el servidor de Vite en desarrollo y el propio backend).
@@ -90,10 +95,21 @@ def create_app(
     stream_max_polls: int | None = None,
     notice_script: Path = NOTICE_SCRIPT,
     run_max_seconds: float = RUN_MAX_SECONDS,
+    health: HealthChecker | None = None,
 ) -> FastAPI:
-    """`stream_max_polls`, `notice_script` y `run_max_seconds` solo los cambian los tests."""
+    """`stream_max_polls`, `notice_script`, `run_max_seconds` y `health` solo los cambian los tests."""
     app = FastAPI(title="eda-retail web", docs_url=None, redoc_url=None, openapi_url=None)
-    app.state.database_url = database_url or load_settings().database_url
+    settings = load_settings()
+    app.state.database_url = database_url or settings.database_url
+    db_url = app.state.database_url
+    ollama_host = os.environ.get("OLLAMA_HOST", DEFAULT_OLLAMA_HOST)
+    health = health or HealthChecker(
+        {
+            "postgres": lambda: check_postgres(db_url),
+            "kafka": lambda: check_kafka(settings.kafka_bootstrap_servers),
+            "ollama": lambda: check_ollama(ollama_host),
+        }
+    )
     app.state.stream_max_polls = stream_max_polls
     runner = CommandRunner(notice_script, run_max_seconds)
     app.add_middleware(
@@ -134,6 +150,26 @@ def create_app(
                 yield from event_stream(lambda after: events_after(conn, after), start, max_polls=max_polls)
 
         return _sse(frames())
+
+    @app.get("/api/topology")
+    def topology() -> dict:
+        return {
+            "nodes": [n.as_dict() for n in NODES],
+            "edges": [{"source": source, "target": target} for source, target in EDGES],
+        }
+
+    @app.get("/api/health")
+    def health_report() -> dict:
+        return health.report()
+
+    @app.get("/api/nodes/{node_id}")
+    def node_info(node_id: str) -> dict:
+        try:
+            found = node(node_id)
+        except KeyError:
+            raise HTTPException(404, "nodo desconocido") from None
+        with read_only_connect(db_url) as conn:
+            return node_detail(conn, found, health)
 
     @app.post("/api/commands", status_code=202)
     def run_command(body: CommandRequest) -> dict:

@@ -56,7 +56,7 @@ El menú SHALL ofrecer los comandos de `scripts/notice.sh`: `seed`, `send`, `sen
 
 ### Requirement: Mapa de sistemas
 
-El mapa SHALL mostrar como nodos: `eda-notice`, PostgreSQL, relay, Kafka (`eda.events`), `eda.dlq`, proyector, agentes con LLM (intérprete, planificador, replanificador), orquestador, ejecutores (`notify_customer`, `file_claim`, `reissue_shipment`, `reserve_stock`, `release_stock`, `issue_refund`), Ollama, servicios simulados (correo, transportista, almacén, pagos) y Jaeger. Las aristas SHALL representar las comunicaciones de design.md §3 y se distinguirán por tipo de nodo (LLM, código, datos y bus, externo, simulado).
+El mapa SHALL mostrar como nodos: `eda-notice`, PostgreSQL, relay, Kafka (`eda.events`), `eda.dlq`, proyector, agentes con LLM (intérprete, planificador, replanificador), orquestador, ejecutores (`notify_customer`, `file_claim`, `reissue_shipment`, `reserve_stock`, `release_stock`, `issue_refund`), Ollama, servicios simulados (correo, aseguradora, transportista, almacén y pagos, los de `eda_retail.executors.services` más las tablas de stock) y Jaeger. Las aristas SHALL representar las comunicaciones de design.md §3 y se distinguirán por tipo de nodo (LLM, código, datos y bus, externo, simulado). El id de cada nodo SHALL coincidir con el emisor o destino que usan los eventos (`intake` para `eda-notice`, `interpreter`, `orchestrator`, `executor-<acción>`, `projectors`…), para poder resaltar la arista de cada evento. `GET /api/topology` SHALL devolver esos nodos (id, etiqueta, tipo, descripción y si se vigila su proceso) y aristas (origen, destino).
 
 #### Scenario: Estado de un nodo
 
@@ -71,6 +71,12 @@ El mapa SHALL mostrar como nodos: `eda-notice`, PostgreSQL, relay, Kafka (`eda.e
 - **WHEN** el front consulta `GET /api/health`
 - **THEN** cada uno se muestra como healthy o down en la cabecera
 
+#### Scenario: Servicio caído
+
+- **GIVEN** Ollama parado o que no responde en 2 segundos
+- **WHEN** el front consulta `GET /api/health`
+- **THEN** Ollama aparece como down y el resto de comprobaciones responde igual
+
 #### Scenario: Comunicación en curso
 
 - **GIVEN** un comando ejecutándose que genera eventos
@@ -79,13 +85,19 @@ El mapa SHALL mostrar como nodos: `eda-notice`, PostgreSQL, relay, Kafka (`eda.e
 
 ### Requirement: Detalle de un nodo
 
-Al seleccionar un nodo el front SHALL abrir un panel con su descripción, el estado del proceso, los eventos que emite y consume y, para los agentes con LLM, las métricas derivadas de los eventos `LlmCallRecorded` (llamadas, tokens de entrada y salida, latencia, validaciones superadas).
+Al seleccionar un nodo el front SHALL abrir un panel con su descripción, el estado del proceso, los eventos que emite y consume y, para los agentes con LLM, las métricas derivadas de los eventos `LlmCallRecorded` (llamadas, tokens de entrada y salida, latencia, validaciones superadas). `GET /api/nodes/{id}` SHALL devolver esos datos: los tipos que consume salen de las mismas declaraciones que el destino de los eventos, y los que emite, de los eventos con ese `producer` en el log. Los ejecutores `notify_customer` y `file_claim` muestran las métricas del redactor (`writer`), que se invoca desde ellos. Un id desconocido responde 404.
 
 #### Scenario: Filtrar eventos por nodo
 
 - **GIVEN** el panel de detalle del planificador abierto
 - **WHEN** el usuario pulsa «Filtrar eventos»
 - **THEN** el panel inferior muestra solo los eventos emitidos o recibidos por el planificador
+
+#### Scenario: Métricas de un agente con LLM
+
+- **GIVEN** dos `LlmCallRecorded` del planificador, con 100 y 300 tokens de entrada, 20 y 40 de salida, 1000 y 3000 ms y una sola validación superada
+- **WHEN** se pide `GET /api/nodes/planner`
+- **THEN** las métricas son 2 llamadas, 400 tokens de entrada, 60 de salida, 2000 ms de latencia media y 1 validación superada
 
 ### Requirement: Panel de eventos intercambiados
 
@@ -249,7 +261,10 @@ La cabecera SHALL ofrecer un enlace a la interfaz web de Jaeger, que se abre en 
 | `GET /api/commands/{run_id}/stream` | SSE con la salida y, al final, el código de salida |
 | `POST /api/commands/{run_id}/input` | Línea para `interactive` |
 
+## Decisiones
+
+- Estado de procesos: se deduce con `pgrep -f` y los mismos patrones que `scripts/run-agents.sh`; PostgreSQL con `SELECT 1` en una conexión de solo lectura, Kafka listando los topics y Ollama con `GET /api/tags` (`OLLAMA_HOST`). Cada comprobación tiene un tiempo máximo de 2 s.
+
 ## Decisiones abiertas
 
 - Partición y offset: requieren que el relay los registre al publicar (cambio en `outbox`/`events` con migración Alembic). Hasta entonces la columna muestra «—».
-- Estado de procesos: se deduce con `pgrep` como `scripts/notice.sh`; Kafka y PostgreSQL por conexión, Ollama por `GET /api/tags`.
