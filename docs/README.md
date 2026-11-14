@@ -309,8 +309,11 @@ E1 compara tres modos de idempotencia: `full` (todo activo), `no_effect_keys` (l
 | `uv run eda-experiment e3` | E3: 30 incidencias de pérdida con los dos almacenes sin stock; el replanner sustituye la reserva y el reenvío por un reembolso |
 | `uv run eda-experiment e4` | E4: 200 incidencias; borra cada vista, la reconstruye desde `events` y compara las huellas |
 | `uv run eda-experiment e5` | E5: el planificador aislado, con la interpretación etiquetada, sobre 40 incidencias y 3 repeticiones con Ollama; acierto global, por causa y planes que no coinciden. `--llm oracle` lo ejecuta sin coste y `--threshold` cambia el umbral de H5 (0,8) |
+| `uv run eda-experiment e6` | E6: las dos versiones con los mismos avisos y el mismo LLM, sin fallos y con fallos (cada evento 2 veces y un 30 % de fallos en `reserve_stock`), 50 incidencias y 3 repeticiones con Ollama; latencia (media, mediana y p95), tokens, coste, incidencias resueltas y efectos duplicados. `--llm oracle` lo ejecuta sin coste |
 | `uv run eda-experiment e7` | E7: 50 incidencias con un 50 % de fallos en `reserve_stock`; explica 10 elegidas al azar con `audit_trail` y la cadena de `causation_id` |
 
 Sin `--incidents`, cada experimento usa el tamaño de su escenario en la spec (E1 y E2: 50; E3: 30; E4: 200; E7: 50).
 
 La base síncrona de referencia (`baseline_sync/runner.py`) atiende cada aviso de principio a fin en una sola llamada, con los mismos prompts y comprobaciones de los agentes, las mismas reglas del plan, las mismas acciones de los ejecutores y las mismas compensaciones, pero sin `events`, outbox, inbox, vistas ni Kafka. Guarda el estado de negocio en una base de datos PostgreSQL propia de cada ejecución, así E6 compara las dos versiones con la misma base de datos. Recibe los mismos avisos y los mismos fallos de negocio que la versión de eventos; un aviso repetido devuelve la incidencia ya creada.
+
+La latencia de E6 se lee con cuidado: el arnés atiende los consumidores por turnos en un solo proceso, con esperas cortas en cada consumidor, así que la latencia de la versión de eventos incluye ese reparto de turnos y no es la de un despliegue con un proceso por componente. Con el oráculo la diferencia la marca el arnés; con Ollama la domina el LLM.

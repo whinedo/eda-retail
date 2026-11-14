@@ -33,6 +33,7 @@ Assumptions (marked):
 - A7 E7 injects a 50 % failure rate on `reserve_stock` so revised plans appear, and samples the incidents with `random.Random(seed)`. A decision is a `StepRequested`; its agent is the actor of the plan event with the same version; its reason is `PlanRevised.reason` or, for a created plan, the cause and severity of the `ShipmentDelayed` reached through `causation_id`.
 - A8 The baseline keeps its business state in PostgreSQL (user choice, L11): a database of its own per run with `orders`, `stock`, `reservations`, effect tables and `incidents`, and no `events`, outbox, inbox, views or Kafka. It calls the same action `prepare`/`execute`, `validate_plan`, agent prompts and checks, and ports the saga rules (ready steps, refund pivot, compensations) to an in-memory step map. Ready steps run one at a time in (origin version, `step_id`) order. It applies business faults and duplicates (the same notice received N times; a repeated notice returns the existing incident); consumer crashes and delivery delays have no synchronous equivalent.
 - A9 E5 evaluates the planner on its own (user choice, L15): the labelled cause, severity and delay, the same prompt (`planner.plan_request`), checks (`validate_plan`) and retries. A plan is a hit when it proposes the same actions as the expected plan, regardless of order and `step_id`. `low` severity is planned by code without the LLM, so those incidents are counted apart (`code_planned`) and stay out of the accuracy. H5 holds when the mean accuracy of the repetitions reaches the threshold.
+- A10 E6 runs, per repetition, the same notices with the same LLM in both versions and two scenarios: `no_faults`, and `faults` (every event delivered 2 times, the same notice received 2 times in the baseline, and 30 % failures on `reserve_stock`; consumer crashes have no synchronous equivalent). Money cost = tokens × configured prices. H6 has no threshold, so the report has no verdict. The events latency includes the harness turn scheduling in one process (short polls per consumer), so it is not a one-process-per-component deployment latency; with the oracle the harness dominates, with Ollama the LLM does.
 
 ## Tasks
 
@@ -46,8 +47,8 @@ Assumptions (marked):
 | T4 | 4 | S4 E3, E4, E7 (A5–A7), per-experiment default size | inline | done (RED collection error → GREEN) | 39ba3e2 (PR #12, merged fa4f265) |
 | T5a | 5a | S5 saga rules in memory (`baseline_sync/saga.py`), shared harness helpers | inline (mapping by one read-only explorer) | done (unit tests GREEN; slice alone 292 passed) | cecb2cc (PR #13, merged 1386145) |
 | T5b | 5b | S5 synchronous runner (A8) | inline | done (RED collection error → GREEN) | 72010cf (PR #14, merged 80891ee) |
-| T6a | 6a | S6 A1 policy in the planner prompt, E5 (A9), `--llm`, `--repetitions`, `--threshold` | inline | done (RED → GREEN) | PR 6a (this commit) |
-| T6b | 6b | S6 E6 events vs synchronous | inline | pending | |
+| T6a | 6a | S6 A1 policy in the planner prompt, E5 (A9), `--llm`, `--repetitions`, `--threshold` | inline | done (RED → GREEN) | 13e0c9e (PR #15, merged f84fbdd) |
+| T6b | 6b | S6 E6 events vs synchronous (A10) | inline | done (RED collection error → GREEN) | PR 6b (this commit) |
 
 Route evidence: sequential units, each depends on the previous one; no writer trigger.
 
@@ -68,3 +69,5 @@ Route evidence: sequential units, each depends on the previous one; no writer tr
 - L13 (2026-11-14): T5 measured ~510 changed lines; one slicing pass split it into 5a (saga rules as pure functions with unit tests, harness helpers) and 5b (runner, integration tests, docs).
 - L14 (2026-11-14, user): "Yes, commit 5a" / "Yes, push and PR" / "mergeada" — PR #13 (5a) merged after CI passed.
 - L15 (2026-11-14, user): "Merge it yourself" — PR #14 merged (80891ee). E5 design "A: planner on its own"; A1 "Approve as is"; policy in the prompt "Yes, add it". The planner prompt only had the `loss` example, so E5 would have measured whether the model guesses the table; the six policy rows are now in `planner.SYSTEM`, with a test that ties them to `expected_plan`. This changes the prompt version of the reports.
+- L16 (2026-11-14, user): "mergeada" — PR #15 (6a) merged (f84fbdd). The user launched `LLM_MODEL=qwen2.5:7b-instruct uv run eda-experiment e5`; result pending.
+- L17 (2026-11-14): T6b. Smoke run of E6 with the oracle (6 incidents, 1 repetition): both versions close 6/6 with 0 duplicates and the same LLM calls; events latency ~1.5 s vs sync ~12 ms, driven by the harness scheduling (A10). Alembic INFO logs are now silenced in `eda-experiment`.
