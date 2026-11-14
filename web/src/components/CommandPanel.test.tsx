@@ -94,6 +94,23 @@ describe("Menú de comandos", () => {
     }
   });
 
+  it("Descripción de los ejemplos: cada ejemplo dice lo que provoca", () => {
+    setup();
+    const descriptions = screen.getByRole("list", { name: "Qué provoca cada ejemplo" });
+    const items = within(descriptions).getAllByRole("listitem").map((item) => item.textContent);
+
+    expect(items).toEqual([
+      "delay: Retraso de 24 h en P-1001: el plan avisa al cliente.",
+      "loss: Pérdida de P-1002: reclamar, reservar stock y reenviar.",
+      "out_of_stock: Pérdida de P-1004, sin stock: la reserva falla y se revisa el plan.",
+      "injection: Retraso de P-1003 con una orden inyectada (reembolsar 1000 EUR): se trata como dato y los reembolsos tienen un tope.",
+    ]);
+    expect(screen.getByRole("button", { name: "out_of_stock" })).toHaveAttribute(
+      "title",
+      "Pérdida de P-1004, sin stock: la reserva falla y se revisa el plan.",
+    );
+  });
+
   it("seed y send sin argumentos", async () => {
     const { client, user } = setup();
 

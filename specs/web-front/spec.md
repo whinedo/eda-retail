@@ -46,7 +46,7 @@ La cabecera SHALL ofrecer el botón «Resetear simulación», que devuelve la pa
 
 ### Requirement: Menú de comandos
 
-El menú SHALL ofrecer los comandos de `scripts/notice.sh`: `seed`, `send`, `send --example` (delay, loss, out_of_stock, injection), `send --text` (texto libre) e `interactive --timeout N`. Como la PoC es un ejemplo académico, el texto libre está deshabilitado por defecto: solo se ofrece con `WEB_FREE_TEXT=true`. Deshabilitado, el menú no muestra `send --text` y el backend MUST rechazar con 422 cualquier petición con `text`, sin lanzar ningún proceso. El backend MUST ejecutarlos invocando `scripts/notice.sh` con una lista blanca de argumentos, sin shell, y SHALL mostrar su salida (estándar y de error) en el menú a medida que se produce. Los ejemplos admitidos son los de `eda_retail.synthetic.sample.EXAMPLES`; el texto libre MUST tener entre 1 y 2000 caracteres. Una ejecución MUST terminar a los 15 minutos como mucho, para que un proceso colgado no bloquee el menú. El menú SHALL agrupar los comandos en dos secciones: «Preparación», solo con `seed`, que avisa de que no genera eventos (carga datos de referencia en `orders` y `stock`, no hechos del dominio), y «Avisos», con `send`, sus variantes e `interactive`, que ponen en marcha el flujo de eventos.
+El menú SHALL ofrecer los comandos de `scripts/notice.sh`: `seed`, `send`, `send --example` (delay, loss, out_of_stock, injection), `send --text` (texto libre) e `interactive --timeout N`. Como la PoC es un ejemplo académico, el texto libre está deshabilitado por defecto: solo se ofrece con `WEB_FREE_TEXT=true`. Deshabilitado, el menú no muestra `send --text` y el backend MUST rechazar con 422 cualquier petición con `text`, sin lanzar ningún proceso. El backend MUST ejecutarlos invocando `scripts/notice.sh` con una lista blanca de argumentos, sin shell, y SHALL mostrar su salida (estándar y de error) en el menú a medida que se produce. Los ejemplos admitidos son los de `eda_retail.synthetic.sample.EXAMPLES`, y cada uno SHALL llevar en el menú una descripción corta de lo que provoca, porque los avisos de `loss` y `out_of_stock` se parecen y lo que cambia es el camino del plan; el texto libre MUST tener entre 1 y 2000 caracteres. Una ejecución MUST terminar a los 15 minutos como mucho, para que un proceso colgado no bloquee el menú. El menú SHALL agrupar los comandos en dos secciones: «Preparación», solo con `seed`, que avisa de que no genera eventos (carga datos de referencia en `orders` y `stock`, no hechos del dominio), y «Avisos», con `send`, sus variantes e `interactive`, que ponen en marcha el flujo de eventos.
 
 #### Scenario: Preparar los datos de ejemplo
 
@@ -54,6 +54,12 @@ El menú SHALL ofrecer los comandos de `scripts/notice.sh`: `seed`, `send`, `sen
 - **WHEN** el usuario mira la sección «Preparación»
 - **THEN** solo contiene `seed`, con el aviso «No genera eventos»
 - **AND** los comandos `send` e `interactive` están en la sección «Avisos»
+
+#### Scenario: Descripción de los ejemplos
+
+- **GIVEN** la tarjeta `send --example`
+- **WHEN** el usuario la mira
+- **THEN** cada ejemplo tiene su descripción: `delay` «Retraso de 24 h en P-1001: el plan avisa al cliente.», `loss` «Pérdida de P-1002: reclamar, reservar stock y reenviar.», `out_of_stock` «Pérdida de P-1004, sin stock: la reserva falla y se revisa el plan.» e `injection` «Retraso de P-1003 con una orden inyectada (reembolsar 1000 EUR): se trata como dato y los reembolsos tienen un tope.»
 
 #### Scenario: Ejecutar un aviso de ejemplo
 

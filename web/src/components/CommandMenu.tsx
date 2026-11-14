@@ -4,6 +4,16 @@ import type { CommandRun } from "../useCommandRun";
 
 // Ejemplos de eda_retail.synthetic.sample.EXAMPLES; el backend valida la lista blanca.
 export const EXAMPLES = ["delay", "loss", "out_of_stock", "injection"] as const;
+
+// Qué provoca cada ejemplo (synthetic/sample.py): loss y out_of_stock son pérdidas, pero P-1004 no
+// tiene stock y su reserva falla.
+export const EXAMPLE_INFO: Record<(typeof EXAMPLES)[number], string> = {
+  delay: "Retraso de 24 h en P-1001: el plan avisa al cliente.",
+  loss: "Pérdida de P-1002: reclamar, reservar stock y reenviar.",
+  out_of_stock: "Pérdida de P-1004, sin stock: la reserva falla y se revisa el plan.",
+  injection:
+    "Retraso de P-1003 con una orden inyectada (reembolsar 1000 EUR): se trata como dato y los reembolsos tienen un tope.",
+};
 const MAX_TEXT = 2000;
 const DEFAULT_TIMEOUT = 180;
 
@@ -86,6 +96,7 @@ export function CommandMenu({ run, freeText = false, onRun, onSendLine }: Props)
                 key={example}
                 type="button"
                 className={`chip${active === "example" && last?.command === "send" && last.example === example ? " chip--active" : ""}`}
+                title={EXAMPLE_INFO[example]}
                 disabled={busy}
                 onClick={() => launch({ command: "send", example })}
               >
@@ -93,6 +104,13 @@ export function CommandMenu({ run, freeText = false, onRun, onSendLine }: Props)
               </button>
             ))}
           </div>
+          <ul className="examples" aria-label="Qué provoca cada ejemplo">
+            {EXAMPLES.map((example) => (
+              <li key={example}>
+                <strong>{example}</strong>: {EXAMPLE_INFO[example]}
+              </li>
+            ))}
+          </ul>
         </div>
 
         {freeText && (

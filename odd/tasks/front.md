@@ -21,6 +21,7 @@ Branch: `feat/web-front` · Delivery: ask-on-risk · Runner: `uv run pytest` (ba
 - S14 User (L22): "entonces habría que poner el botón de seed en otro lugar o en otra sección para no confundirlos" — `seed` loads reference data (`orders`, `stock`) and emits no events, unlike `send` (spec: Menú de comandos, "Preparar los datos de ejemplo").
 - S15 User (L23): "la tabla de eventos debe tener tamaño vertical variable. Si se quiere centrar la vista en las comunicaciones del mapa de red, se debe poder hacer más pequeña (sólo en vertical)" (spec: Panel de eventos intercambiados, "Reducir el panel para ver el mapa").
 - S16 User (L24): "como es un ejemplo académico, deshabilita el comando de texto libre (lo podremos volver a habilitar en el futuro)" (spec: Menú de comandos, "Texto libre deshabilitado").
+- S17 User (L25), after asking why `out_of_stock` sends a notice like `loss`: "sí, añade una descripción de lo que hace el comando" (spec: Menú de comandos, "Descripción de los ejemplos").
 
 ## Tasks
 
@@ -40,9 +41,10 @@ Branch: `feat/web-front` · Delivery: ask-on-risk · Runner: `uv run pytest` (ba
 | T13 | S4, S10 harden the command runner (judgment-day W1–W3 on PR #21): close the pty master and answer a controlled error when the launch fails, write input outside the run lock, kill the running process group on backend shutdown; also S3 (non-ASCII Last-Event-ID) and S4 (always set exit_code) | inline | in review (RED 8 failing tests → GREEN pytest unit 183 passed, command tests ×3 stable, no orphan processes) | fix(web-front): harden the command runner |
 | T11 | all end-to-end check against the compose stack and docs (README, design.md section, `scripts/run-web.sh`) | inline | docs and script done (PR #30, 22228ff); end-to-end check pending (run by the user) | 22228ff |
 | T14 | S13 «Resetear simulación» (view only) and a narrower command menu (240 px) | inline | done (PR #32) | 403190a |
-| T15 | S14 `seed` in its own «Preparación» section, apart from «Avisos» | inline | in review (RED 1 vitest → GREEN 70, tsc clean, checked in the browser) | feat(web-front): seed section |
+| T15 | S14 `seed` in its own «Preparación» section, apart from «Avisos» | inline | done (PR #34) | ce2a11c |
 | T16 | S15 events panel height adjustable (vertical only) with a separator | inline | in review (RED 3 vitest → GREEN 73, tsc clean, dragged in the browser: 340 → 240 px) | feat(web-front): resizable events panel |
 | T17 | S16 free text disabled behind `WEB_FREE_TEXT` (backend 422 + menu hides `send --text`) | inline | in review (RED 8 pytest + 2 vitest → GREEN) | feat(web-front): disable free text |
+| T18 | S17 each `send --example` example says what it triggers | inline | in review (RED 1 vitest → GREEN 77, tsc clean, checked in the browser) | feat(web-front): example descriptions |
 
 Order: T1 → T2 → T3 → T4 → T5 (backend), then T6 → T7 → T8 → T9; T10 can run any time; T12 after T9; T11 last. Each task goes test first (RED, then green) as in the other task files.
 
@@ -72,3 +74,4 @@ Order: T1 → T2 → T3 → T4 → T5 (backend), then T6 → T7 → T8 → T9; T
 - L22 (2026-11-14) PR #32 (T14) and #33 (start-all) merged; the user's first `start-all.sh` from the worktree failed with `Ollama no tiene el modelo 'llama3.1'` because the worktree had no `.env` (now a symlink to the main checkout's `.env`; the user does not want `.env.example`). The user then noticed `seed` shows no events: by design it writes `orders` and `stock` directly. T15 moves it to a «Preparación» section that says so; `send` and `interactive` go under «Avisos».
 - L23 (2026-11-14) T16 (branched from the T15 tip while #34 is open). A `role=separator` between map and panel: mouse drag on `window` listeners, arrows ±20 px, Home/End to the limits. Height between 96 px and the viewport minus header (56), separator (6) and 160 px of map; kept in `localStorage` (try/catch, default 340). `.main` rows and the node drawer's `bottom` read `--events-height`.
 - L24 (2026-11-14) T17 (branched from the T16 tip). `WEB_FREE_TEXT` (`true`/`1`, default off) decides it in the backend: `POST /api/commands` with `text` answers 422 «el texto libre está deshabilitado (WEB_FREE_TEXT)» and launches nothing; `/api/config` adds `free_text_enabled`, and the menu shows `send --text` only when it is true (hidden while config loads). Not covered: `interactive` still offers its own `t) texto libre` option inside `eda-notice`.
+- L25 (2026-11-14) T18 (branched from the T17 tip; #34 merged meanwhile). `EXAMPLE_INFO` in `CommandMenu` holds one line per example, shown as a list under the chips and as each chip's `title`. Both `loss` and `out_of_stock` are losses; P-1004 (`SKU-SOFA`) has 0 stock, so its reservation fails and the plan is revised.
