@@ -1,6 +1,7 @@
 """`eda-notice`: carga datos de ejemplo y registra avisos del transportista.
 
     uv run eda-notice                      # modo interactivo: menú y seguimiento de la incidencia
+    uv run eda-notice interactive --no-free-text  # el menú solo ofrece los avisos de ejemplo
     uv run eda-notice seed                 # pedidos P-1001…P-1005 y su stock
     uv run eda-notice send                 # aviso de ejemplo (retraso de P-1001)
     uv run eda-notice send --example loss  # delay | loss | out_of_stock | injection
@@ -23,6 +24,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     sub.add_parser("seed", help="carga pedidos y stock de ejemplo")
     live = sub.add_parser("interactive", help="menú para enviar avisos y seguir cada incidencia (por defecto)")
     live.add_argument("--timeout", type=float, default=180.0, help="segundos siguiendo cada incidencia")
+    live.add_argument("--no-free-text", action="store_true", help="el menú no ofrece texto libre (solo ejemplos)")
     send = sub.add_parser("send", help="registra un aviso del transportista")
     group = send.add_mutually_exclusive_group()
     group.add_argument("--example", choices=sorted(EXAMPLES), default="delay")
@@ -37,7 +39,10 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.command in (None, "interactive"):
             try:
-                run(conn, input, print, timeout=getattr(args, "timeout", 180.0))
+                run(
+                    conn, input, print, timeout=getattr(args, "timeout", 180.0),
+                    free_text=not getattr(args, "no_free_text", False),
+                )
             except (EOFError, KeyboardInterrupt):
                 print()
             return 0

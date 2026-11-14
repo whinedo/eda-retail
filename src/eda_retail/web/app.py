@@ -203,12 +203,12 @@ def create_app(
         if body.text is not None and not free_text:
             raise HTTPException(422, "el texto libre está deshabilitado (WEB_FREE_TEXT)")
         try:
-            run = runner.start(body)
+            run = runner.start(body, free_text)
         except RunnerBusy:
             raise HTTPException(409, "ya hay un comando en ejecución") from None
         except RunLaunchError as error:
             raise HTTPException(500, f"no se pudo lanzar {SCRIPT_LABEL}: {error}") from None
-        return {"run_id": run.run_id, "argv": [SCRIPT_LABEL, *body.args()]}
+        return {"run_id": run.run_id, "argv": [SCRIPT_LABEL, *body.args(free_text)]}
 
     @app.get("/api/commands/{run_id}/stream")
     def command_stream(run_id: str, last_event_id: Annotated[str | None, Header()] = None) -> StreamingResponse:
