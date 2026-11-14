@@ -1,8 +1,8 @@
 """Conversores de versión al leer (spec event-backbone, «Versionado de eventos»).
 
 El log nunca se reescribe: quien lee un evento de una versión anterior lo convierte a la
-que espera encadenando conversores v→v+1. Cada lector (p. ej. un proyector) usa su
-registro.
+que espera encadenando conversores v→v+1. Los conversores propios de un lector (p. ej. un
+proyector) amplían el registro compartido con `extended`.
 """
 
 from __future__ import annotations
@@ -31,6 +31,19 @@ class Upcasters:
             return fn
 
         return decorate
+
+    def extended(self, other: Upcasters) -> Upcasters:
+        """Registro nuevo con los conversores de los dos; ninguno de ellos cambia.
+
+        Si los dos definen el mismo salto, falla: un lector no redefine en silencio un
+        conversor compartido.
+        """
+        clash = sorted(self._converters.keys() & other._converters.keys())
+        if clash:
+            raise ValueError(f"conversores duplicados: {', '.join(f'{t} v{v}' for t, v in clash)}")
+        merged = Upcasters()
+        merged._converters = {**self._converters, **other._converters}
+        return merged
 
     def upcast(self, event: EventEnvelope, target_version: int) -> EventEnvelope:
         """Devuelve una copia en `target_version`; el evento original no cambia."""
