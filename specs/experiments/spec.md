@@ -66,7 +66,7 @@ El experimento E3 SHALL dejar sin stock el almacén en una parte de las incidenc
 
 ### Requirement: E4 Reconstrucción de vistas (hipótesis H4)
 
-El experimento E4 SHALL borrar cada vista y reconstruirla desde el log. Hipótesis H4: la huella de cada vista reconstruida coincide con la original, y el tiempo de reconstrucción se registra.
+El experimento E4 SHALL borrar cada vista y reconstruirla volviendo a consumir el topic `eda.events` desde el principio. Hipótesis H4: la huella de cada vista reconstruida coincide con la original, y el tiempo de reconstrucción se registra.
 
 #### Scenario: Reconstrucción completa
 

@@ -121,7 +121,7 @@ El menú SHALL ofrecer los comandos de `scripts/notice.sh`: `seed`, `send`, `sen
 
 ### Requirement: Mapa de sistemas
 
-El mapa SHALL mostrar como nodos: `eda-notice`, PostgreSQL, relay, Kafka (`eda.events`), `eda.dlq`, proyector, agentes con LLM (intérprete, planificador, replanificador), orquestador, ejecutores (`notify_customer`, `file_claim`, `reissue_shipment`, `reserve_stock`, `release_stock`, `issue_refund`), Ollama, servicios simulados (correo, aseguradora, transportista, almacén y pagos, los de `eda_retail.executors.services` más las tablas de stock) y Jaeger. Las aristas SHALL representar las comunicaciones de design.md §3 y se distinguirán por tipo de nodo (LLM, código, datos y bus, externo, simulado). El id de cada nodo SHALL coincidir con el emisor o destino que usan los eventos (`intake` para `eda-notice`, `interpreter`, `orchestrator`, `executor-<acción>`, `projectors`…), para poder resaltar la arista de cada evento. `GET /api/topology` SHALL devolver esos nodos (id, etiqueta, tipo, descripción y si se vigila su proceso) y aristas (origen, destino).
+El mapa SHALL mostrar como nodos: `eda-notice`, PostgreSQL, relay, Kafka (`eda.events`), `eda.dlq`, proyector, agentes con LLM (intérprete, planificador, replanificador), orquestador, ejecutores (`notify_customer`, `file_claim`, `reissue_shipment`, `reserve_stock`, `release_stock`, `issue_refund`), Ollama, servicios simulados (correo, aseguradora, transportista, almacén y pagos, los de `eda_retail.executors.services` más las tablas de stock) y Jaeger. Las aristas SHALL representar las comunicaciones de design.md §3, incluidas las invocaciones REST de comandos de la saga (`orchestrator` → `planner`, `replanner`, `inventory` y ejecutores), y se distinguirán por tipo de nodo (LLM, código, datos y bus, externo, simulado). El id de cada nodo SHALL coincidir con el emisor o destino que usan los eventos (`intake` para `eda-notice`, `interpreter`, `orchestrator`, `executor-<acción>`, `projectors`…), para poder resaltar la arista de cada evento. `GET /api/topology` SHALL devolver esos nodos (id, etiqueta, tipo, descripción y si se vigila su proceso) y aristas (origen, destino).
 
 #### Scenario: Estado de un nodo
 
@@ -146,7 +146,7 @@ El mapa SHALL mostrar como nodos: `eda-notice`, PostgreSQL, relay, Kafka (`eda.e
 
 - **GIVEN** un comando ejecutándose que genera eventos
 - **WHEN** llega un evento nuevo
-- **THEN** se resaltan unos segundos (3 s) su emisor, su destino y las aristas del camino más corto entre ellos en el mapa (ningún par emisor y destino es una arista directa: un `StepRequested` va de `orchestrator` a `executor-<acción>` pasando por PostgreSQL, el relay y Kafka)
+- **THEN** se resaltan unos segundos (3 s) su emisor, su destino y las aristas del camino más corto entre ellos en el mapa (ningún par emisor y destino de un evento es una arista directa: un `StepCompleted` va de `executor-<acción>` a `orchestrator` pasando por PostgreSQL, el relay y Kafka)
 - **AND** un id que no está en el mapa no resalta nada
 
 ### Requirement: Detalle de un nodo
@@ -204,7 +204,7 @@ El panel SHALL mostrar los eventos más recientes primero, con las columnas emis
 
 ### Requirement: Origen de emisor y destino
 
-El emisor de un evento SHALL ser el campo `producer` del evento. El destino SHALL derivarse de los tipos de evento que declara cada componente (design.md §3): los agentes en `eda_retail.agents.cli.AGENTS`, el orquestador en `eda_retail.orchestrator.runner.EVENT_TYPES` y, para `StepRequested`, el ejecutor de la acción del paso (`executor-<acción>`). Los proyectores leen todos los eventos y SHALL figurar siempre como último consumidor. El destino principal es el primer consumidor de esa lista y el resto se muestra en el detalle; un evento que solo leen los proyectores tiene `projectors` como destino.
+El emisor de un evento SHALL ser su campo `producer`. El destino SHALL derivarse de los tipos de evento que declara cada componente (design.md §3): los agentes en `eda_retail.agents.cli.AGENTS` y el orquestador en `eda_retail.orchestrator.runner.EVENT_TYPES`. Los proyectores leen todos los eventos y SHALL figurar siempre como último consumidor. El destino principal es el primer consumidor de esa lista y el resto se muestra en el detalle; un evento que solo leen los proyectores tiene `projectors` como destino.
 
 #### Scenario: Evento con consumidor único
 
@@ -212,17 +212,17 @@ El emisor de un evento SHALL ser el campo `producer` del evento. El destino SHAL
 - **WHEN** se muestra en el panel
 - **THEN** emisor `planner` y destino `orchestrator`
 
-#### Scenario: Paso pedido a un ejecutor
+#### Scenario: Resultado de un ejecutor
 
-- **GIVEN** un `StepRequested` con acción `notify_customer`
+- **GIVEN** un `StepCompleted` publicado por `executor-notify_customer`
 - **WHEN** se muestra en el panel
-- **THEN** su destino es `executor-notify_customer`
+- **THEN** su emisor es `executor-notify_customer` y su destino `orchestrator`
 
 #### Scenario: Evento con varios consumidores
 
 - **GIVEN** un `StepFailed`
 - **WHEN** se muestra en el panel
-- **THEN** su destino principal es `orchestrator` y el detalle añade `replanner` y `projectors`
+- **THEN** su destino principal es `orchestrator` y el detalle añade `projectors`
 
 #### Scenario: Evento sin consumidor de Kafka
 
@@ -232,7 +232,7 @@ El emisor de un evento SHALL ser el campo `producer` del evento. El destino SHAL
 
 ### Requirement: Página de eventos
 
-`GET /api/events` SHALL devolver los eventos de `events` del más reciente al más antiguo, con `limit` entre 1 y 500 (100 por defecto) y `before_seq` para pedir la página anterior. SHALL admitir los filtros `incident_id` (por `correlation_id` o por el `incident_id` del payload) y `node` (eventos que ese nodo emite o consume). La respuesta SHALL incluir `next_before_seq`, el `seq` desde el que pedir la página siguiente, o `null` si no hay más.
+`GET /api/events` SHALL devolver los eventos de la vista del log (`event_log.events`, spec `cqrs-views`) del más reciente al más antiguo, con `limit` entre 1 y 500 (100 por defecto) y `before_seq` para pedir la página anterior. SHALL admitir los filtros `incident_id` (por `correlation_id` o por el `incident_id` del payload) y `node` (eventos que ese nodo emite o consume). La respuesta SHALL incluir `next_before_seq`, el `seq` desde el que pedir la página siguiente, o `null` si no hay más.
 
 #### Scenario: Paginar hacia atrás
 
@@ -242,9 +242,9 @@ El emisor de un evento SHALL ser el campo `producer` del evento. El destino SHAL
 
 #### Scenario: Filtrar por nodo
 
-- **GIVEN** un `StepRequested` de `notify_customer` y otro de `file_claim`
+- **GIVEN** un `CustomerNotified` de `executor-notify_customer` y un `ClaimFiled` de `executor-file_claim`
 - **WHEN** se pide `node=executor-notify_customer`
-- **THEN** solo aparece el de `notify_customer`
+- **THEN** solo aparece el `CustomerNotified`
 
 #### Scenario: Límite fuera de rango
 
@@ -254,7 +254,7 @@ El emisor de un evento SHALL ser el campo `producer` del evento. El destino SHAL
 
 ### Requirement: Acceso de solo lectura y local
 
-El backend SHALL leer los eventos de la tabla `events` y el estado de las incidencias de las vistas `view_*`, sin escribir en ninguna tabla. SHALL escuchar solo en `127.0.0.1`, no admitir orígenes distintos de `localhost` y ejecutar un único comando a la vez. SHALL rechazar con 403 las peticiones cuya cabecera `Host` no sea `localhost`, `127.0.0.1` o `[::1]` (con o sin puerto), para que una web externa no pueda llegar al backend redirigiendo su dominio a 127.0.0.1 (DNS rebinding).
+El backend SHALL leer los eventos de la vista del log `event_log.events` y el estado de las incidencias de las vistas `view_*`, sin escribir en ninguna tabla ni leer las de otros componentes. SHALL escuchar solo en `127.0.0.1`, no admitir orígenes distintos de `localhost` y ejecutar un único comando a la vez. SHALL rechazar con 403 las peticiones cuya cabecera `Host` no sea `localhost`, `127.0.0.1` o `[::1]` (con o sin puerto), para que una web externa no pueda llegar al backend redirigiendo su dominio a 127.0.0.1 (DNS rebinding).
 
 #### Scenario: Escritura directa rechazada
 
@@ -314,7 +314,7 @@ El backend SHALL exponer los eventos nuevos en `GET /api/events/stream` por Serv
 
 ### Requirement: Acceso a las trazas en Jaeger
 
-La cabecera SHALL ofrecer un enlace a la interfaz web de Jaeger, que se abre en una pestaña nueva. Cada fila del panel de eventos SHALL ofrecer un enlace «ver traza» a la traza de ese evento en Jaeger (`<JAEGER_UI_URL>/trace/<trace_id>`). El backend MUST obtener el `trace_id` del `traceparent` guardado en `outbox.trace_context` para ese `seq`, con una consulta de solo lectura. La URL base sale de `JAEGER_UI_URL` (por defecto `http://localhost:16686`, el puerto publicado en `docker-compose.yml`); el backend la entrega al front en `GET /api/config` y MUST ignorar un valor que no sea una URL `http` o `https`, usando entonces el valor por defecto. Cada evento de la página y del stream lleva su `trace_id` (o `null`). El front MUST NOT consultar la API de Jaeger: solo enlaza a su interfaz.
+La cabecera SHALL ofrecer un enlace a la interfaz web de Jaeger, que se abre en una pestaña nueva. Cada fila del panel de eventos SHALL ofrecer un enlace «ver traza» a la traza de ese evento en Jaeger (`<JAEGER_UI_URL>/trace/<trace_id>`). El backend MUST obtener el `trace_id` del `traceparent` que `event_log` guarda en `event_log.events` para ese `seq`, con una consulta de solo lectura. La URL base sale de `JAEGER_UI_URL` (por defecto `http://localhost:16686`, el puerto publicado en `docker-compose.yml`); el backend la entrega al front en `GET /api/config` y MUST ignorar un valor que no sea una URL `http` o `https`, usando entonces el valor por defecto. Cada evento de la página y del stream lleva su `trace_id` (o `null`). El front MUST NOT consultar la API de Jaeger: solo enlaza a su interfaz.
 
 #### Scenario: Abrir Jaeger desde la cabecera
 
@@ -324,7 +324,7 @@ La cabecera SHALL ofrecer un enlace a la interfaz web de Jaeger, que se abre en 
 
 #### Scenario: Ver la traza de un evento
 
-- **GIVEN** un evento cuyo `outbox.trace_context` tiene `traceparent` `00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01`
+- **GIVEN** un evento cuyo `trace_context` en `event_log.events` tiene `traceparent` `00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01`
 - **WHEN** se muestra en el panel de eventos
 - **THEN** su enlace «ver traza» apunta a `http://localhost:16686/trace/4bf92f3577b34da6a3ce929d0e0e4736`
 
@@ -358,4 +358,4 @@ La cabecera SHALL ofrecer un enlace a la interfaz web de Jaeger, que se abre en 
 
 - Estado de procesos: se deduce con `pgrep -f` y los mismos patrones que `scripts/run-agents.sh`; PostgreSQL con `SELECT 1` en una conexión de solo lectura, Kafka listando los topics y Ollama con `GET /api/tags` (`OLLAMA_HOST`). Cada comprobación tiene un tiempo máximo de 2 s.
 - Arranque: `scripts/run-web.sh` lanza `eda-web` (127.0.0.1:`WEB_PORT`, 8000 por defecto) y el servidor de Vite en http://localhost:5173, que reenvía `/api` al mismo `WEB_PORT`; los dos leen `.env`. `scripts/start-all.sh` lo arranca junto con los contenedores y los procesos de la PoC, y `scripts/stop-all.sh` lo para todo, Vite incluido.
-- Partición y offset: el relay los guarda en `outbox` al confirmar el broker la entrega (migración 0007); la API los lee de ahí. `events` no cambia: el log es inmutable.
+- Partición y offset: `event_log` los guarda en `event_log.events` al consumir cada mensaje; la API los lee de ahí. La vista es solo de añadir.

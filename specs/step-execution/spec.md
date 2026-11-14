@@ -8,21 +8,21 @@ Ejecutar los efectos reales de cada paso (avisar al cliente, reclamar, reservar 
 
 ### Requirement: Un ejecutor por tipo de acción
 
-Cada acción permitida SHALL tener un ejecutor que consume solo los `StepRequested` de esa acción. Los ejecutores MUST NOT invocar a un LLM para decidir si ejecutan o no.
+Cada acción permitida SHALL tener un sistema que atiende con su command handler solo los comandos `ExecuteStep` de esa acción (un `executor-<acción>`, o `inventory` para `reserve_stock` y `release_stock`). Los ejecutores MUST NOT invocar a un LLM para decidir si ejecutan o no.
 
 #### Scenario: Enrutado por acción
 
-- **GIVEN** un `StepRequested` con la acción `file_claim`
-- **WHEN** se publica
-- **THEN** solo lo procesa el ejecutor de reclamaciones
+- **GIVEN** un `ExecuteStep` con la acción `file_claim`
+- **WHEN** la saga lo invoca
+- **THEN** solo lo atiende el ejecutor de reclamaciones
 
 ### Requirement: Resultado explícito
 
-Todo `StepRequested` SHALL terminar en un `StepCompleted` o en un `StepFailed`. Además del evento genérico, el ejecutor publicará el evento de efecto correspondiente: `CustomerNotified`, `ClaimFiled`, `StockReserved`, `StockReleased`, `ShipmentReissued` o `RefundIssued`.
+Todo `ExecuteStep` SHALL terminar en un `StepCompleted` o en un `StepFailed`. Además del evento genérico, el ejecutor publicará el evento de efecto correspondiente: `CustomerNotified`, `ClaimFiled`, `StockReserved`, `StockReleased`, `ShipmentReissued` o `RefundIssued`.
 
 #### Scenario: Reclamación creada
 
-- **GIVEN** un `StepRequested` de `file_claim` válido
+- **GIVEN** un `ExecuteStep` de `file_claim` válido
 - **WHEN** el ejecutor lo procesa
 - **THEN** publica `ClaimFiled` con `claim_id`
 - **AND** publica `StepCompleted` con el mismo `step_id`
@@ -33,7 +33,7 @@ Un `StepFailed` MUST indicar `error` y `retryable`. Los errores transitorios (ti
 
 #### Scenario: Error de negocio
 
-- **GIVEN** un `StepRequested` de `reserve_stock` y un almacén sin existencias
+- **GIVEN** un `ExecuteStep` de `reserve_stock` y un almacén sin existencias
 - **WHEN** el ejecutor lo procesa
 - **THEN** publica `StepFailed` con `error` `out_of_stock` y `retryable` falso
 
@@ -49,7 +49,7 @@ El ejecutor de reembolsos SHALL aplicar un importe máximo configurable por inci
 
 #### Scenario: Importe por encima del máximo
 
-- **GIVEN** un `StepRequested` de `issue_refund` con un importe superior al máximo configurado
+- **GIVEN** un `ExecuteStep` de `issue_refund` con un importe superior al máximo configurado
 - **WHEN** el ejecutor lo procesa
 - **THEN** no emite `RefundIssued`
 - **AND** el sistema publica `IncidentEscalated` con el motivo `refund_limit`
