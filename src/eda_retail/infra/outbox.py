@@ -226,13 +226,17 @@ class ComponentRelay:
             )
             return cur.rowcount
 
-    def run_until(self, stop: threading.Event, idle_sleep: float = 0.1) -> None:
+    def run_until(self, stop: threading.Event, idle_sleep: float = 0.1, error_sleep: float = 2.0) -> None:
         while not stop.is_set():
             try:
                 published, dead = self.run_once(), self.publish_dead_letters()
             except RelayDeliveryError as exc:
                 log.warning("relay de %s: %s; se reintenta", self._schema, exc)
                 published = dead = 0
+            except Exception:  # base de datos caída, cola del productor llena…: el hilo no debe morir
+                log.exception("relay de %s: error; se reintenta en %.1f s", self._schema, error_sleep)
+                stop.wait(error_sleep)
+                continue
             if published + dead == 0:
                 stop.wait(idle_sleep)
 

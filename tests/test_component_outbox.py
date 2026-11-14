@@ -204,6 +204,34 @@ def test_replay_marks_its_own_outbox_as_pending():
     assert params == (1,)
 
 
+def test_relay_keeps_running_after_an_unexpected_error():
+    """Un fallo de la base de datos no mata el relay: lo registra y reintenta"""
+
+    class Flaky(FakeConn):
+        def __init__(self):
+            super().__init__()
+            self.calls = 0
+
+        def execute(self, sql, params=()):
+            self.calls += 1
+            if self.calls == 1:
+                raise RuntimeError("conexión perdida")
+            return super().execute(sql, params)
+
+    conn = Flaky()
+    relay = outbox.ComponentRelay(conn, FakeProducer(), "planner", "eda.events")  # type: ignore[arg-type]
+    stop = threading.Event()
+    thread = threading.Thread(target=relay.run_until, args=(stop,), kwargs={"idle_sleep": 0.01, "error_sleep": 0.01})
+    thread.start()
+    for _ in range(200):
+        if conn.calls > 2:
+            break
+        stop.wait(0.01)
+    stop.set()
+    thread.join(2)
+    assert conn.calls > 2 and not thread.is_alive()
+
+
 def test_relay_thread_stops_on_request():
     """El relay corre en un hilo del proceso del componente y se para limpiamente"""
     relay = outbox.ComponentRelay(FakeConn(), FakeProducer(), "planner", "eda.events")  # type: ignore[arg-type]

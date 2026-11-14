@@ -110,7 +110,11 @@ def _check_causation(command: CommandEnvelope, events: list[EventEnvelope]) -> N
 def execute_command(
     conn: psycopg.Connection, schema: str, command: CommandEnvelope, spec: CommandSpec
 ) -> CommandResponse:
-    """Ejecuta el comando con el handler del sistema `schema`. Idempotente por `command_id`."""
+    """Ejecuta el comando con el handler del sistema `schema`. Idempotente por `command_id`.
+
+    `conn` debe estar sin transacción abierta: con una abierta, los bloques serían savepoints y nada
+    se confirmaría aquí. El router abre una conexión por petición.
+    """
     base = {"command_id": str(command.command_id)}
     try:
         payload = spec.payload_model.model_validate(command.payload)
@@ -136,7 +140,7 @@ def execute_command(
         if isinstance(outcome, Accepted):
             _check_causation(command, outcome.events)
             outbox.append(conn, schema, outcome.events)
-            response = CommandResponse(ACCEPTED, {"status": "accepted"} | base | outcome.body)
+            response = CommandResponse(ACCEPTED, outcome.body | {"status": "accepted"} | base)
         else:
             response = CommandResponse(REJECTED, {"status": "rejected"} | base | {"reason": outcome.reason})
         conn.execute(

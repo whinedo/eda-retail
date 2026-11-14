@@ -13,8 +13,9 @@ Aquí se definen las tablas de infraestructura que reutiliza cada componente:
 
 Las tablas propias de cada dominio (estado y proyecciones) las añade su tarea.
 
-La migración 0008 aplica `ddl()`: cambiar estas tablas después exige una migración nueva,
-nunca editar `ddl()`, porque una base nueva y una ya migrada acabarían distintas.
+La migración 0008 aplica `ddl()` a su lista congelada de componentes: cambiar estas tablas o
+añadir un componente exige una migración nueva, nunca editar `ddl()`, porque una base nueva y una
+ya migrada acabarían distintas.
 """
 
 from __future__ import annotations
