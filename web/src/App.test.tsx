@@ -1,8 +1,9 @@
-import { render, screen } from "@testing-library/react";
+import { act, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import App from "./App";
-import type { ApiClient, Health } from "./api/client";
+import type { ApiClient, EventRow, Health, NodeDetail } from "./api/client";
+import type { StreamLike } from "./useCommandRun";
 
 const HEALTH: Health = {
   infra: { postgres: "down", kafka: "healthy", ollama: "healthy" },
@@ -16,16 +17,36 @@ function client(overrides: Partial<ApiClient> = {}): ApiClient {
     getHealth: vi.fn(async () => HEALTH),
     getTopology: vi.fn(async () => ({ nodes: [], edges: [] })),
     getEvents: vi.fn(async () => ({ events: [], next_before_seq: null })),
-    getNode: vi.fn(),
+    getNode: vi.fn(async () => Promise.reject(new Error("sin detalle en este test"))),
     runCommand: vi.fn(),
     sendInput: vi.fn(),
     ...overrides,
   } as ApiClient;
 }
 
+class FakeStream implements StreamLike {
+  static all: FakeStream[] = [];
+  readonly listeners = new Map<string, (event: MessageEvent) => void>();
+  closed = false;
+  constructor(readonly url: string) {
+    FakeStream.all.push(this);
+  }
+  addEventListener(type: string, listener: (event: MessageEvent) => void) {
+    this.listeners.set(type, listener);
+  }
+  close() {
+    this.closed = true;
+  }
+  emit(type: string, data: unknown) {
+    act(() => this.listeners.get(type)?.(new MessageEvent(type, { data: JSON.stringify(data) })));
+  }
+}
+
+const openStream = (url: string) => new FakeStream(url);
+
 describe("Distribución de la pantalla", () => {
   it("Vista en reposo: menú, mapa, panel de eventos y ninguna ejecución", async () => {
-    render(<App client={client()} />);
+    render(<App client={client()} openStream={openStream} />);
 
     expect(screen.getByRole("banner")).toHaveTextContent("EDA Retail");
     expect(screen.getByRole("complementary", { name: "Comandos" })).toBeInTheDocument();
@@ -35,7 +56,7 @@ describe("Distribución de la pantalla", () => {
   });
 
   it("Salud de la infraestructura: la cabecera muestra cada servicio y los procesos", async () => {
-    render(<App client={client()} />);
+    render(<App client={client()} openStream={openStream} />);
 
     expect(await screen.findByText("PostgreSQL: down")).toBeInTheDocument();
     expect(screen.getByText("Kafka: healthy")).toBeInTheDocument();
@@ -44,7 +65,7 @@ describe("Distribución de la pantalla", () => {
   });
 
   it("muestra que el backend no responde si falla la consulta de salud", async () => {
-    render(<App client={client({ getHealth: vi.fn(async () => Promise.reject(new Error("boom"))) })} />);
+    render(<App client={client({ getHealth: vi.fn(async () => Promise.reject(new Error("boom"))) })} openStream={openStream} />);
 
     expect(await screen.findByText("Backend: sin conexión")).toBeInTheDocument();
   });
@@ -54,11 +75,94 @@ describe("Distribución de la pantalla", () => {
       nodes: [{ id: "relay", label: "Relay", kind: "code" as const, description: "", monitored: true }],
       edges: [],
     };
-    render(<App client={client({ getTopology: vi.fn(async () => topology) })} />);
+    render(<App client={client({ getTopology: vi.fn(async () => topology) })} openStream={openStream} />);
 
     const relay = await screen.findByRole("button", { name: "Relay" });
     await userEvent.setup().click(relay);
 
     expect(relay).toHaveAttribute("aria-pressed", "true");
+  });
+});
+
+describe("Panel de eventos en la pantalla", () => {
+  it("carga la primera página de eventos y abre el stream en vivo", async () => {
+    FakeStream.all = [];
+    const api = client({
+      getEvents: vi.fn(async () => ({
+        events: [
+          {
+            seq: 1303,
+            event_id: "ev-1303",
+            event_type: "PlanCreated",
+            occurred_at: "2026-11-14T01:48:19.234567+00:00",
+            sender: "planner",
+            receiver: "orchestrator",
+            receivers: ["orchestrator", "projectors"],
+            incident_id: "INC-0007",
+            plan_version: 1,
+            partition: null,
+            offset: null,
+            causation_id: null,
+            payload: {},
+          },
+        ],
+        next_before_seq: null,
+      })),
+    });
+    const { unmount } = render(<App client={api} openStream={openStream} />);
+
+    expect(await screen.findByText("PlanCreated")).toBeInTheDocument();
+    expect(api.getEvents).toHaveBeenCalledWith({ limit: 100, incidentId: undefined, node: undefined });
+    expect(FakeStream.all.map((s) => s.url)).toContain("/api/events/stream?after_seq=1303");
+    unmount();
+    expect(FakeStream.all.every((s) => s.closed)).toBe(true);
+  });
+
+  it("Filtrar eventos por nodo: desde el mapa se abre el detalle y se filtra el panel", async () => {
+    const topology = {
+      nodes: [{ id: "planner", label: "Planificador", kind: "llm" as const, description: "", monitored: true }],
+      edges: [],
+    };
+    const detail: NodeDetail = {
+      id: "planner", label: "Planificador", kind: "llm", description: "Propone el plan.", monitored: true,
+      up: true, consumes: ["ShipmentDelayed"], emits: ["PlanCreated"], llm: null,
+    };
+    const api = client({ getTopology: vi.fn(async () => topology), getNode: vi.fn(async () => detail) });
+    const user = userEvent.setup();
+    render(<App client={api} openStream={openStream} />);
+
+    await user.click(await screen.findByRole("button", { name: "Planificador" }));
+    await user.click(await screen.findByRole("button", { name: "Filtrar eventos" }));
+
+    expect(api.getNode).toHaveBeenCalledWith("planner");
+    expect(api.getEvents).toHaveBeenLastCalledWith(expect.objectContaining({ node: "planner" }));
+  });
+
+  it("Comunicación en curso: un evento en vivo resalta su camino en el mapa", async () => {
+    FakeStream.all = [];
+    const topology = {
+      nodes: [
+        { id: "orchestrator", label: "Orquestador", kind: "code" as const, description: "", monitored: true },
+        { id: "postgres", label: "PostgreSQL", kind: "data" as const, description: "", monitored: false },
+      ],
+      edges: [{ source: "orchestrator", target: "postgres" }],
+    };
+    const { container } = render(
+      <App client={client({ getTopology: vi.fn(async () => topology) })} openStream={openStream} />,
+    );
+    await screen.findByRole("button", { name: "Orquestador" });
+    const events = FakeStream.all.find((stream) => stream.url.startsWith("/api/events/stream"));
+    const row: EventRow = {
+      seq: 7, event_id: "e7", event_type: "StepRequested", occurred_at: "2026-11-14T16:00:00+00:00",
+      sender: "orchestrator", receiver: "postgres", receivers: ["postgres"], incident_id: "INC-1",
+      plan_version: 1, partition: null, offset: null, causation_id: null, payload: {},
+    };
+
+    events!.emit("event", row);
+
+    const active = Array.from(container.querySelectorAll("[data-edge].edge--active")).map((e) =>
+      e.getAttribute("data-edge"),
+    );
+    expect(active).toEqual(["orchestrator->postgres"]);
   });
 });
