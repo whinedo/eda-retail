@@ -2,26 +2,26 @@
 
 ## Purpose
 
-Definir cómo se representan, almacenan y reparten los eventos. Es la base de todas las demás capacidades: el log de eventos es la fuente de verdad y el bus entrega los eventos a los consumidores con garantía de al menos una vez.
+Definir cómo se representan, publican y reparten los eventos y los comandos. Es la base de todas las demás capacidades: cada componente publica desde su outbox, Kafka conserva el registro y entrega los mensajes a los consumidores con garantía de al menos una vez.
 
 ## Requirements
 
 ### Requirement: Estructura común del evento
 
-Todo evento publicado MUST llevar los campos `event_id` (único), `event_type`, `event_version`, `occurred_at`, `correlation_id`, `causation_id`, `producer` y `payload`. El sistema SHALL rechazar la publicación de un evento al que le falte alguno.
+Todo evento publicado MUST llevar los campos `event_id` (único), `event_type`, `event_version`, `occurred_at`, `correlation_id`, `causation_id`, `producer` y `payload`. Un comando lleva la misma estructura con `command_id`, `command_type` y `target` en lugar de `event_id` y `event_type`. El sistema SHALL rechazar la publicación de un mensaje al que le falte alguno.
 
 #### Scenario: Evento completo
 
 - **GIVEN** un productor con un evento con todos los campos de la estructura común
 - **WHEN** lo publica
-- **THEN** el sistema lo acepta y lo añade al log
+- **THEN** el sistema lo acepta y lo escribe en el outbox del productor
 
 #### Scenario: Evento sin correlation_id
 
 - **GIVEN** un evento al que le falta `correlation_id`
 - **WHEN** el productor intenta publicarlo
 - **THEN** el sistema lo rechaza con un error que nombra el campo ausente
-- **AND** el evento no aparece en el log
+- **AND** el evento no se escribe en el outbox
 
 ### Requirement: Correlación por incidencia
 
@@ -35,7 +35,7 @@ El `correlation_id` de todos los eventos de una incidencia SHALL ser su `inciden
 
 ### Requirement: Log de eventos inmutable
 
-El log de eventos SHALL ser de solo añadir. El sistema MUST NOT permitir modificar ni borrar un evento ya escrito. Un error en un evento se corrige con un evento posterior.
+El log de eventos (el topic de Kafka y la vista `event_log.events`) SHALL ser de solo añadir. El sistema MUST NOT permitir modificar ni borrar un evento ya escrito. Un error en un evento se corrige con un evento posterior.
 
 #### Scenario: Intento de modificar un evento
 
@@ -56,23 +56,23 @@ Kafka SHALL conservar todos los eventos del topic `eda.events` con retención in
 
 ### Requirement: Orden por incidencia
 
-Los eventos de una misma incidencia SHALL entregarse a cada consumidor en el orden en que se escribieron. Para ello el bus MUST particionar por `incident_id`.
+Los eventos y comandos de una misma incidencia SHALL entregarse a cada consumidor en el orden en que se escribieron. Para ello el bus MUST particionar por `incident_id`.
 
 #### Scenario: Orden de pasos
 
-- **GIVEN** una incidencia con los eventos `PlanCreated` y `StepRequested` escritos en ese orden
+- **GIVEN** una incidencia con el evento `PlanCreated` y el comando `ExecuteStep` que la saga envía al consumirlo
 - **WHEN** un consumidor los recibe
-- **THEN** recibe `PlanCreated` antes que `StepRequested`
+- **THEN** recibe `PlanCreated` antes que `ExecuteStep`
 
 ### Requirement: Kafka como bus de entrega
 
-Los eventos SHALL repartirse a los consumidores mediante Apache Kafka. El relay del outbox MUST publicar en el topic `eda.events` con `incident_id` como clave de partición. Kafka no es la fuente de verdad: si el contenido de un topic se pierde, el relay SHALL poder republicar desde el log de PostgreSQL. Al confirmar el broker cada mensaje, el relay MUST guardar en su fila de `outbox` la partición y el offset que le asignó Kafka (`kafka_partition`, `kafka_offset`); si el evento se republica, se guarda la posición de la última publicación.
+Los eventos y los comandos SHALL repartirse a los consumidores mediante Apache Kafka. El relay del outbox de cada componente MUST publicar en el topic `eda.events` con `incident_id` como clave de partición. Si el contenido del topic se pierde, cada componente SHALL poder republicar su outbox. Al confirmar el broker cada mensaje, el relay MUST guardar en su fila de `outbox` la partición y el offset que le asignó Kafka (`kafka_partition`, `kafka_offset`); si el evento se republica, se guarda la posición de la última publicación.
 
 #### Scenario: Pérdida del topic
 
 - **GIVEN** un log con 200 incidencias y un topic `eda.events` vaciado
-- **WHEN** se ejecuta la republicación desde el log
-- **THEN** el topic recibe de nuevo todos los eventos en su orden de `seq`
+- **WHEN** cada componente republica su outbox
+- **THEN** el topic recibe de nuevo todos los mensajes, en el orden de cada outbox
 - **AND** los consumidores no repiten ningún efecto gracias al inbox y a las claves de idempotencia
 
 #### Scenario: Posición del mensaje publicado
@@ -80,7 +80,7 @@ Los eventos SHALL repartirse a los consumidores mediante Apache Kafka. El relay 
 - **GIVEN** un evento pendiente en el outbox
 - **WHEN** el relay lo publica y el broker confirma la entrega
 - **THEN** su fila de `outbox` guarda la partición y el offset del mensaje en `eda.events`
-- **AND** tras republicarlo desde el log, la fila guarda la partición y el offset de la nueva publicación
+- **AND** tras republicarlo desde su outbox, la fila guarda la partición y el offset de la nueva publicación
 
 ### Requirement: Entrega al menos una vez
 
@@ -94,13 +94,13 @@ El bus MUST entregar cada evento a cada consumidor al menos una vez y reentregar
 
 ### Requirement: Propiedad de los datos
 
-Cada componente SHALL escribir únicamente en sus propias tablas, agrupadas en un esquema propio de PostgreSQL (`intake`, `interpreter`, `planner`, `replanner`, `orchestrator`, `executor_<acción>`, `inventory`, `event_log`, `views`). Los componentes MUST comunicarse solo por eventos en Kafka: ninguno escribe ni lee para decidir en las tablas de otro, ni hay claves foráneas o joins entre tablas de componentes distintos. Lo que un componente necesita de otro le llega en un evento y lo guarda en una réplica local suya. La base de datos es una sola para la PoC.
+Cada componente SHALL escribir únicamente en sus propias tablas, agrupadas en un esquema propio de PostgreSQL (`intake`, `interpreter`, `planner`, `replanner`, `orchestrator`, `executor_<acción>`, `inventory`, `event_log`, `views`). Los componentes MUST comunicarse solo por mensajes en Kafka: ninguno escribe ni lee las tablas de escritura de otro, ni hay claves foráneas o joins entre tablas de componentes distintos. Lo que un sistema necesita de otro dominio lo consulta en las proyecciones del lado de lectura (spec `cqrs-views`, "Consultas al lado de lectura") o le llega en el comando. La base de datos es una sola para la PoC.
 
 #### Scenario: Dato de otro componente
 
 - **GIVEN** un planificador que necesita el importe del pedido P-1002 para validar un reembolso
 - **WHEN** valida el plan
-- **THEN** lee el importe de su réplica `planner.orders`, alimentada por el evento `OrderRegistered` de `inventory`
+- **THEN** lee el importe de la proyección `view_orders`, alimentada por el evento `OrderRegistered` de `inventory`
 - **AND** no consulta ninguna tabla de `inventory`
 
 #### Scenario: Escritura fuera de su esquema
@@ -138,6 +138,6 @@ Los eventos MUST NOT contener datos personales en claro (nombre, correo, direcci
 
 #### Scenario: Evento de aviso al cliente
 
-- **GIVEN** un `StepRequested` con la acción de avisar al cliente
+- **GIVEN** un `ExecuteStep` con la acción de avisar al cliente
 - **WHEN** se escribe en el log
 - **THEN** el payload contiene `order_id` y no el correo del cliente

@@ -33,7 +33,7 @@ flowchart LR
   PLN -- "(3) propone PlanCreated" --> CH
   CH -- "(a) escribe solo eventos válidos" --> BUS
   BUS --> ORQ
-  ORQ -- "(4) StepRequested" --> BUS
+  ORQ -- "(4) ExecuteStep" --> BUS
   BUS --> EXE
   EXE <-- "(5) texto / borrador validado" --> RED
   EXE <-- "(6) clave" --> IDS
@@ -68,18 +68,18 @@ sequenceDiagram
   participant Rf as Ejecutor<br/>reembolso
   participant Rp as Replanner<br/>(LLM)
   participant CH as Command<br/>handler
-  Note over Orq,CH: Plan v1 de una pérdida de paquete: notify_customer, file_claim, reserve_stock y reissue_shipment.<br/>Todos los mensajes viajan por el bus y cada StepRequested lleva su idempotency_key.
+  Note over Orq,CH: Plan v1 de una pérdida de paquete: notify_customer, file_claim, reserve_stock y reissue_shipment.<br/>Todos los mensajes viajan por el bus y cada ExecuteStep lleva su idempotency_key.
   par pasos independientes en paralelo
-    Orq->>Av: (1.a) StepRequested notify_customer
+    Orq->>Av: (1.a) ExecuteStep notify_customer
   and
-    Orq->>Rc: (1.b) StepRequested file_claim
+    Orq->>Rc: (1.b) ExecuteStep file_claim
   and
-    Orq->>St: (1.c) StepRequested reserve_stock
+    Orq->>St: (1.c) ExecuteStep reserve_stock
   end
   Av-->>Orq: (2.a) StepCompleted (CustomerNotified)
   Rc-->>Orq: (2.b) StepCompleted (ClaimFiled)
   St-->>Orq: (2.c) StepCompleted (StockReserved)
-  Orq->>En: (3) StepRequested reissue_shipment<br/>(depende de reserve_stock)
+  Orq->>En: (3) ExecuteStep reissue_shipment<br/>(depende de reserve_stock)
   alt Camino feliz
     En-->>Orq: (4) StepCompleted (ShipmentReissued)
     Orq->>Orq: (5) IncidentResolved, outcome resolved
@@ -89,10 +89,10 @@ sequenceDiagram
     Rp->>CH: (6) propone el plan v2:<br/>reembolso en lugar de reenvío
     CH-->>Orq: (7) PlanRevised v2<br/>(validado: sin compensaciones en el plan, importe dentro del máximo)
     Note over Orq,St: (8) El código deriva la compensación de reserve_stock<br/>y bloquea issue_refund hasta que termine
-    Orq->>St: (9) StepRequested release_stock<br/>(step_id reserve_stock-comp)
+    Orq->>St: (9) ExecuteStep release_stock<br/>(step_id reserve_stock-comp)
     alt La compensación termina bien
       St-->>Orq: (10) StepCompleted (StockReleased)
-      Orq->>Rf: (11) StepRequested issue_refund<br/>(paso pivote, sin compensación)
+      Orq->>Rf: (11) ExecuteStep issue_refund<br/>(paso pivote, sin compensación)
       alt El reembolso termina bien
         Rf-->>Orq: (12) StepCompleted (RefundIssued)
         Orq->>Orq: (13) IncidentResolved, outcome refunded
@@ -179,7 +179,6 @@ Lado de comandos (escritura) y lado de consultas (lectura). Los pasos (1) a (4) 
 | `ShipmentDelayed` | Agente intérprete | `incident_id`, `order_ids`, `cause`, `estimated_delay_hours`, `severity` |
 | `PlanCreated` | Agente planificador | `incident_id`, `plan_version`, `steps[]` |
 | `PlanRevised` | Replanner | `incident_id`, `plan_version`, `steps[]`, `reason` |
-| `StepRequested` | Orquestación del plan | `incident_id`, `plan_version`, `step_id`, `action`, `params`, `idempotency_key` |
 | `StepCompleted` (v2) | Ejecutor | `step_id`, `plan_version`, `result` |
 | `StepFailed` (v2) | Ejecutor | `step_id`, `plan_version`, `error`, `retryable`, `attempts` |
 | `StepCancelled` | Orquestación | `incident_id`, `plan_version`, `step_id` |
@@ -190,26 +189,22 @@ Lado de comandos (escritura) y lado de consultas (lectura). Los pasos (1) a (4) 
 | `ShipmentReissued` | Ejecutor | `order_id`, `new_shipment_id` |
 | `RefundIssued` | Ejecutor | `order_id`, `amount`, `refund_id` |
 | `IncidentResolved` | Orquestación | `incident_id`, `outcome` |
-| `IncidentEscalated` | Orquestación | `incident_id`, `reason` |
+| `IncidentEscalated` | Orquestación y agentes | `incident_id`, `reason` |
 | `LlmCallRecorded` | Agentes con LLM | `incident_id`, `agent`, `model`, `tokens_in`, `tokens_out`, `latency_ms`, `validation_passed`, `attempt` |
 
 ## Catálogo de comandos
 
-| Comando | Lo envía | Efecto (eventos que puede producir) |
-| --- | --- | --- |
-| `RegisterCarrierNotice` | Entrada | `CarrierNoticeReceived` |
-| `OpenIncident` | Intérprete | `ShipmentDelayed` |
-| `CreatePlan` | Planificador | `PlanCreated` |
-| `RevisePlan` | Replanner | `PlanRevised` |
-| `ApplyRevision` | Orquestación, al recibir `PlanRevised` | `StepCancelled` de los pasos no mantenidos; deriva en código los pasos `-comp` |
-| `AdvancePlan` | Orquestación | Los `StepRequested` de todos los pasos listos, o `IncidentResolved` si el plan terminó |
-| `RequestStep` | Orquestación | `StepRequested` |
-| `RecordStepResult` | Ejecutores | `StepCompleted` o `StepFailed` y el evento de efecto (con la `plan_version` del `StepRequested`; uno obsoleto queda en el log sin cambiar el plan) |
-| `CloseIncident` | Orquestación | `IncidentResolved` |
-| `EscalateIncident` | Cualquiera | `IncidentEscalated` (si la incidencia aún no existe, la crea escalada a partir de su aviso) |
-| `RecordLlmCall` | Agentes con LLM | `LlmCallRecorded` (no usa `expected_version` y admite incidencias cerradas) |
+| Comando | Lo envía | Lo atiende | Eventos que puede producir |
+| --- | --- | --- | --- |
+| `RegisterCarrierNotice` | `eda-notice`, front | `intake` | `CarrierNoticeReceived` |
+| `SeedSampleData` | `eda-notice` | `inventory` | `OrderRegistered` |
+| `OpenIncident` | El propio intérprete, al consumir `CarrierNoticeReceived` | `interpreter` | `ShipmentDelayed` o `IncidentEscalated` |
+| `CreatePlan` | La saga (orquestador), al consumir `ShipmentDelayed` | `planner` | `PlanCreated` o `IncidentEscalated` |
+| `RevisePlan` | La saga, al consumir un `StepFailed` no reintentable o vencer el plazo de un paso | `replanner` | `PlanRevised` o `IncidentEscalated` |
+| `ExecuteStep` (`incident_id`, `plan_version`, `step_id`, `action`, `params`, `idempotency_key`) | La saga | `executor-<acción>`, o `inventory` para `reserve_stock` y `release_stock` | `StepCompleted` o `StepFailed` y el evento de efecto |
+| `RecordLlmCall` | Cada componente con LLM, dentro de su propio handler | El mismo componente | `LlmCallRecorded` |
 
-Todos llevan `command_id` y `expected_version` (`RecordLlmCall` lo ignora: es un hecho de solo añadir). Los comandos solo existen dentro del command handler; lo que se publica y se guarda son los eventos.
+El orquestador no recibe comandos: es el process manager de la saga, consume eventos y envía `CreatePlan`, `RevisePlan` y `ExecuteStep`. Los comandos entre sistemas viajan por `eda.events` con `command_type` y `target`. Todos llevan `command_id` y como `causation_id` el evento que los originó; los de la saga llevan la `plan_version` vigente, y un plazo guardado en `orchestrator.deadlines`.
 
 ## Procesos
 
@@ -252,12 +247,12 @@ Cada componente es un proceso independiente; los scripts anteriores los lanzan, 
 | `uv run eda-agent interpreter` | Interpreta `CarrierNoticeReceived` y abre la incidencia |
 | `uv run eda-agent planner` | Propone el plan a partir de `ShipmentDelayed` |
 | `uv run eda-agent replanner` | Revisa el plan ante un `StepFailed` no reintentable |
-| `uv run eda-orchestrator` | Traduce `PlanCreated`, `PlanRevised`, `StepCompleted` y `StepFailed` en `ApplyRevision`, `AdvancePlan` o `EscalateIncident` |
+| `uv run eda-orchestrator` | Saga: consume `ShipmentDelayed`, `PlanCreated`, `PlanRevised`, `StepCompleted`, `StepFailed` e `IncidentEscalated` y envía `CreatePlan`, `RevisePlan` y `ExecuteStep`, con plazos |
 | `uv run eda-notice [interactive --timeout N --no-free-text]` | Modo interactivo: menú para enviar avisos (de ejemplo o texto libre) y seguir cada incidencia en la vista `incident_status` hasta que se cierra; `--no-free-text` quita el texto libre del menú |
 | `uv run eda-notice seed` | Carga pedidos (`P-1001`…`P-1005`) y stock de ejemplo; repetirlo no duplica nada |
 | `uv run eda-notice send [--example delay\|loss\|out_of_stock\|injection] [--text "…"]` | Registra un aviso del transportista: la entrada que pone en marcha el flujo |
 | `uv run eda-web [--port N]` | Backend del front web (API y streams SSE) en `127.0.0.1`, puerto `WEB_PORT` (8000 por defecto); nunca escucha en otra interfaz |
-| `uv run eda-executor <acción>` | Ejecuta los `StepRequested` de una acción (`notify_customer`, `file_claim`, `reserve_stock`, `release_stock`, `reissue_shipment`, `issue_refund`), un proceso por acción |
+| `uv run eda-executor <acción>` | Atiende los comandos `ExecuteStep` de una acción (`notify_customer`, `file_claim`, `reserve_stock`, `release_stock`, `reissue_shipment`, `issue_refund`), un proceso por acción |
 
 Cada proceso escribe en stdout una línea por evento recibido, por comando (aceptado o rechazado, con los eventos que produce) y por reintento (`LOG_LEVEL`, por defecto `INFO`); el detalle completo está en las trazas de Jaeger (`http://localhost:16686`).
 
@@ -273,16 +268,16 @@ Las consultas (`queries/`) solo leen tablas `view_*` y `projector_offsets`, nunc
 
 Anotadas aquí porque no estaban cerradas en la conversación; se pueden cambiar sin tocar el resto.
 
-- CQRS sin event sourcing puro: el estado de escritura (`incidents`, `plan_steps`) se guarda en tablas y el log registra los hechos. Ambos se escriben en la misma transacción, y las vistas se reconstruyen desde el log.
+- CQRS sin event sourcing puro: cada sistema guarda su estado de escritura en sus tablas y publica sus eventos desde su outbox en la misma transacción. Las proyecciones (y la vista del log de `event_log`) se construyen consumiendo Kafka y se reconstruyen volviendo a consumir el topic.
 - Saga: solo `reserve_stock` tiene compensación (`release_stock`). `issue_refund` es el paso pivote y se ejecuta el último.
 - Los umbrales numéricos de las hipótesis (capacidad `experiments`) son valores iniciales.
 - Pila fijada: Python, Apache Kafka (Docker, KRaft, un broker) como bus y PostgreSQL (Docker, volumen persistente) como log de eventos, outbox, inbox y almacén de claves. Los detalles están en `../design.md`; el esquema SQL, en `../db/init/001_schema.sql`, y la infraestructura local, en `../docker-compose.yml`.
 - Los requisitos siguen hablando de «el bus», «el log» y «el almacén de claves» como conceptos; `design.md` indica cómo los materializa la pila.
 - El envío de correos, el transportista, el almacén y los pagos son simulados.
 - La `idempotency_key` se calcula con la versión del plan **en la que se creó el paso**, no con la vigente, para que un paso mantenido en una revisión conserve su clave y no se duplique. Esto afina la fórmula `hash(incident_id, plan_version, step_id)` del documento de casos de negocio.
-- La orquestación decide en el command handler (`ApplyRevision`, `AdvancePlan`) con el estado de `plan_steps`; el orquestador no guarda estado propio. Varias compensaciones se encadenan en orden inverso al de los pasos originales.
+- La saga es un process manager reactivo en el orquestador: decide al consumir cada evento con el estado de `orchestrator.plan_steps`, envía comandos y no recibe ninguno. Varias compensaciones se encadenan en orden inverso al de los pasos originales.
 - Un paso que el plan revisado no mantiene y que no llegó a tener efecto (`pending`, `requested` o `failed`) pasa a `cancelled`. Un resultado de una versión anterior del plan queda en el log, pero no se usa para decidir.
-- `StepCompleted` y `StepFailed` v2 llevan la `plan_version` del `StepRequested` que los pidió, para reconocer los resultados obsoletos. Los v1 se leen como de la versión 1 del plan (y `StepFailed` con un intento).
+- `StepCompleted` y `StepFailed` v2 llevan la `plan_version` del comando `ExecuteStep` que los pidió, para reconocer los resultados obsoletos. Los v1 se leen como de la versión 1 del plan (y `StepFailed` con un intento).
 
 ## Experimentos
 

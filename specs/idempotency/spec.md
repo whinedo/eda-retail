@@ -8,7 +8,7 @@ Garantizar que ningún efecto se ejecuta más de una vez aunque el bus duplique 
 
 ### Requirement: Inbox por consumidor
 
-Cada consumidor SHALL registrar los eventos procesados en su propia tabla `<componente>.inbox` con clave única `event_id`. El registro MUST escribirse en la misma transacción que sus cambios de estado y los eventos que deja en su outbox. Un evento ya registrado SHALL descartarse sin repetir su procesamiento.
+Cada consumidor SHALL registrar los eventos y comandos procesados en su propia tabla `<componente>.inbox` con clave única su `event_id` o `command_id`. El registro MUST escribirse en la misma transacción que sus cambios de estado y los eventos que deja en su outbox. Un evento ya registrado SHALL descartarse sin repetir su procesamiento.
 
 #### Scenario: Reentrega de Kafka
 
@@ -29,14 +29,14 @@ El `inbox` deduplica eventos por consumidor; la tabla `effect_keys` deduplica ef
 
 #### Scenario: Evento nuevo que pide un efecto ya ejecutado
 
-- **GIVEN** un `StepRequested` distinto (otro `event_id`) con la misma `idempotency_key` que un paso ya completado
+- **GIVEN** un `ExecuteStep` distinto (otro `command_id`) con la misma `idempotency_key` que un paso ya completado
 - **WHEN** el ejecutor lo procesa
 - **THEN** el `inbox` lo registra como nuevo
 - **AND** `effect_keys` impide repetir el efecto y devuelve el resultado guardado
 
 ### Requirement: Clave de idempotencia por paso
 
-Todo `StepRequested` MUST llevar una `idempotency_key` calculada como `hash(incident_id, step_id, plan_version_de_origen)`, donde la versión de origen es aquella en la que se creó el paso. La clave SHALL ser determinista: el mismo paso produce siempre la misma clave.
+Todo `ExecuteStep` MUST llevar una `idempotency_key` calculada como `hash(incident_id, step_id, plan_version_de_origen)`, donde la versión de origen es aquella en la que se creó el paso. La clave SHALL ser determinista: el mismo paso produce siempre la misma clave.
 
 #### Scenario: Misma clave para el mismo paso
 
@@ -47,7 +47,7 @@ Todo `StepRequested` MUST llevar una `idempotency_key` calculada como `hash(inci
 #### Scenario: Paso mantenido en una revisión
 
 - **GIVEN** un paso S1 creado en la versión 1 y mantenido en la versión 2
-- **WHEN** se vuelve a emitir su `StepRequested`
+- **WHEN** se vuelve a emitir su `ExecuteStep`
 - **THEN** la clave coincide con la de la versión 1
 
 ### Requirement: Consulta del almacén de claves antes de actuar
@@ -56,7 +56,7 @@ Todo ejecutor SHALL consultar la tabla `effect_keys` antes de ejecutar un efecto
 
 #### Scenario: Evento duplicado
 
-- **GIVEN** un `StepRequested` ya ejecutado con éxito
+- **GIVEN** un `ExecuteStep` ya ejecutado con éxito
 - **WHEN** el bus lo entrega por segunda vez
 - **THEN** el ejecutor no repite el efecto
 - **AND** devuelve el resultado guardado sin publicar un efecto nuevo
@@ -67,7 +67,7 @@ El ejecutor MUST registrar la clave con un `INSERT … ON CONFLICT DO NOTHING` y
 
 #### Scenario: Dos ejecutores a la vez
 
-- **GIVEN** dos instancias del mismo ejecutor que reciben el mismo `StepRequested` a la vez
+- **GIVEN** dos instancias del mismo ejecutor que reciben el mismo `ExecuteStep` a la vez
 - **WHEN** ambas intentan registrar la clave
 - **THEN** solo una la obtiene y ejecuta el efecto
 - **AND** la otra espera o descarta el evento
@@ -79,7 +79,7 @@ Cuando el ejecutor pueda caer entre el efecto y el registro de la clave, el efec
 #### Scenario: Caída tras enviar el correo
 
 - **GIVEN** un ejecutor que envía un aviso y cae antes de registrar la clave
-- **WHEN** se reentrega el `StepRequested`
+- **WHEN** se reentrega el `ExecuteStep`
 - **THEN** el reintento usa la misma clave hacia el servicio de correo
 - **AND** el cliente recibe un solo aviso
 
@@ -100,7 +100,7 @@ El sistema MUST NOT crear más de una reclamación por par (incidencia, pedido),
 #### Scenario: Reclamación solicitada dos veces
 
 - **GIVEN** una reclamación ya creada para el pedido P1 en la incidencia I1
-- **WHEN** llega otro `StepRequested` de `file_claim` para P1
+- **WHEN** llega otro `ExecuteStep` de `file_claim` para P1
 - **THEN** el ejecutor devuelve el `claim_id` existente
 - **AND** no crea otra reclamación
 
@@ -111,7 +111,7 @@ El sistema SHALL garantizar como máximo una reserva activa, un reenvío y un re
 #### Scenario: Reproducción del log con ejecutores activos
 
 - **GIVEN** un log reproducido por error ante los ejecutores
-- **WHEN** reciben de nuevo `StepRequested` ya ejecutados
+- **WHEN** reciben de nuevo `ExecuteStep` ya ejecutados
 - **THEN** no se crea ninguna reserva ni reembolso nuevo
 
 ### Requirement: Conservación de las claves
@@ -121,5 +121,5 @@ El almacén de claves SHALL conservar las claves al menos mientras la incidencia
 #### Scenario: Duplicado tardío
 
 - **GIVEN** una incidencia cerrada dentro del plazo de seguridad
-- **WHEN** llega un `StepRequested` duplicado
+- **WHEN** llega un `ExecuteStep` duplicado
 - **THEN** el ejecutor lo descarta sin repetir el efecto
