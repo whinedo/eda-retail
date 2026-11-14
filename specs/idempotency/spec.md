@@ -8,7 +8,7 @@ Garantizar que ningún efecto se ejecuta más de una vez aunque el bus duplique 
 
 ### Requirement: Inbox por consumidor
 
-Cada consumidor SHALL registrar los eventos y comandos procesados en su propia tabla `<componente>.inbox` con clave única su `event_id` o `command_id`. El registro MUST escribirse en la misma transacción que sus cambios de estado y los eventos que deja en su outbox. Un evento ya registrado SHALL descartarse sin repetir su procesamiento.
+Cada consumidor SHALL registrar los eventos y comandos procesados en su propia tabla `<componente>.inbox` con clave única su `event_id` o `command_id`. El registro MUST escribirse en la misma transacción que sus cambios de estado y los eventos que deja en su outbox. Un evento ya registrado SHALL descartarse sin repetir su procesamiento. Todo comando MUST ser idempotente: un `command_id` ya registrado SHALL devolver la respuesta guardada sin repetir estado, eventos ni efectos.
 
 #### Scenario: Reentrega de Kafka
 
@@ -22,6 +22,13 @@ Cada consumidor SHALL registrar los eventos y comandos procesados en su propia t
 - **GIVEN** un consumidor que ha confirmado su transacción pero cae antes de confirmar el offset en Kafka
 - **WHEN** se reinicia y recibe de nuevo el mismo evento
 - **THEN** el `inbox` lo detecta como ya procesado y lo descarta
+
+#### Scenario: Comando repetido
+
+- **GIVEN** un comando `CreatePlan` con `command_id` C1 ya registrado en `planner.inbox`
+- **WHEN** la saga lo invoca de nuevo con C1
+- **THEN** el handler devuelve la respuesta guardada
+- **AND** no publica otro `PlanCreated`
 
 ### Requirement: Inbox y claves de efectos son mecanismos distintos
 

@@ -2,13 +2,13 @@
 
 ## Purpose
 
-Definir cómo se representan, publican y reparten los eventos y los comandos. Es la base de todas las demás capacidades: cada componente publica desde su outbox, Kafka conserva el registro y entrega los mensajes a los consumidores con garantía de al menos una vez.
+Definir cómo se representan, publican y reparten los eventos, y cómo se invocan los comandos. Es la base de todas las demás capacidades: cada componente publica desde su outbox, Kafka conserva el registro y entrega los mensajes a los consumidores con garantía de al menos una vez.
 
 ## Requirements
 
 ### Requirement: Estructura común del evento
 
-Todo evento publicado MUST llevar los campos `event_id` (único), `event_type`, `event_version`, `occurred_at`, `correlation_id`, `causation_id`, `producer` y `payload`. Un comando lleva la misma estructura con `command_id`, `command_type` y `target` en lugar de `event_id` y `event_type`. El sistema SHALL rechazar la publicación de un mensaje al que le falte alguno.
+Todo evento publicado MUST llevar los campos `event_id` (único), `event_type`, `event_version`, `occurred_at`, `correlation_id`, `causation_id`, `producer` y `payload`. Un comando lleva `command_id`, `command_type`, `correlation_id`, `causation_id` y `payload`, y no se publica en Kafka (Requirement "Invocación de comandos"). El sistema SHALL rechazar la publicación de un evento al que le falte alguno.
 
 #### Scenario: Evento completo
 
@@ -56,23 +56,23 @@ Kafka SHALL conservar todos los eventos del topic `eda.events` con retención in
 
 ### Requirement: Orden por incidencia
 
-Los eventos y comandos de una misma incidencia SHALL entregarse a cada consumidor en el orden en que se escribieron. Para ello el bus MUST particionar por `incident_id`.
+Los eventos de una misma incidencia SHALL entregarse a cada consumidor en el orden en que se escribieron. Para ello el bus MUST particionar por `incident_id`.
 
 #### Scenario: Orden de pasos
 
-- **GIVEN** una incidencia con el evento `PlanCreated` y el comando `ExecuteStep` que la saga envía al consumirlo
+- **GIVEN** una incidencia con los eventos `PlanCreated` y `StepCompleted` de uno de sus pasos, escritos en ese orden
 - **WHEN** un consumidor los recibe
-- **THEN** recibe `PlanCreated` antes que `ExecuteStep`
+- **THEN** recibe `PlanCreated` antes que `StepCompleted`
 
 ### Requirement: Kafka como bus de entrega
 
-Los eventos y los comandos SHALL repartirse a los consumidores mediante Apache Kafka. El relay del outbox de cada componente MUST publicar en el topic `eda.events` con `incident_id` como clave de partición. Si el contenido del topic se pierde, cada componente SHALL poder republicar su outbox. Al confirmar el broker cada mensaje, el relay MUST guardar en su fila de `outbox` la partición y el offset que le asignó Kafka (`kafka_partition`, `kafka_offset`); si el evento se republica, se guarda la posición de la última publicación.
+Los eventos SHALL repartirse a los consumidores mediante Apache Kafka; los comandos MUST NOT publicarse en Kafka. El relay del outbox de cada componente MUST publicar en el topic `eda.events` con `incident_id` como clave de partición. Si el contenido del topic se pierde, cada componente SHALL poder republicar su outbox. Al confirmar el broker cada mensaje, el relay MUST guardar en su fila de `outbox` la partición y el offset que le asignó Kafka (`kafka_partition`, `kafka_offset`); si el evento se republica, se guarda la posición de la última publicación.
 
 #### Scenario: Pérdida del topic
 
 - **GIVEN** un log con 200 incidencias y un topic `eda.events` vaciado
 - **WHEN** cada componente republica su outbox
-- **THEN** el topic recibe de nuevo todos los mensajes, en el orden de cada outbox
+- **THEN** el topic recibe de nuevo todos los eventos, en el orden de cada outbox
 - **AND** los consumidores no repiten ningún efecto gracias al inbox y a las claves de idempotencia
 
 #### Scenario: Posición del mensaje publicado
@@ -92,9 +92,53 @@ El bus MUST entregar cada evento a cada consumidor al menos una vez y reentregar
 - **WHEN** vence el tiempo de confirmación
 - **THEN** el bus reentrega el evento al consumidor
 
+### Requirement: Invocación de comandos
+
+Los comandos SHALL invocarse de forma síncrona por HTTP (REST): cada sistema expone su command handler como `POST /commands/<Comando>`. La saga MUST guardar cada comando en `orchestrator.command_outbox` en la misma transacción que su transición, y su despachador SHALL invocarlo y reintentarlo con backoff, siempre con el mismo `command_id`, hasta recibir una respuesta. Todo comando MUST ser idempotente: el handler registra el `command_id` en su inbox en la misma transacción que su estado y sus eventos, y un comando repetido devuelve la misma respuesta sin repetir estado, eventos ni efectos. La respuesta solo dice si el comando se acepta (202) o se rechaza (422); el resultado le llega a la saga como evento por Kafka. Un comando rechazado SHALL tratarse como un fallo no reintentable.
+
+#### Scenario: Caída antes de invocar
+
+- **GIVEN** una transición de la saga confirmada con un `CreatePlan` en `orchestrator.command_outbox`
+- **WHEN** el orquestador cae antes de invocarlo y se reinicia
+- **THEN** el despachador invoca `CreatePlan` con su `command_id`
+
+#### Scenario: Comando invocado dos veces
+
+- **GIVEN** un `ExecuteStep` de `file_claim` ya aceptado con `command_id` C1
+- **WHEN** el despachador lo invoca otra vez con C1
+- **THEN** el handler devuelve la misma respuesta que la primera vez
+- **AND** no escribe estado ni eventos nuevos ni repite la reclamación
+
+#### Scenario: Sistema que no responde
+
+- **GIVEN** el ejecutor de reclamaciones sin responder
+- **WHEN** el despachador invoca su `ExecuteStep`
+- **THEN** reintenta con backoff y el mismo `command_id`
+- **AND** la saga sigue procesando los eventos de otras incidencias
+
+#### Scenario: El resultado llega como evento
+
+- **GIVEN** un `ExecuteStep` de `reserve_stock` aceptado con 202
+- **WHEN** el despachador recibe la respuesta
+- **THEN** el paso sigue `requested`
+- **AND** pasa a `completed` cuando la saga consume el `StepCompleted` de `inventory`
+
+#### Scenario: Comando rechazado
+
+- **GIVEN** un `ExecuteStep` cuyo payload no cumple el esquema del comando
+- **WHEN** el handler lo valida
+- **THEN** responde 422 sin escribir eventos
+- **AND** la saga marca el paso `failed` con `error` `rejected`
+
+#### Scenario: Solo eventos en Kafka
+
+- **GIVEN** el topic `eda.events` tras procesar una incidencia completa
+- **WHEN** se revisan sus mensajes
+- **THEN** todos son eventos del catálogo y ninguno es un comando
+
 ### Requirement: Propiedad de los datos
 
-Cada componente SHALL escribir únicamente en sus propias tablas, agrupadas en un esquema propio de PostgreSQL (`intake`, `interpreter`, `planner`, `replanner`, `orchestrator`, `executor_<acción>`, `inventory`, `event_log`, `views`). Los componentes MUST comunicarse solo por mensajes en Kafka: ninguno escribe ni lee las tablas de escritura de otro, ni hay claves foráneas o joins entre tablas de componentes distintos. Lo que un sistema necesita de otro dominio lo consulta en las proyecciones del lado de lectura (spec `cqrs-views`, "Consultas al lado de lectura") o le llega en el comando. La base de datos es una sola para la PoC.
+Cada componente SHALL escribir únicamente en sus propias tablas, agrupadas en un esquema propio de PostgreSQL (`intake`, `interpreter`, `planner`, `replanner`, `orchestrator`, `executor_<acción>`, `inventory`, `event_log`, `views`). Los componentes MUST comunicarse solo por eventos en Kafka y por comandos REST: ninguno escribe ni lee las tablas de escritura de otro, ni hay claves foráneas o joins entre tablas de componentes distintos. Lo que un sistema necesita de otro dominio lo consulta en las proyecciones del lado de lectura (spec `cqrs-views`, "Consultas al lado de lectura") o le llega en el comando. La base de datos es una sola para la PoC.
 
 #### Scenario: Dato de otro componente
 

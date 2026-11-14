@@ -13,7 +13,7 @@ Cada acción permitida SHALL tener un sistema que atiende con su command handler
 #### Scenario: Enrutado por acción
 
 - **GIVEN** un `ExecuteStep` con la acción `file_claim`
-- **WHEN** la saga lo envía
+- **WHEN** la saga lo invoca
 - **THEN** solo lo atiende el ejecutor de reclamaciones
 
 ### Requirement: Resultado explícito

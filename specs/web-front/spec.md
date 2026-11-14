@@ -121,7 +121,7 @@ El menú SHALL ofrecer los comandos de `scripts/notice.sh`: `seed`, `send`, `sen
 
 ### Requirement: Mapa de sistemas
 
-El mapa SHALL mostrar como nodos: `eda-notice`, PostgreSQL, relay, Kafka (`eda.events`), `eda.dlq`, proyector, agentes con LLM (intérprete, planificador, replanificador), orquestador, ejecutores (`notify_customer`, `file_claim`, `reissue_shipment`, `reserve_stock`, `release_stock`, `issue_refund`), Ollama, servicios simulados (correo, aseguradora, transportista, almacén y pagos, los de `eda_retail.executors.services` más las tablas de stock) y Jaeger. Las aristas SHALL representar las comunicaciones de design.md §3 y se distinguirán por tipo de nodo (LLM, código, datos y bus, externo, simulado). El id de cada nodo SHALL coincidir con el emisor o destino que usan los eventos (`intake` para `eda-notice`, `interpreter`, `orchestrator`, `executor-<acción>`, `projectors`…), para poder resaltar la arista de cada evento. `GET /api/topology` SHALL devolver esos nodos (id, etiqueta, tipo, descripción y si se vigila su proceso) y aristas (origen, destino).
+El mapa SHALL mostrar como nodos: `eda-notice`, PostgreSQL, relay, Kafka (`eda.events`), `eda.dlq`, proyector, agentes con LLM (intérprete, planificador, replanificador), orquestador, ejecutores (`notify_customer`, `file_claim`, `reissue_shipment`, `reserve_stock`, `release_stock`, `issue_refund`), Ollama, servicios simulados (correo, aseguradora, transportista, almacén y pagos, los de `eda_retail.executors.services` más las tablas de stock) y Jaeger. Las aristas SHALL representar las comunicaciones de design.md §3, incluidas las invocaciones REST de comandos de la saga (`orchestrator` → `planner`, `replanner`, `inventory` y ejecutores), y se distinguirán por tipo de nodo (LLM, código, datos y bus, externo, simulado). El id de cada nodo SHALL coincidir con el emisor o destino que usan los eventos (`intake` para `eda-notice`, `interpreter`, `orchestrator`, `executor-<acción>`, `projectors`…), para poder resaltar la arista de cada evento. `GET /api/topology` SHALL devolver esos nodos (id, etiqueta, tipo, descripción y si se vigila su proceso) y aristas (origen, destino).
 
 #### Scenario: Estado de un nodo
 
@@ -146,7 +146,7 @@ El mapa SHALL mostrar como nodos: `eda-notice`, PostgreSQL, relay, Kafka (`eda.e
 
 - **GIVEN** un comando ejecutándose que genera eventos
 - **WHEN** llega un evento nuevo
-- **THEN** se resaltan unos segundos (3 s) su emisor, su destino y las aristas del camino más corto entre ellos en el mapa (ningún par emisor y destino es una arista directa: un comando `ExecuteStep` va de `orchestrator` a `executor-<acción>` pasando por PostgreSQL, el relay y Kafka)
+- **THEN** se resaltan unos segundos (3 s) su emisor, su destino y las aristas del camino más corto entre ellos en el mapa (ningún par emisor y destino de un evento es una arista directa: un `StepCompleted` va de `executor-<acción>` a `orchestrator` pasando por PostgreSQL, el relay y Kafka)
 - **AND** un id que no está en el mapa no resalta nada
 
 ### Requirement: Detalle de un nodo
@@ -204,7 +204,7 @@ El panel SHALL mostrar los eventos más recientes primero, con las columnas emis
 
 ### Requirement: Origen de emisor y destino
 
-El emisor de un mensaje SHALL ser su campo `producer`. El destino de un comando SHALL ser su `target` (para `ExecuteStep`, `executor-<acción>`, o `inventory` en `reserve_stock` y `release_stock`). El destino de un evento SHALL derivarse de los tipos de evento que declara cada componente (design.md §3): los agentes en `eda_retail.agents.cli.AGENTS` y el orquestador en `eda_retail.orchestrator.runner.EVENT_TYPES`. Los proyectores leen todos los eventos y SHALL figurar siempre como último consumidor. El destino principal es el primer consumidor de esa lista y el resto se muestra en el detalle; un evento que solo leen los proyectores tiene `projectors` como destino.
+El emisor de un evento SHALL ser su campo `producer`. El destino SHALL derivarse de los tipos de evento que declara cada componente (design.md §3): los agentes en `eda_retail.agents.cli.AGENTS` y el orquestador en `eda_retail.orchestrator.runner.EVENT_TYPES`. Los proyectores leen todos los eventos y SHALL figurar siempre como último consumidor. El destino principal es el primer consumidor de esa lista y el resto se muestra en el detalle; un evento que solo leen los proyectores tiene `projectors` como destino.
 
 #### Scenario: Evento con consumidor único
 
@@ -212,11 +212,11 @@ El emisor de un mensaje SHALL ser su campo `producer`. El destino de un comando 
 - **WHEN** se muestra en el panel
 - **THEN** emisor `planner` y destino `orchestrator`
 
-#### Scenario: Paso pedido a un ejecutor
+#### Scenario: Resultado de un ejecutor
 
-- **GIVEN** un `ExecuteStep` con acción `notify_customer`
+- **GIVEN** un `StepCompleted` publicado por `executor-notify_customer`
 - **WHEN** se muestra en el panel
-- **THEN** su destino es `executor-notify_customer`
+- **THEN** su emisor es `executor-notify_customer` y su destino `orchestrator`
 
 #### Scenario: Evento con varios consumidores
 
@@ -242,9 +242,9 @@ El emisor de un mensaje SHALL ser su campo `producer`. El destino de un comando 
 
 #### Scenario: Filtrar por nodo
 
-- **GIVEN** un `ExecuteStep` de `notify_customer` y otro de `file_claim`
+- **GIVEN** un `CustomerNotified` de `executor-notify_customer` y un `ClaimFiled` de `executor-file_claim`
 - **WHEN** se pide `node=executor-notify_customer`
-- **THEN** solo aparece el de `notify_customer`
+- **THEN** solo aparece el `CustomerNotified`
 
 #### Scenario: Límite fuera de rango
 

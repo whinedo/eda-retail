@@ -52,7 +52,7 @@ Un plan MUST NOT incluir a la vez `issue_refund` y `reissue_shipment` del mismo 
 
 ### Requirement: Pasos independientes en paralelo
 
-La saga SHALL enviar a la vez los comandos `ExecuteStep` de los pasos cuyas dependencias estén cumplidas. MUST NOT enviar un paso con dependencias pendientes.
+La saga SHALL invocar a la vez los comandos `ExecuteStep` de los pasos cuyas dependencias estén cumplidas. MUST NOT invocar un paso con dependencias pendientes.
 
 #### Scenario: Pasos sin dependencias
 
@@ -69,12 +69,12 @@ La saga SHALL enviar a la vez los comandos `ExecuteStep` de los pasos cuyas depe
 
 ### Requirement: Revisión del plan ante un fallo
 
-Cuando un paso termine en `StepFailed` sin posibilidad de reintento, la saga SHALL enviar el comando `RevisePlan` al replanner, con el plan vigente, el paso fallido y las revisiones hechas, y el replanner SHALL publicar `PlanRevised` con `plan_version` incrementada y los pasos pendientes. MUST NOT incluir de nuevo los pasos ya completados.
+Cuando un paso termine en `StepFailed` sin posibilidad de reintento, la saga SHALL invocar el comando `RevisePlan` al replanner, con el plan vigente, el paso fallido y las revisiones hechas, y el replanner SHALL publicar `PlanRevised` con `plan_version` incrementada y los pasos pendientes. MUST NOT incluir de nuevo los pasos ya completados.
 
 #### Scenario: Sin stock en el almacén
 
 - **GIVEN** un plan en el que `reserve_stock` termina en `StepFailed` con el error `out_of_stock` y `retryable` falso
-- **WHEN** el replanner procesa el `RevisePlan` que le envía la saga
+- **WHEN** el replanner procesa el `RevisePlan` que invoca la saga
 - **THEN** publica `PlanRevised` con `plan_version` 2
 - **AND** el plan sustituye `reissue_shipment` por `issue_refund`
 - **AND** no vuelve a incluir `notify_customer`, que ya estaba completado
@@ -112,13 +112,13 @@ El sistema MUST NOT emitir `issue_refund` mientras queden compensaciones pendien
 
 ### Requirement: Saga reactiva
 
-La saga SHALL avanzar solo por eventos y por el vencimiento de sus propios plazos: cada transición ocurre cuando el orquestador, único dueño de `orchestrator.plan_steps`, consume un evento (`ShipmentDelayed`, `PlanCreated`, `PlanRevised`, `StepCompleted`, `StepFailed`, `IncidentEscalated`) o vence uno de sus plazos, y deja en su outbox, en la misma transacción, los comandos (`CreatePlan`, `RevisePlan`, `ExecuteStep`) y los eventos siguientes. El orquestador no recibe comandos. Ningún otro componente MUST escribir el estado de la saga, y el orquestador MUST NOT consultar ni esperar el estado de otros componentes: los resultados le llegan como eventos.
+La saga SHALL avanzar solo por eventos y por el vencimiento de sus propios plazos: cada transición ocurre cuando el orquestador, único dueño de `orchestrator.plan_steps`, consume un evento (`ShipmentDelayed`, `PlanCreated`, `PlanRevised`, `StepCompleted`, `StepFailed`, `IncidentEscalated`) o vence uno de sus plazos, y deja, en la misma transacción, los comandos que invocará por REST (`CreatePlan`, `RevisePlan`, `ExecuteStep`) en su `command_outbox` y los eventos siguientes en su outbox. El orquestador no recibe comandos; un comando aceptado no cambia el estado del paso, que solo cambia al consumir el evento de resultado (spec `event-backbone`, "Invocación de comandos"). Ningún otro componente MUST escribir el estado de la saga, y el orquestador MUST NOT consultar ni esperar el estado de otros componentes: los resultados le llegan como eventos.
 
 #### Scenario: Resultado de un paso
 
 - **GIVEN** un `reserve_stock` en estado `requested` del que depende un `reissue_shipment`
 - **WHEN** el orquestador consume el `StepCompleted` de `reserve_stock` publicado por `inventory`
-- **THEN** marca el paso `completed` y deja en su outbox el comando `ExecuteStep` de `reissue_shipment`, en la misma transacción
+- **THEN** marca el paso `completed` y deja en su `command_outbox` el comando `ExecuteStep` de `reissue_shipment`, en la misma transacción
 - **AND** `inventory` no ha escrito ninguna tabla del orquestador
 
 #### Scenario: Compensación terminada
@@ -126,34 +126,34 @@ La saga SHALL avanzar solo por eventos y por el vencimiento de sus propios plazo
 - **GIVEN** un `reserve_stock` en `compensating` y un `issue_refund` retenido
 - **WHEN** el orquestador consume el `StepCompleted` de `reserve_stock-comp`
 - **THEN** marca el original `compensated`
-- **AND** envía el comando `ExecuteStep` de `issue_refund`
+- **AND** invoca el comando `ExecuteStep` de `issue_refund`
 
 #### Scenario: Inicio de la saga
 
 - **GIVEN** un `ShipmentDelayed` de la incidencia I1
 - **WHEN** el orquestador lo consume
-- **THEN** crea la incidencia `open` y envía el comando `CreatePlan` al planificador, con un plazo
+- **THEN** crea la incidencia `open` y invoca el comando `CreatePlan` al planificador, con un plazo
 
 ### Requirement: Plazos de la saga
 
-Cada comando que envía la saga SHALL llevar un plazo durable, guardado en `orchestrator.deadlines` en la misma transacción que el comando. Si el plazo vence antes de su resultado, la saga MUST tratar un `ExecuteStep` como un `StepFailed` no reintentable con `error` `timeout` y, si el paso es compensable, pedir además su compensación; un `ExecuteStep` de `issue_refund` (pivote), un `CreatePlan` o un `RevisePlan` vencidos MUST escalar la incidencia con `step_timeout` o `plan_timeout`. Un resultado que llega después del plazo SHALL registrarse como obsoleto sin cambiar el estado. Revisar los plazos vencidos es leer la tabla del propio orquestador, nunca el estado de otro componente.
+Cada comando que invoca la saga SHALL llevar un plazo durable, guardado en `orchestrator.deadlines` en la misma transacción que el comando. Si el plazo vence antes de su resultado, la saga MUST tratar un `ExecuteStep` como un `StepFailed` no reintentable con `error` `timeout` y, si el paso es compensable, pedir además su compensación; un `ExecuteStep` de `issue_refund` (pivote), un `CreatePlan` o un `RevisePlan` vencidos MUST escalar la incidencia con `step_timeout` o `plan_timeout`. Un resultado que llega después del plazo SHALL registrarse como obsoleto sin cambiar el estado. Revisar los plazos vencidos es leer la tabla del propio orquestador, nunca el estado de otro componente.
 
 #### Scenario: Paso sin respuesta
 
-- **GIVEN** un `ExecuteStep` de `file_claim` enviado con un plazo y el ejecutor de reclamaciones caído
+- **GIVEN** un `ExecuteStep` de `file_claim` invocado con un plazo y el ejecutor de reclamaciones caído
 - **WHEN** vence el plazo
 - **THEN** el paso pasa a `failed` con `error` `timeout`
-- **AND** la saga envía `RevisePlan` al replanner
+- **AND** la saga invoca `RevisePlan` al replanner
 
 #### Scenario: Reserva sin respuesta
 
 - **GIVEN** un `ExecuteStep` de `reserve_stock` cuyo plazo vence sin resultado
 - **WHEN** la saga lo trata
-- **THEN** envía además el `ExecuteStep` de `reserve_stock-comp`, que no libera nada si la reserva nunca se hizo
+- **THEN** invoca además el `ExecuteStep` de `reserve_stock-comp`, que no libera nada si la reserva nunca se hizo
 
 #### Scenario: Planificador sin respuesta
 
-- **GIVEN** un `CreatePlan` enviado con un plazo
+- **GIVEN** un `CreatePlan` invocado con un plazo
 - **WHEN** vence el plazo sin `PlanCreated`
 - **THEN** la saga escala la incidencia con `plan_timeout`
 
@@ -171,18 +171,18 @@ Cada comando que envía la saga SHALL llevar un plazo durable, guardado en `orch
 
 ### Requirement: Escalado de la incidencia
 
-Cuando la saga escale una incidencia (revisiones agotadas, plazo vencido, fallo de una compensación o `IncidentEscalated` de otro componente), SHALL marcarla `escalated`, cancelar los pasos pendientes con `StepCancelled`, pedir la compensación de cada `reserve_stock` completado cuyo dependiente no se haya completado y publicar `IncidentEscalated` con el motivo, si no lo publicó otro componente. MUST NOT enviar `issue_refund`. Un escalado por `compensation_failed` MUST NOT volver a pedir compensaciones.
+Cuando la saga escale una incidencia (revisiones agotadas, plazo vencido, fallo de una compensación o `IncidentEscalated` de otro componente), SHALL marcarla `escalated`, cancelar los pasos pendientes con `StepCancelled`, pedir la compensación de cada `reserve_stock` completado cuyo dependiente no se haya completado y publicar `IncidentEscalated` con el motivo, si no lo publicó otro componente. MUST NOT invocar `issue_refund`. Un escalado por `compensation_failed` MUST NOT volver a pedir compensaciones.
 
 #### Scenario: Escalado con una reserva hecha
 
 - **GIVEN** una incidencia con `reserve_stock` completado y `reissue_shipment` pendiente
 - **WHEN** el replanner publica `IncidentEscalated` con `llm_output_invalid`
 - **THEN** la incidencia pasa a `escalated` y `reissue_shipment` a `cancelled`
-- **AND** la saga envía el `ExecuteStep` de `reserve_stock-comp`
+- **AND** la saga invoca el `ExecuteStep` de `reserve_stock-comp`
 
 ### Requirement: Compensación determinista
 
-Las compensaciones SHALL derivarse en código. Cuando un `PlanRevised` cancele un paso del que depende otro ya completado y compensable, la saga MUST enviar el comando `ExecuteStep` de la compensación sin intervención del LLM. El LLM MUST NOT incluir pasos de compensación en sus propuestas de plan.
+Las compensaciones SHALL derivarse en código. Cuando un `PlanRevised` cancele un paso del que depende otro ya completado y compensable, la saga MUST invocar el comando `ExecuteStep` de la compensación sin intervención del LLM. El LLM MUST NOT incluir pasos de compensación en sus propuestas de plan.
 
 #### Scenario: Fallo del reenvío tras reservar stock
 

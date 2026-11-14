@@ -194,7 +194,7 @@ Lado de comandos (escritura) y lado de consultas (lectura). Los pasos (1) a (4) 
 
 ## Catálogo de comandos
 
-| Comando | Lo envía | Lo atiende | Eventos que puede producir |
+| Comando | Lo invoca | Lo atiende | Eventos que puede producir |
 | --- | --- | --- | --- |
 | `RegisterCarrierNotice` | `eda-notice`, front | `intake` | `CarrierNoticeReceived` |
 | `SeedSampleData` | `eda-notice` | `inventory` | `OrderRegistered` |
@@ -204,7 +204,7 @@ Lado de comandos (escritura) y lado de consultas (lectura). Los pasos (1) a (4) 
 | `ExecuteStep` (`incident_id`, `plan_version`, `step_id`, `action`, `params`, `idempotency_key`) | La saga | `executor-<acción>`, o `inventory` para `reserve_stock` y `release_stock` | `StepCompleted` o `StepFailed` y el evento de efecto |
 | `RecordLlmCall` | Cada componente con LLM, dentro de su propio handler | El mismo componente | `LlmCallRecorded` |
 
-El orquestador no recibe comandos: es el process manager de la saga, consume eventos y envía `CreatePlan`, `RevisePlan` y `ExecuteStep`. Los comandos entre sistemas viajan por `eda.events` con `command_type` y `target`. Todos llevan `command_id` y como `causation_id` el evento que los originó; los de la saga llevan la `plan_version` vigente, y un plazo guardado en `orchestrator.deadlines`.
+El orquestador no recibe comandos: es el process manager de la saga, consume eventos e invoca `CreatePlan`, `RevisePlan` y `ExecuteStep`. Cada sistema expone sus comandos por REST (`POST /commands/<Comando>`) y la saga los invoca de forma síncrona desde su `command_outbox`; los comandos nunca viajan por Kafka y su resultado llega como evento. Todo comando es idempotente: el handler lo deduplica con su inbox por `command_id`. Todos llevan `command_id` y como `causation_id` el evento que los originó; los de la saga llevan la `plan_version` vigente, y un plazo guardado en `orchestrator.deadlines`.
 
 ## Procesos
 
@@ -247,7 +247,7 @@ Cada componente es un proceso independiente; los scripts anteriores los lanzan, 
 | `uv run eda-agent interpreter` | Interpreta `CarrierNoticeReceived` y abre la incidencia |
 | `uv run eda-agent planner` | Propone el plan a partir de `ShipmentDelayed` |
 | `uv run eda-agent replanner` | Revisa el plan ante un `StepFailed` no reintentable |
-| `uv run eda-orchestrator` | Saga: consume `ShipmentDelayed`, `PlanCreated`, `PlanRevised`, `StepCompleted`, `StepFailed` e `IncidentEscalated` y envía `CreatePlan`, `RevisePlan` y `ExecuteStep`, con plazos |
+| `uv run eda-orchestrator` | Saga: consume `ShipmentDelayed`, `PlanCreated`, `PlanRevised`, `StepCompleted`, `StepFailed` e `IncidentEscalated` e invoca por REST `CreatePlan`, `RevisePlan` y `ExecuteStep`, con plazos |
 | `uv run eda-notice [interactive --timeout N --no-free-text]` | Modo interactivo: menú para enviar avisos (de ejemplo o texto libre) y seguir cada incidencia en la vista `incident_status` hasta que se cierra; `--no-free-text` quita el texto libre del menú |
 | `uv run eda-notice seed` | Carga pedidos (`P-1001`…`P-1005`) y stock de ejemplo; repetirlo no duplica nada |
 | `uv run eda-notice send [--example delay\|loss\|out_of_stock\|injection] [--text "…"]` | Registra un aviso del transportista: la entrada que pone en marcha el flujo |
@@ -275,7 +275,7 @@ Anotadas aquí porque no estaban cerradas en la conversación; se pueden cambiar
 - Los requisitos siguen hablando de «el bus», «el log» y «el almacén de claves» como conceptos; `design.md` indica cómo los materializa la pila.
 - El envío de correos, el transportista, el almacén y los pagos son simulados.
 - La `idempotency_key` se calcula con la versión del plan **en la que se creó el paso**, no con la vigente, para que un paso mantenido en una revisión conserve su clave y no se duplique. Esto afina la fórmula `hash(incident_id, plan_version, step_id)` del documento de casos de negocio.
-- La saga es un process manager reactivo en el orquestador: decide al consumir cada evento con el estado de `orchestrator.plan_steps`, envía comandos y no recibe ninguno. Varias compensaciones se encadenan en orden inverso al de los pasos originales.
+- La saga es un process manager reactivo en el orquestador: decide al consumir cada evento con el estado de `orchestrator.plan_steps`, invoca comandos por REST y no atiende ninguno. Varias compensaciones se encadenan en orden inverso al de los pasos originales.
 - Un paso que el plan revisado no mantiene y que no llegó a tener efecto (`pending`, `requested` o `failed`) pasa a `cancelled`. Un resultado de una versión anterior del plan queda en el log, pero no se usa para decidir.
 - `StepCompleted` y `StepFailed` v2 llevan la `plan_version` del comando `ExecuteStep` que los pidió, para reconocer los resultados obsoletos. Los v1 se leen como de la versión 1 del plan (y `StepFailed` con un intento).
 

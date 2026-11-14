@@ -68,4 +68,4 @@ Toda incidencia escalada SHALL quedar visible en `incident_status` con el motivo
 - **GIVEN** una incidencia con `IncidentEscalated`
 - **WHEN** se consulta `incident_status`
 - **THEN** aparece como `escalated` con su motivo
-- **AND** la saga no envía más `ExecuteStep` que los de compensación
+- **AND** la saga no invoca más `ExecuteStep` que los de compensación

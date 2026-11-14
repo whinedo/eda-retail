@@ -12,7 +12,7 @@ Todo cambio de estado de un sistema SHALL pasar por su command handler. Cada sis
 
 #### Scenario: Comando válido
 
-- **GIVEN** un comando `ExecuteStep` de `reserve_stock` enviado por la saga y existencias en el almacén
+- **GIVEN** un comando `ExecuteStep` de `reserve_stock` invocado por la saga y existencias en el almacén
 - **WHEN** el command handler de `inventory` lo atiende
 - **THEN** escribe la reserva en `inventory.reservations` y `StockReserved` y `StepCompleted` en `inventory.outbox`, en la misma transacción
 - **AND** el comando queda aceptado
@@ -26,13 +26,13 @@ Todo cambio de estado de un sistema SHALL pasar por su command handler. Cada sis
 
 ### Requirement: Catálogo de comandos
 
-Los comandos SHALL ser peticiones explícitas con destinatario (`target`) y nombre en imperativo, distintas de los eventos (hechos ya ocurridos), y cada uno lo atiende el command handler de un único sistema: `intake` (`RegisterCarrierNotice`), `inventory` (`SeedSampleData` y `ExecuteStep` de `reserve_stock` y `release_stock`), `interpreter` (`OpenIncident`, que deriva de `CarrierNoticeReceived`), `planner` (`CreatePlan`), `replanner` (`RevisePlan`) y cada ejecutor (`ExecuteStep` de su acción). Los comandos entre sistemas los envía la saga del orquestador por `eda.events`; ningún comando MUST tener como destinatario al orquestador. Cada comando SHALL llevar un `command_id` único y como `causation_id` el `event_id` del evento que lo originó, y el evento que produce su destinatario lleva como `causation_id` ese `command_id`.
+Los comandos SHALL ser peticiones explícitas con destinatario y nombre en imperativo, distintas de los eventos (hechos ya ocurridos), y cada uno lo atiende el command handler de un único sistema: `intake` (`RegisterCarrierNotice`), `inventory` (`SeedSampleData` y `ExecuteStep` de `reserve_stock` y `release_stock`), `interpreter` (`OpenIncident`, que deriva de `CarrierNoticeReceived`), `planner` (`CreatePlan`), `replanner` (`RevisePlan`) y cada ejecutor (`ExecuteStep` de su acción). Los comandos entre sistemas los invoca la saga del orquestador por REST (spec `event-backbone`, "Invocación de comandos") y nunca viajan por Kafka; el orquestador MUST NOT atender ningún comando. Cada comando SHALL llevar un `command_id` único y como `causation_id` el `event_id` del evento que lo originó, y el evento que produce su destinatario lleva como `causation_id` ese `command_id`.
 
 #### Scenario: Comando derivado de un evento
 
 - **GIVEN** un `ShipmentDelayed` con `event_id` E1 consumido por el orquestador
-- **WHEN** la saga envía el comando `CreatePlan` al planificador
-- **THEN** el comando lleva `target` `planner`, un `command_id` C1 y `causation_id` E1
+- **WHEN** la saga invoca `POST /commands/CreatePlan` del planificador
+- **THEN** el comando lleva un `command_id` C1 y `causation_id` E1
 - **AND** el `PlanCreated` que publica el planificador lleva `causation_id` C1
 
 #### Scenario: El orquestador no recibe comandos
@@ -76,7 +76,7 @@ Las consultas de las personas (front, `eda-notice interactive`, experimentos) y 
 #### Scenario: Decisión del replanificador
 
 - **GIVEN** un `StepFailed` que obliga a revisar el plan
-- **WHEN** la saga envía el comando `RevisePlan` al replanificador
+- **WHEN** la saga invoca el comando `RevisePlan` del replanificador
 - **THEN** el comando lleva el plan vigente, el paso fallido y las revisiones hechas
 - **AND** el replanificador no lee las tablas del orquestador
 
@@ -149,7 +149,7 @@ El sistema SHALL poder borrar cualquier vista y reconstruirla volviendo a consum
 
 ### Requirement: Vista del log de eventos
 
-El componente de consulta `event_log` SHALL mantener la vista `event_log.events` con todos los eventos y comandos consumidos de Kafka, y el front MUST leer los eventos solo de ella, haciendo polling sobre esa vista. Cada evento SHALL recibir al guardarse un `seq` creciente en el orden de consumo; como los eventos de una incidencia viajan por la misma partición, el `seq` respeta su orden causal dentro de la incidencia. La vista es solo de añadir (la base de datos rechaza `UPDATE`, `DELETE` y `TRUNCATE`) y un `event_id` repetido MUST NOT guardarse dos veces. Guarda también la partición, el offset y el contexto de traza de cada mensaje.
+El componente de consulta `event_log` SHALL mantener la vista `event_log.events` con todos los eventos consumidos de Kafka, y el front MUST leer los eventos solo de ella, haciendo polling sobre esa vista. Cada evento SHALL recibir al guardarse un `seq` creciente en el orden de consumo; como los eventos de una incidencia viajan por la misma partición, el `seq` respeta su orden causal dentro de la incidencia. La vista es solo de añadir (la base de datos rechaza `UPDATE`, `DELETE` y `TRUNCATE`) y un `event_id` repetido MUST NOT guardarse dos veces. Guarda también la partición, el offset y el contexto de traza de cada mensaje.
 
 #### Scenario: Orden de una incidencia
 
