@@ -4,14 +4,20 @@ import type { ApiClient } from "./api/client";
 // Valor del backend por defecto (JAEGER_UI_URL); se usa mientras carga o si /api/config falla.
 export const DEFAULT_JAEGER_UI_URL = "http://localhost:16686";
 
+export interface Config {
+  jaegerUrl: string;
+  // `send --text` solo si el backend lo admite (WEB_FREE_TEXT); mientras carga, deshabilitado.
+  freeText: boolean;
+}
+
 // Contenedor: lee /api/config una vez al montar.
-export function useJaegerUrl(client: ApiClient): string {
-  const [url, setUrl] = useState(DEFAULT_JAEGER_UI_URL);
+export function useConfig(client: ApiClient): Config {
+  const [config, setConfig] = useState<Config>({ jaegerUrl: DEFAULT_JAEGER_UI_URL, freeText: false });
 
   useEffect(() => {
     let active = true;
     client.getConfig().then(
-      (config) => active && setUrl(config.jaeger_ui_url),
+      (c) => active && setConfig({ jaegerUrl: c.jaeger_ui_url, freeText: c.free_text_enabled === true }),
       () => undefined,
     );
     return () => {
@@ -19,5 +25,5 @@ export function useJaegerUrl(client: ApiClient): string {
     };
   }, [client]);
 
-  return url;
+  return config;
 }

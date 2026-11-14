@@ -8,7 +8,7 @@ import { PanelResizer } from "./components/PanelResizer";
 import type { Highlight } from "./components/SystemMap";
 import { SystemMapPanel } from "./components/SystemMapPanel";
 import { type OpenStream, openEventSource } from "./useCommandRun";
-import { useJaegerUrl } from "./useConfig";
+import { useConfig } from "./useConfig";
 import { useHealth } from "./useHealth";
 import { useLiveEvents } from "./useLiveEvents";
 import { usePanelHeight } from "./usePanelHeight";
@@ -17,7 +17,7 @@ import { usePanelHeight } from "./usePanelHeight";
 export default function App({ client, openStream = openEventSource }: { client?: ApiClient; openStream?: OpenStream }) {
   const api = useMemo(() => client ?? createApiClient(), [client]);
   const health = useHealth(api);
-  const jaegerUrl = useJaegerUrl(api);
+  const { jaegerUrl, freeText } = useConfig(api);
   const events = useLiveEvents(api, openStream);
   const [selectedNode, setSelectedNode] = useState<string | null>(null);
   const [commandRunning, setCommandRunning] = useState(false);
@@ -40,7 +40,7 @@ export default function App({ client, openStream = openEventSource }: { client?:
   return (
     <div className="app">
       <Header health={health} jaegerUrl={jaegerUrl} onReset={resetView} resetDisabled={commandRunning} />
-      <CommandPanel client={api} openStream={openStream} resetKey={resetKey} onRunningChange={setCommandRunning} />
+      <CommandPanel client={api} openStream={openStream} freeText={freeText} resetKey={resetKey} onRunningChange={setCommandRunning} />
       <main className="main" style={{ "--events-height": `${panel.height}px` } as CSSProperties}>
         <SystemMapPanel
           client={api}

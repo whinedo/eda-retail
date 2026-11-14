@@ -97,7 +97,7 @@ def test_argument_outside_the_whitelist(tmp_path: Path, body: dict):
 
 def test_free_text_is_a_single_argument(tmp_path: Path):
     """Texto libre"""
-    client = _client(_script(tmp_path, ECHO_ARGS))
+    client = _client(_script(tmp_path, ECHO_ARGS), free_text=True)
     text = "Retraso; rm -rf / $(whoami) `id` 'x' \"y\" && echo pwned"
 
     run = client.post("/api/commands", json={"command": "send", "text": text}).json()
@@ -110,7 +110,7 @@ def test_free_text_is_a_single_argument(tmp_path: Path):
 
 def test_free_text_that_looks_like_an_option(tmp_path: Path):
     """Un texto que empieza por guion sigue siendo el texto del aviso, no una opción"""
-    client = _client(_script(tmp_path, ECHO_ARGS))
+    client = _client(_script(tmp_path, ECHO_ARGS), free_text=True)
 
     run = client.post("/api/commands", json={"command": "send", "text": "--carrier evil"}).json()
 
@@ -344,3 +344,28 @@ def test_non_ascii_last_event_id_is_ignored_on_command_stream():
 
     assert frames[0].startswith("id: 0\n")
     assert frames[-1].startswith("id: 2\nevent: exit")
+
+
+def test_free_text_disabled_by_default(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """Texto libre deshabilitado: 422 y ningún proceso, y /api/config lo dice"""
+    monkeypatch.delenv("WEB_FREE_TEXT", raising=False)
+    client = _client(_script(tmp_path, f"#!/usr/bin/env bash\ntouch {tmp_path / 'launched'}\n"))
+
+    response = client.post("/api/commands", json={"command": "send", "text": "El pedido P-1003 llega tarde"})
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == "el texto libre está deshabilitado (WEB_FREE_TEXT)"
+    assert not (tmp_path / "launched").exists()
+    assert client.get("/api/config").json()["free_text_enabled"] is False
+    assert client.post("/api/commands", json={"command": "send", "example": "loss"}).status_code == 202
+
+
+@pytest.mark.parametrize(("value", "enabled"), [("true", True), ("1", True), ("TRUE", True), ("false", False), ("", False)])
+def test_free_text_enabled_by_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, value: str, enabled: bool):
+    """WEB_FREE_TEXT=true vuelve a habilitar el texto libre"""
+    monkeypatch.setenv("WEB_FREE_TEXT", value)
+    client = _client(_script(tmp_path, ECHO_ARGS))
+
+    assert client.get("/api/config").json()["free_text_enabled"] is enabled
+    response = client.post("/api/commands", json={"command": "send", "text": "hola"})
+    assert response.status_code == (202 if enabled else 422)

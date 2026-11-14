@@ -32,7 +32,7 @@ const ARGV: Record<string, string[]> = {
   send: ["scripts/notice.sh", "send"],
 };
 
-function setup(runCommand?: ApiClient["runCommand"]) {
+function setup(runCommand?: ApiClient["runCommand"], freeText = false) {
   const client = {
     runCommand:
       runCommand ??
@@ -50,7 +50,7 @@ function setup(runCommand?: ApiClient["runCommand"]) {
     sendInput: vi.fn(async () => undefined),
   } as unknown as ApiClient;
   const openStream = vi.fn((url: string) => new FakeStream(url));
-  render(<CommandPanel client={client} openStream={openStream} />);
+  render(<CommandPanel client={client} openStream={openStream} freeText={freeText} />);
   return { client, openStream, user: userEvent.setup() };
 }
 
@@ -84,7 +84,6 @@ describe("Menú de comandos", () => {
     expect(within(notices).queryByRole("button", { name: /^seed/ })).not.toBeInTheDocument();
     expect(within(notices).getByRole("button", { name: /^send\b/ })).toBeInTheDocument();
     expect(within(notices).getByRole("button", { name: "loss" })).toBeInTheDocument();
-    expect(within(notices).getByRole("button", { name: "Enviar aviso" })).toBeInTheDocument();
     expect(within(notices).getByRole("button", { name: /^interactive/ })).toBeInTheDocument();
   });
 
@@ -106,8 +105,16 @@ describe("Menú de comandos", () => {
     expect(client.runCommand).toHaveBeenNthCalledWith(2, { command: "send" });
   });
 
+  it("Texto libre deshabilitado: el menú no muestra send --text", () => {
+    setup();
+
+    expect(screen.queryByRole("textbox", { name: "Texto libre del aviso" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Enviar aviso" })).not.toBeInTheDocument();
+    expect(screen.queryByText("send --text")).not.toBeInTheDocument();
+  });
+
   it("Texto libre: se envía el texto escrito y el botón se desactiva sin texto", async () => {
-    const { client, user } = setup();
+    const { client, user } = setup(undefined, true);
     const send = screen.getByRole("button", { name: "Enviar aviso" });
     expect(send).toBeDisabled();
 

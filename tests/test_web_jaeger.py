@@ -59,4 +59,4 @@ def test_invalid_jaeger_url_in_config(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("JAEGER_UI_URL", "javascript:alert(1)")
     client = TestClient(create_app(database_url="postgresql://x:x@127.0.0.1:1/none"), base_url="http://localhost")
 
-    assert client.get("/api/config").json() == {"jaeger_ui_url": "http://localhost:16686"}
+    assert client.get("/api/config").json()["jaeger_ui_url"] == "http://localhost:16686"

@@ -9,11 +9,13 @@ import { CommandMenu } from "./CommandMenu";
 export function CommandPanel({
   client,
   openStream = openEventSource,
+  freeText = false,
   resetKey = 0,
   onRunningChange,
 }: {
   client: ApiClient;
   openStream?: OpenStream;
+  freeText?: boolean;
   resetKey?: number;
   onRunningChange?: (running: boolean) => void;
 }) {
@@ -28,5 +30,5 @@ export function CommandPanel({
     onRunningChange?.(running);
   }, [running, onRunningChange]);
 
-  return <CommandMenu run={run} onRun={(request) => void start(request)} onSendLine={(line) => void sendLine(line)} />;
+  return <CommandMenu run={run} freeText={freeText} onRun={(request) => void start(request)} onSendLine={(line) => void sendLine(line)} />;
 }
