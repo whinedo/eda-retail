@@ -57,6 +57,15 @@ class Settings:
     executor_max_concurrency: int = field(
         default_factory=lambda: int(os.environ.get("EXECUTOR_MAX_CONCURRENCY", "5"))
     )
+    # URL base de cada sistema que atiende comandos (design.md §4.4): su proceso escucha en ese host y
+    # puerto, y la saga lo invocará ahí.
+    intake_url: str = field(default_factory=lambda: os.environ.get("INTAKE_URL", "http://127.0.0.1:8101"))
+    inventory_url: str = field(
+        default_factory=lambda: os.environ.get("INVENTORY_URL", "http://127.0.0.1:8102")
+    )
+    command_http_timeout_s: float = field(
+        default_factory=lambda: float(os.environ.get("COMMAND_HTTP_TIMEOUT_S", "5"))
+    )
     tracing_enabled: bool = field(default_factory=lambda: _env_bool("TRACING_ENABLED", True))
     otlp_endpoint: str = field(
         default_factory=lambda: os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4318")

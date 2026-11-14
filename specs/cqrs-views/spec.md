@@ -41,6 +41,19 @@ Los comandos SHALL ser peticiones explícitas con destinatario y nombre en imper
 - **WHEN** se revisan sus destinatarios
 - **THEN** ninguno es `orchestrator`
 
+#### Scenario: Aviso registrado
+
+- **GIVEN** un comando `RegisterCarrierNotice` del aviso N-1 con `command_id` C1
+- **WHEN** el command handler de `intake` lo atiende
+- **THEN** escribe el aviso en `intake.carrier_notices` y `CarrierNoticeReceived` con `causation_id` C1 en `intake.outbox`, en la misma transacción
+
+#### Scenario: Aviso repetido
+
+- **GIVEN** el aviso N-1 ya registrado
+- **WHEN** llega otro `RegisterCarrierNotice` de N-1 con un `command_id` distinto
+- **THEN** el handler de `intake` lo rechaza con `duplicate_notice`
+- **AND** no escribe otro `CarrierNoticeReceived`
+
 ### Requirement: Un único dueño por estado
 
 Cada estado SHALL tener un único componente dueño, el único que lo escribe. El estado de la incidencia (`incidents`, `plan_steps`) es del orquestador, que procesa en orden los eventos de cada incidencia (misma partición de Kafka), así que no hay escrituras concurrentes de varios procesos sobre él. Las propuestas de otros componentes (planes, revisiones, resultados de pasos) se deciden al consumirlas: una que llega tarde o se basa en una versión ya superada MUST descartarse sin cambiar el estado.

@@ -26,6 +26,8 @@ PROCESSES=(
   "relay|eda-relay"
   "projector|eda-projector"
   "event-log|eda-event-log"
+  "intake|eda-intake"
+  "inventory|eda-inventory"
   "orchestrator|eda-orchestrator"
   "executor-notify_customer|eda-executor notify_customer"
   "executor-file_claim|eda-executor file_claim"

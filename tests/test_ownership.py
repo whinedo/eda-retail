@@ -62,6 +62,11 @@ def test_interpolated_table_targets_are_reported():
     assert ownership.foreign_writes(source, "planner") == ["{qualified('inventory', 'orders')}"]
 
 
+def test_intake_and_inventory_are_checked_components():
+    assert ownership.COMPONENT_PACKAGES["eda_retail/intake"] == "intake"
+    assert ownership.COMPONENT_PACKAGES["eda_retail/inventory"] == "inventory"
+
+
 def test_component_packages_only_write_their_schema():
     """Escritura fuera de su esquema: el código de cada componente solo escribe en su esquema"""
     for package, schema in ownership.COMPONENT_PACKAGES.items():

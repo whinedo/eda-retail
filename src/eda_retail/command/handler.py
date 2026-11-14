@@ -12,7 +12,6 @@ expected_version`; si no actualiza ninguna fila, se rechaza con `concurrency_con
 from __future__ import annotations
 
 import logging
-import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
@@ -32,20 +31,15 @@ from eda_retail.command.models import (
 from eda_retail.command.rules import BusinessRules
 from eda_retail.events.catalog import Cause, PayloadError, PersonalDataError, Severity, build_event
 from eda_retail.events.envelope import EventEnvelope
+from eda_retail.events.ids import incident_id_for_notice
 from eda_retail.infra import tracing
 from eda_retail.infra.event_store import append_events
 from eda_retail.llm.generation import BUDGET_EXHAUSTED, Budget
 
 log = logging.getLogger("eda_retail.command")
-_NOTICE_NAMESPACE = uuid.UUID("6f1d7c0e-2b8a-4c55-9d3e-7a1b2c3d4e5f")
 FINAL_STEP_STATUSES = ("completed", "cancelled", "compensated")
 # Comandos que cargan la incidencia por su cuenta (pueden no exigir que exista o esté abierta).
 _SELF_LOADING = (OpenIncident, RecordLlmCall, EscalateIncident)
-
-
-def incident_id_for_notice(carrier_notice_id: str) -> str:
-    """Un aviso da lugar como mucho a una incidencia: su id se deriva del aviso."""
-    return f"I-{uuid.uuid5(_NOTICE_NAMESPACE, carrier_notice_id)}"
 
 
 @dataclass(frozen=True)
