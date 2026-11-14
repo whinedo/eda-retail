@@ -207,7 +207,7 @@ class SyncSystem:
         if inc.plan_version - 1 >= self.rules.max_plan_revisions:
             raise Escalate(replanner.MAX_REVISIONS)
         status = IncidentStatus(inc.incident_id, "open", inc.plan_version, [s.view() for s in inc.steps.values()],
-                                None, 0)
+                                None, {})
         completed = [s for s in inc.steps.values() if s.status == "completed"]
 
         def check(plan: PlanProposal) -> str | None:

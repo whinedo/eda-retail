@@ -18,6 +18,7 @@ import re
 # Paquete bajo src/ -> esquema del componente. Cada tarea añade el suyo al migrar el componente.
 COMPONENT_PACKAGES: dict[str, str] = {
     "eda_retail/event_log": "event_log",
+    "eda_retail/projectors": "views",
 }
 
 _WRITE = re.compile(

@@ -1,4 +1,4 @@
-"""Los cuatro proyectores de las vistas CQRS, con las tablas `view_*` que mantiene cada uno."""
+"""Los proyectores de las vistas CQRS, con las tablas `views.view_*` que mantiene cada uno."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-from eda_retail.projectors import audit_trail, carrier_dashboard, cost_per_incident, incident_status
+from eda_retail.projectors import audit_trail, carrier_dashboard, cost_per_incident, incident_status, orders
 from eda_retail.projectors.base import Projector
 
 
@@ -19,13 +19,16 @@ class ProjectorSpec:
 
 
 PROJECTORS: dict[str, ProjectorSpec] = {
+    orders.PROJECTOR_NAME: ProjectorSpec(orders.build_projector, ("views.view_orders",)),
     incident_status.PROJECTOR_NAME: ProjectorSpec(
-        incident_status.build_projector, ("view_incident_status",), frozenset({"updated_at"})
+        incident_status.build_projector, ("views.view_incident_status",), frozenset({"updated_at"})
     ),
-    cost_per_incident.PROJECTOR_NAME: ProjectorSpec(cost_per_incident.build_projector, ("view_cost_per_incident",)),
-    audit_trail.PROJECTOR_NAME: ProjectorSpec(audit_trail.build_projector, ("view_audit_trail",)),
+    cost_per_incident.PROJECTOR_NAME: ProjectorSpec(
+        cost_per_incident.build_projector, ("views.view_cost_per_incident",)
+    ),
+    audit_trail.PROJECTOR_NAME: ProjectorSpec(audit_trail.build_projector, ("views.view_audit_trail",)),
     carrier_dashboard.PROJECTOR_NAME: ProjectorSpec(
-        carrier_dashboard.build_projector, ("view_carrier_dashboard", "view_carrier_incidents")
+        carrier_dashboard.build_projector, ("views.view_carrier_dashboard", "views.view_carrier_incidents")
     ),
 }
 

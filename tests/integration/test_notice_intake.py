@@ -77,23 +77,21 @@ def test_interactive_sends_example_and_follows_incident(conn):
     assert "opción no válida: 9" in text
 
 
-def test_watch_stops_when_incident_is_closed(conn):
+def test_watch_stops_when_incident_is_closed(conn, settings):
     """El seguimiento termina en cuanto la vista muestra la incidencia cerrada"""
     import uuid
 
     from eda_retail.command.models import EscalateIncident
-    from eda_retail.projectors.incident_status import build_projector
     from eda_retail.synthetic.interactive import watch
 
     from .command_helpers import handler, open_incident, version_of
+    from .projection_helpers import project
 
     incident, _ = open_incident(conn)
     handler().handle(conn, EscalateIncident(command_id=uuid.uuid4(), expected_version=version_of(conn, incident),
                                             producer="test", incident_id=incident, reason="budget_exhausted"))
     conn.commit()
-    projector = build_projector()
-    while projector.run_once(conn):
-        pass
+    project(settings, conn, "incident_status", incident)
     lines: list[str] = []
     status = watch(conn, incident, lines.append, timeout=60, sleep=lambda _s: None, clock=_clock())
     assert status is not None and status.status == "escalated"

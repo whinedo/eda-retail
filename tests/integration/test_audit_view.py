@@ -3,24 +3,25 @@
 from __future__ import annotations
 
 import uuid
-from datetime import timedelta
 
 from eda_retail.events.catalog import build_event
 from eda_retail.events.envelope import EventEnvelope
-from eda_retail.infra.event_store import append_events
-from eda_retail.projectors.audit_trail import PROJECTOR_NAME, build_projector
+from eda_retail.projectors.rebuild import rebuild
 from eda_retail.queries.audit_trail import get_audit_trail
+
+from .projection_helpers import catch_up, publish
 
 
 def _event(incident: str, event_type: str, payload: dict, producer: str) -> EventEnvelope:
     return build_event(event_type, payload, correlation_id=incident, causation_id=None, producer=producer)
 
 
-def _catch_up(conn) -> None:
-    # Sin espera en los huecos: la base de tests es compartida y otros tests dejan rollbacks.
-    projector = build_projector(gap_timeout=timedelta(0))
-    while projector.run_once(conn):
-        pass
+def _catch_up(settings, conn) -> None:
+    catch_up(settings, conn, "audit_trail")
+
+
+def _trail(settings, conn, incident: str):
+    return get_audit_trail(conn, incident, topic=settings.events_topic)
 
 
 def _refund_instead_of_reissue(incident: str) -> list[EventEnvelope]:
@@ -60,14 +61,13 @@ def _entries(trail) -> list[tuple]:
     return [(e.actor, e.decision, e.plan_version, e.reason) for e in trail.entries]
 
 
-def test_audit_refund_instead_of_reissue(conn):
+def test_audit_refund_instead_of_reissue(conn, settings):
     """Reembolso en lugar de reenvío"""
     incident = f"I-{uuid.uuid4().hex[:8]}"
-    with conn.transaction():
-        seqs = append_events(conn, _refund_instead_of_reissue(incident))
-    _catch_up(conn)
-    trail = get_audit_trail(conn, incident)
-    assert [e.seq for e in trail.entries] == seqs
+    positions = publish(settings, _refund_instead_of_reissue(incident))
+    _catch_up(settings, conn)
+    trail = _trail(settings, conn, incident)
+    assert [(e.kafka_partition, e.kafka_offset) for e in trail.entries] == [(p.partition, p.offset) for p in positions]
     assert _entries(trail) == [
         ("intake", "CarrierNoticeReceived", None, None),
         ("planner", "PlanCreated", 1, None),
@@ -80,43 +80,36 @@ def test_audit_refund_instead_of_reissue(conn):
         ("executor-issue_refund", "RefundIssued", None, None),
         ("orchestrator", "IncidentResolved", None, None),
     ]
-    assert trail.last_applied_seq >= seqs[-1]
+    assert trail.applied[positions[-1].partition] >= positions[-1].offset
 
 
-def test_audit_never_stores_notice_text(conn):
+def test_audit_never_stores_notice_text(conn, settings):
     """El texto del aviso es contenido no confiable y no se guarda en la auditoría"""
     incident = f"I-{uuid.uuid4().hex[:8]}"
-    with conn.transaction():
-        append_events(conn, _refund_instead_of_reissue(incident)[:1])
-    _catch_up(conn)
-    rows = conn.execute("SELECT * FROM view_audit_trail WHERE incident_id = %s", (incident,)).fetchall()
+    publish(settings, _refund_instead_of_reissue(incident)[:1])
+    _catch_up(settings, conn)
+    rows = conn.execute("SELECT * FROM views.view_audit_trail WHERE incident_id = %s", (incident,)).fetchall()
     conn.commit()
     assert rows and all("IGNORA" not in str(v) for row in rows for v in row.values())
 
 
-def test_audit_view_lost_and_rebuilt(conn):
+def test_audit_view_lost_and_rebuilt(conn, settings):
     """Pérdida de la vista de auditoría"""
     incident = f"I-{uuid.uuid4().hex[:8]}"
-    with conn.transaction():
-        append_events(conn, _refund_instead_of_reissue(incident))
-    _catch_up(conn)
-    before = get_audit_trail(conn, incident).entries
-    with conn.transaction():
-        conn.execute("DELETE FROM view_audit_trail")
-        conn.execute("UPDATE projector_offsets SET last_seq = 0 WHERE projector = %s", (PROJECTOR_NAME,))
-    _catch_up(conn)
-    assert get_audit_trail(conn, incident).entries == before
+    publish(settings, _refund_instead_of_reissue(incident))
+    _catch_up(settings, conn)
+    before = _trail(settings, conn, incident).entries
+    rebuild(settings, conn, "audit_trail")  # se borra la vista y se vuelve a consumir el topic
+    assert _trail(settings, conn, incident).entries == before
 
 
-def test_audit_duplicate_event_does_not_change_view(conn):
+def test_audit_duplicate_event_does_not_change_view(conn, settings):
     """Evento duplicado en un proyector"""
     incident = f"I-{uuid.uuid4().hex[:8]}"
     events = _refund_instead_of_reissue(incident)
-    with conn.transaction():
-        seqs = append_events(conn, events)
-    _catch_up(conn)
-    before = get_audit_trail(conn, incident).entries
-    projector = build_projector()
-    with conn.transaction():
-        projector.apply(conn, seqs[3], events[3])
-    assert get_audit_trail(conn, incident).entries == before
+    publish(settings, events)
+    _catch_up(settings, conn)
+    before = _trail(settings, conn, incident).entries
+    publish(settings, [events[3]])  # el mismo evento otra vez, con un offset nuevo
+    _catch_up(settings, conn)
+    assert _trail(settings, conn, incident).entries == before

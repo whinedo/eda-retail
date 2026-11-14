@@ -19,6 +19,7 @@ import psycopg
 from psycopg.types.json import Jsonb
 
 from eda_retail.events.envelope import EventEnvelope
+from eda_retail.infra.positions import Position
 from eda_retail.projectors.base import Projector
 
 PROJECTOR_NAME = "incident_status"
@@ -28,7 +29,7 @@ COMPENSATION_SUFFIX = "-comp"
 def _insert(conn: psycopg.Connection, event: EventEnvelope, status: str, reason: str | None = None) -> None:
     conn.execute(
         """
-        INSERT INTO view_incident_status (incident_id, status, escalation_reason, last_applied_event)
+        INSERT INTO views.view_incident_status (incident_id, status, escalation_reason, last_applied_event)
         VALUES (%s, %s, %s, %s)
         ON CONFLICT (incident_id) DO NOTHING
         """,
@@ -40,13 +41,13 @@ def _update(conn: psycopg.Connection, event: EventEnvelope, **fields: Any) -> No
     sets = ", ".join(f"{k} = %s" for k in fields)
     values = [Jsonb(v) if k == "steps" else v for k, v in fields.items()]
     conn.execute(
-        f"UPDATE view_incident_status SET {sets}, last_applied_event = %s, updated_at = now() WHERE incident_id = %s",
+        f"UPDATE views.view_incident_status SET {sets}, last_applied_event = %s, updated_at = now() WHERE incident_id = %s",
         (*values, event.event_id, event.correlation_id),
     )
 
 
 def _steps(conn: psycopg.Connection, incident_id: str) -> list[dict[str, Any]]:
-    row = conn.execute("SELECT steps FROM view_incident_status WHERE incident_id = %s", (incident_id,)).fetchone()
+    row = conn.execute("SELECT steps FROM views.view_incident_status WHERE incident_id = %s", (incident_id,)).fetchone()
     return list(row["steps"]) if row else []
 
 
@@ -67,16 +68,16 @@ def _view_step(step: dict[str, Any], status: str) -> dict[str, Any]:
     return {**step, "status": status}
 
 
-def _shipment_delayed(conn: psycopg.Connection, seq: int, event: EventEnvelope) -> None:
+def _shipment_delayed(conn: psycopg.Connection, position: Position, event: EventEnvelope) -> None:
     _insert(conn, event, "open")
 
 
-def _plan_created(conn: psycopg.Connection, seq: int, event: EventEnvelope) -> None:
+def _plan_created(conn: psycopg.Connection, position: Position, event: EventEnvelope) -> None:
     steps = [_view_step(s, "pending") for s in event.payload["steps"]]
     _update(conn, event, plan_version=event.payload["plan_version"], steps=steps)
 
 
-def _plan_revised(conn: psycopg.Connection, seq: int, event: EventEnvelope) -> None:
+def _plan_revised(conn: psycopg.Connection, position: Position, event: EventEnvelope) -> None:
     previous = {s["step_id"]: s for s in _steps(conn, event.correlation_id)}
     revised: list[dict[str, Any]] = []
     for s in event.payload["steps"]:
@@ -89,7 +90,7 @@ def _plan_revised(conn: psycopg.Connection, seq: int, event: EventEnvelope) -> N
     _update(conn, event, plan_version=event.payload["plan_version"], steps=revised + list(previous.values()))
 
 
-def _step_requested(conn: psycopg.Connection, seq: int, event: EventEnvelope) -> None:
+def _step_requested(conn: psycopg.Connection, position: Position, event: EventEnvelope) -> None:
     p = event.payload
     if p["step_id"].endswith(COMPENSATION_SUFFIX):
         steps = _steps(conn, event.correlation_id)
@@ -108,30 +109,30 @@ def _step_requested(conn: psycopg.Connection, seq: int, event: EventEnvelope) ->
 
 def _stale(conn: psycopg.Connection, event: EventEnvelope) -> bool:
     row = conn.execute(
-        "SELECT plan_version FROM view_incident_status WHERE incident_id = %s", (event.correlation_id,)
+        "SELECT plan_version FROM views.view_incident_status WHERE incident_id = %s", (event.correlation_id,)
     ).fetchone()
     return row is not None and event.payload["plan_version"] < row["plan_version"]
 
 
-def _step_completed(conn: psycopg.Connection, seq: int, event: EventEnvelope) -> None:
+def _step_completed(conn: psycopg.Connection, position: Position, event: EventEnvelope) -> None:
     if not _stale(conn, event):
         _set_step(conn, event, event.payload["step_id"], status="completed", result=event.payload["result"])
 
 
-def _step_failed(conn: psycopg.Connection, seq: int, event: EventEnvelope) -> None:
+def _step_failed(conn: psycopg.Connection, position: Position, event: EventEnvelope) -> None:
     if not _stale(conn, event):
         _set_step(conn, event, event.payload["step_id"], status="failed", error=event.payload["error"])
 
 
-def _step_cancelled(conn: psycopg.Connection, seq: int, event: EventEnvelope) -> None:
+def _step_cancelled(conn: psycopg.Connection, position: Position, event: EventEnvelope) -> None:
     _set_step(conn, event, event.payload["step_id"], status="cancelled")
 
 
-def _resolved(conn: psycopg.Connection, seq: int, event: EventEnvelope) -> None:
+def _resolved(conn: psycopg.Connection, position: Position, event: EventEnvelope) -> None:
     _update(conn, event, status="resolved")
 
 
-def _escalated(conn: psycopg.Connection, seq: int, event: EventEnvelope) -> None:
+def _escalated(conn: psycopg.Connection, position: Position, event: EventEnvelope) -> None:
     # Puede escalarse antes de existir en la vista (supuesto A5 o sin pedidos válidos).
     _insert(conn, event, "escalated", event.payload["reason"])
     _update(conn, event, status="escalated", escalation_reason=event.payload["reason"])

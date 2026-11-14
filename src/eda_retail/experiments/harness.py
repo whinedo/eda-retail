@@ -28,7 +28,6 @@ import uuid
 from collections import Counter
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field, replace
-from datetime import timedelta
 from typing import Any, Self
 
 import psycopg
@@ -50,6 +49,7 @@ from eda_retail.infra.migrations import upgrade
 from eda_retail.infra.relay import OutboxRelay
 from eda_retail.llm.generation import LlmClient
 from eda_retail.orchestrator.runner import Orchestrator
+from eda_retail.projectors.base import consumer_for
 from eda_retail.projectors.registry import build_all
 from eda_retail.synthetic.faults import ConsumerCrashed, FailingAction, FaultPlan, FaultyDelivery, empty_warehouses
 from eda_retail.synthetic.generator import Dataset, generate, load
@@ -167,7 +167,7 @@ class Harness:
         for delivery, _ in self._deliveries:
             with contextlib.suppress(Exception):
                 delivery.consumer.close()
-        for closable in (getattr(self, "_relay", None),):
+        for closable in (getattr(self, "_relay", None), *getattr(self, "_projectors", [])):
             with contextlib.suppress(Exception):
                 closable.close()
         for c in (self.conn, getattr(self, "_projector_conn", None)):
@@ -189,7 +189,7 @@ class Harness:
         handler = CommandHandler()
         self._relay = OutboxRelay.from_settings(s)
         self._projector_conn = connect(s.database_url)
-        self._projectors = build_all(gap_timeout=timedelta(0))
+        self._projectors = [consumer_for(p, s, self._projector_conn) for p in build_all()]
         components: dict[str, dict[str, Any]] = {
             name: build_handlers(name, self.llm, handler, inbox_enabled=s.inbox_enabled)
             for name in ("interpreter", "planner", "replanner")
@@ -223,7 +223,7 @@ class Harness:
     def step(self) -> int:
         """Un turno: relay, proyectores y cada consumidor. Devuelve cuánto avanzó."""
         progressed = self._relay.run_once() + self._relay.publish_dead_letters()
-        progressed += sum(p.run_once(self._projector_conn) for p in self._projectors)
+        progressed += sum(p.run_once(timeout=0) for p in self._projectors)
         for i, (delivery, factory) in enumerate(self._deliveries):
             for _ in range(20):
                 try:
@@ -253,7 +253,7 @@ class Harness:
 
     def closed(self) -> int:
         row = self.conn.execute(
-            "SELECT count(*) AS n FROM view_incident_status WHERE status IN ('resolved', 'escalated')"
+            "SELECT count(*) AS n FROM views.view_incident_status WHERE status IN ('resolved', 'escalated')"
         ).fetchone()
         self.conn.commit()
         return row["n"]
@@ -278,7 +278,7 @@ class Harness:
 
     def result(self, elapsed: float) -> RunResult:
         c = self.conn
-        statuses = Counter(r["status"] for r in c.execute("SELECT status FROM view_incident_status").fetchall())
+        statuses = Counter(r["status"] for r in c.execute("SELECT status FROM views.view_incident_status").fetchall())
         latencies = [r["ms"] for r in c.execute(
             """
             SELECT extract(epoch FROM max(e.occurred_at) - min(e.occurred_at)) * 1000 AS ms
@@ -290,7 +290,7 @@ class Harness:
         ).fetchall()]
         cost = c.execute(
             "SELECT coalesce(sum(llm_calls), 0) AS calls, coalesce(sum(tokens_in), 0) AS tin, "
-            "coalesce(sum(tokens_out), 0) AS tout FROM view_cost_per_incident"
+            "coalesce(sum(tokens_out), 0) AS tout FROM views.view_cost_per_incident"
         ).fetchone()
         c.commit()
         closed = statuses["resolved"] + statuses["escalated"]

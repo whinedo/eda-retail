@@ -1,7 +1,9 @@
 """Vista `audit_trail` (spec observability-audit, «Auditoría de decisiones»).
 
-Una fila por evento de decisión, con `seq` como clave: aplicar dos veces el mismo evento no
-cambia la vista (`ON CONFLICT DO NOTHING`), y la vista se reconstruye solo desde el log.
+Una fila por evento de decisión, con `event_id` como clave y la partición y el offset del
+mensaje: los eventos de una incidencia viajan por la misma partición, así que ordenar por offset
+es su orden causal. Aplicar dos veces el mismo evento no cambia la vista (`ON CONFLICT DO NOTHING`),
+y la vista se reconstruye volviendo a consumir el topic.
 
 - `actor`: el `producer` del evento (qué componente lo decidió).
 - `decision`: el tipo de evento; en `StepRequested`, también la acción pedida.
@@ -21,6 +23,7 @@ from typing import Any
 import psycopg
 
 from eda_retail.events.envelope import EventEnvelope
+from eda_retail.infra.positions import Position
 from eda_retail.projectors.base import Projector
 
 PROJECTOR_NAME = "audit_trail"
@@ -48,14 +51,15 @@ def _reason(event: EventEnvelope) -> str | None:
     return event.payload[field] if field else None
 
 
-def _record(conn: psycopg.Connection, seq: int, event: EventEnvelope) -> None:
+def _record(conn: psycopg.Connection, position: Position, event: EventEnvelope) -> None:
     conn.execute(
         """
-        INSERT INTO view_audit_trail (seq, incident_id, plan_version, actor, decision, reason, occurred_at)
-        VALUES (%s, %s, %s, %s, %s, %s, %s)
-        ON CONFLICT (seq) DO NOTHING
+        INSERT INTO views.view_audit_trail (event_id, kafka_partition, kafka_offset, incident_id, plan_version,
+                                            actor, decision, reason, occurred_at)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+        ON CONFLICT (event_id) DO NOTHING
         """,
-        (seq, event.correlation_id, event.payload.get("plan_version"), event.producer,
+        (event.event_id, position.partition, position.offset, event.correlation_id, event.payload.get("plan_version"), event.producer,
          _decision(event), _reason(event), event.occurred_at),
     )
 

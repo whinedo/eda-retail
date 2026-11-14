@@ -1,20 +1,23 @@
 """Consulta de `audit_trail` (spec observability-audit): solo lee `view_*` y
-`projector_offsets`, nunca escribe y responde con `last_applied_seq`."""
+`views.offsets`, nunca escribe y responde con `applied` (offset aplicado por partición)."""
 
 from __future__ import annotations
 
+import uuid
 from dataclasses import dataclass
 from datetime import datetime
 
 import psycopg
 
 from eda_retail.projectors.audit_trail import PROJECTOR_NAME
-from eda_retail.queries.positions import last_applied_seq
+from eda_retail.queries.positions import applied
 
 
 @dataclass(frozen=True)
 class AuditEntry:
-    seq: int
+    event_id: uuid.UUID
+    kafka_partition: int
+    kafka_offset: int
     actor: str
     decision: str
     plan_version: int | None
@@ -26,16 +29,16 @@ class AuditEntry:
 class AuditTrail:
     incident_id: str
     entries: list[AuditEntry]
-    last_applied_seq: int
+    applied: dict[int, int]
 
 
-def get_audit_trail(conn: psycopg.Connection, incident_id: str) -> AuditTrail:
-    """Las decisiones de la incidencia en orden de `seq`; lista vacía si no hay ninguna."""
+def get_audit_trail(conn: psycopg.Connection, incident_id: str, *, topic: str | None = None) -> AuditTrail:
+    """Las decisiones de la incidencia en su orden causal (partición y offset); lista vacía si no hay."""
     with conn.transaction():
-        position = last_applied_seq(conn, PROJECTOR_NAME)
+        position = applied(conn, PROJECTOR_NAME, topic)
         rows = conn.execute(
-            "SELECT seq, actor, decision, plan_version, reason, occurred_at "
-            "FROM view_audit_trail WHERE incident_id = %s ORDER BY seq",
+            "SELECT event_id, kafka_partition, kafka_offset, actor, decision, plan_version, reason, occurred_at "
+            "FROM views.view_audit_trail WHERE incident_id = %s ORDER BY kafka_partition, kafka_offset",
             (incident_id,),
         ).fetchall()
     return AuditTrail(incident_id, [AuditEntry(**row) for row in rows], position)

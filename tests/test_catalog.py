@@ -10,6 +10,7 @@ from eda_retail.events.catalog import CATALOG, PayloadError, PersonalDataError, 
 from eda_retail.events.envelope import new_event
 from eda_retail.events.upcasters import to_current
 from eda_retail.events.versioning import UpcastError, Upcasters
+from eda_retail.infra.positions import Position
 
 EXPECTED_TYPES = {
     "CarrierNoticeReceived", "ShipmentDelayed", "PlanCreated", "PlanRevised", "StepRequested",
@@ -171,6 +172,13 @@ def test_step_cancelled_event():
     assert ev.event_version == 1
 
 
+class _FirstTimeConn:
+    """Conexión falsa: el evento aún no está en views.applied_events."""
+
+    def execute(self, *_args):
+        return type("Cursor", (), {"rowcount": 1})()
+
+
 def test_projector_upcasters_extend_shared_registry():
     """Los conversores propios de un proyector amplían el registro compartido, no lo sustituyen"""
     from eda_retail.projectors.base import Projector
@@ -178,8 +186,8 @@ def test_projector_upcasters_extend_shared_registry():
     own = Upcasters()
     own.register("X", 1)(lambda p: p)
     seen = []
-    projector = Projector("test", {"StepCompleted": lambda conn, seq, ev: seen.append(ev)}, upcasters=own)
-    projector.apply(None, 1, _v1("StepCompleted", {"step_id": "S1", "result": {}}))
+    projector = Projector("test", {"StepCompleted": lambda conn, position, ev: seen.append(ev)}, upcasters=own)
+    projector.apply(_FirstTimeConn(), Position("eda.events", 0, 1), _v1("StepCompleted", {"step_id": "S1", "result": {}}))
     assert (seen[0].event_version, seen[0].payload["plan_version"]) == (2, 1)
     assert ("StepCompleted", 1) not in own._converters  # el registro del llamador no cambia
 

@@ -6,9 +6,9 @@ import uuid
 
 from eda_retail.command.models import AdvancePlan, ApplyRevision
 from eda_retail.infra.effect_keys import compute_idempotency_key
-from eda_retail.projectors.incident_status import build_projector
 
 from .command_helpers import add_order, events_of, handler, open_incident, version_of
+from .projection_helpers import project
 from .test_plans import LOSS_PLAN, create, plan_steps, revise, step
 from .test_steps import record
 
@@ -257,7 +257,7 @@ def test_apply_revision_rejections(conn):
     assert apply_revision(conn, incident, 2, ["S1"]).reason == "revision_applied"
 
 
-def test_states_after_a_compensation(conn):
+def test_states_after_a_compensation(conn, settings):
     """Estados tras una compensación"""
     incident, _ = open_incident(conn)
     done_first_three(conn, incident)
@@ -265,12 +265,9 @@ def test_states_after_a_compensation(conn):
     revise(conn, incident, [step("S5", "issue_refund", order_id="P1", amount="30")], reason="carrier_rejected")
     apply_revision(conn, incident, 2, ["S5"])
     advance(conn, incident)
-    projector = build_projector()
-
     def view() -> dict[str, str]:
-        while projector.run_once(conn):
-            pass
-        row = conn.execute("SELECT steps FROM view_incident_status WHERE incident_id = %s", (incident,)).fetchone()
+        project(settings, conn, "incident_status", incident)
+        row = conn.execute("SELECT steps FROM views.view_incident_status WHERE incident_id = %s", (incident,)).fetchone()
         conn.commit()
         return {s["step_id"]: s["status"] for s in row["steps"]}
 
