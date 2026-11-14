@@ -167,3 +167,130 @@ body {
   font-size: 15px;
   font-weight: 600;
 }
+
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+  text-align: left;
+}
+
+button.card {
+  cursor: pointer;
+}
+
+.card span,
+.card label {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.card code,
+.chip,
+.output,
+.input-line input {
+  font-family: var(--mono);
+}
+
+.card--active {
+  border-color: var(--llm-fg);
+  background: var(--llm-bg);
+}
+
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.chip {
+  padding: 4px 10px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface);
+  cursor: pointer;
+}
+
+.chip--active {
+  border-color: var(--llm-fg);
+  background: var(--llm-fg);
+  color: #fff;
+}
+
+.card textarea {
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  font: inherit;
+  resize: vertical;
+}
+
+.primary {
+  align-self: flex-start;
+  padding: 8px 14px;
+  border: 0;
+  border-radius: 6px;
+  background: var(--ink);
+  color: #fff;
+  font: inherit;
+  cursor: pointer;
+}
+
+.inline {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.inline input {
+  width: 72px;
+  padding: 4px 6px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  font-family: var(--mono);
+}
+
+.link {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--ink);
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.output--running,
+.output--done {
+  color: var(--ink);
+}
+
+.output--error {
+  color: var(--down);
+}
+
+.output__exit {
+  color: var(--muted);
+}
+
+.input-line {
+  display: flex;
+  gap: 6px;
+}
+
+.input-line input {
+  flex: 1;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
