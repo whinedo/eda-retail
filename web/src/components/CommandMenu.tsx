@@ -19,13 +19,15 @@ function activeKey(request: CommandRequest | null): string | null {
 
 interface Props {
   run: CommandRun;
+  // `send --text` deshabilitado salvo que el backend lo admita (WEB_FREE_TEXT).
+  freeText?: boolean;
   onRun: (request: CommandRequest) => void;
   onSendLine: (line: string) => void;
 }
 
 // Presentacional: tarjetas de los comandos de scripts/notice.sh, salida y entrada interactiva.
 // «Preparación» (seed, sin eventos) va aparte de «Avisos» (los comandos que inician el flujo).
-export function CommandMenu({ run, onRun, onSendLine }: Props) {
+export function CommandMenu({ run, freeText = false, onRun, onSendLine }: Props) {
   const [text, setText] = useState("");
   const [timeout, setTimeout] = useState(String(DEFAULT_TIMEOUT));
   const [line, setLine] = useState("");
@@ -93,25 +95,27 @@ export function CommandMenu({ run, onRun, onSendLine }: Props) {
           </div>
         </div>
 
-        <div className={card("text")}>
-          <code>send --text</code>
-          <label htmlFor="free-text">Texto libre del aviso</label>
-          <textarea
-            id="free-text"
-            rows={3}
-            maxLength={MAX_TEXT}
-            value={text}
-            onChange={(event) => setText(event.target.value)}
-          />
-          <button
-            type="button"
-            className="primary"
-            disabled={busy || text.trim() === ""}
-            onClick={() => launch({ command: "send", text })}
-          >
-            Enviar aviso
-          </button>
-        </div>
+        {freeText && (
+          <div className={card("text")}>
+            <code>send --text</code>
+            <label htmlFor="free-text">Texto libre del aviso</label>
+            <textarea
+              id="free-text"
+              rows={3}
+              maxLength={MAX_TEXT}
+              value={text}
+              onChange={(event) => setText(event.target.value)}
+            />
+            <button
+              type="button"
+              className="primary"
+              disabled={busy || text.trim() === ""}
+              onClick={() => launch({ command: "send", text })}
+            >
+              Enviar aviso
+            </button>
+          </div>
+        )}
 
         <div className={card("interactive")}>
           <div className="inline">

@@ -93,6 +93,11 @@ def _read_only_conn(request: Request) -> Iterator[psycopg.Connection]:
 Conn = Annotated[psycopg.Connection, Depends(_read_only_conn)]
 
 
+def free_text_enabled() -> bool:
+    """`send --text` solo con `WEB_FREE_TEXT=true` (o `1`)."""
+    return os.environ.get("WEB_FREE_TEXT", "").strip().lower() in ("true", "1")
+
+
 def create_app(
     database_url: str | None = None,
     *,
@@ -100,8 +105,15 @@ def create_app(
     notice_script: Path = NOTICE_SCRIPT,
     run_max_seconds: float = RUN_MAX_SECONDS,
     health: HealthChecker | None = None,
+    free_text: bool | None = None,
 ) -> FastAPI:
-    """`stream_max_polls`, `notice_script`, `run_max_seconds` y `health` solo los cambian los tests."""
+    """`stream_max_polls`, `notice_script`, `run_max_seconds` y `health` solo los cambian los tests.
+
+    `free_text`: si se admite `send --text`; por defecto lo decide `WEB_FREE_TEXT` (deshabilitado salvo
+    `true` o `1`: la PoC es un ejemplo académico).
+    """
+    if free_text is None:
+        free_text = free_text_enabled()
     runner = CommandRunner(notice_script, run_max_seconds)
 
     @asynccontextmanager
@@ -171,7 +183,7 @@ def create_app(
 
     @app.get("/api/config")
     def config() -> dict:
-        return {"jaeger_ui_url": jaeger_ui_url()}
+        return {"jaeger_ui_url": jaeger_ui_url(), "free_text_enabled": free_text}
 
     @app.get("/api/health")
     def health_report() -> dict:
@@ -188,6 +200,8 @@ def create_app(
 
     @app.post("/api/commands", status_code=202)
     def run_command(body: CommandRequest) -> dict:
+        if body.text is not None and not free_text:
+            raise HTTPException(422, "el texto libre está deshabilitado (WEB_FREE_TEXT)")
         try:
             run = runner.start(body)
         except RunnerBusy:

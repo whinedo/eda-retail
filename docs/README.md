@@ -228,7 +228,7 @@ scripts/stop-all.sh            # al terminar: para los procesos, el front y los 
 
 En el CLI interactivo, `s` carga los datos de ejemplo (pedidos `P-1001`…`P-1005` y su stock) y `1`…`4` envían un aviso de ejemplo; después se muestra cómo avanza la incidencia hasta que se resuelve o se escala. Las trazas completas están en Jaeger: `http://localhost:16686`.
 
-El front web (`scripts/run-web.sh`, spec `web-front`) hace lo mismo desde el navegador: el menú de la izquierda lanza los comandos de `scripts/notice.sh`, el mapa muestra los agentes, servicios e integraciones con su estado y resalta el camino de cada evento nuevo, y el panel inferior sigue los eventos en vivo (emisor, destino, partición/offset de Kafka y enlace a su traza en Jaeger). Al pulsar un nodo se ven su detalle y, en los agentes, sus métricas del LLM. Solo escucha en localhost y lee la base de datos con una conexión de solo lectura.
+El front web (`scripts/run-web.sh`, spec `web-front`) hace lo mismo desde el navegador: el menú de la izquierda lanza los comandos de `scripts/notice.sh`, el mapa muestra los agentes, servicios e integraciones con su estado y resalta el camino de cada evento nuevo, y el panel inferior sigue los eventos en vivo (emisor, destino, partición/offset de Kafka y enlace a su traza en Jaeger). Al pulsar un nodo se ven su detalle y, en los agentes, sus métricas del LLM. Solo escucha en localhost y lee la base de datos con una conexión de solo lectura. El texto libre (`send --text`) está deshabilitado en el front; `WEB_FREE_TEXT=true` en `.env` lo vuelve a ofrecer.
 
 ### Scripts
 

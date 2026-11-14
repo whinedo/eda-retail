@@ -15,7 +15,7 @@ const HEALTH: Health = {
 function client(overrides: Partial<ApiClient> = {}): ApiClient {
   return {
     getHealth: vi.fn(async () => HEALTH),
-    getConfig: vi.fn(async () => ({ jaeger_ui_url: "http://jaeger.local:16686" })),
+    getConfig: vi.fn(async () => ({ jaeger_ui_url: "http://jaeger.local:16686", free_text_enabled: false })),
     getTopology: vi.fn(async () => ({ nodes: [], edges: [] })),
     getEvents: vi.fn(async () => ({ events: [], next_before_seq: null })),
     getNode: vi.fn(async () => Promise.reject(new Error("sin detalle en este test"))),
@@ -276,5 +276,24 @@ describe("Altura del panel de eventos", () => {
     // jsdom: ventana de 768 px; cabecera 56 px y separador 6 px → 768 − 56 − 6 − 160.
     expect(height()).toBe("546px");
     expect(separator).toHaveAttribute("aria-valuemax", "546");
+  });
+});
+
+describe("Texto libre según /api/config", () => {
+  it("Texto libre deshabilitado: sin free_text_enabled no aparece send --text", async () => {
+    const api = client();
+    render(<App client={api} openStream={openStream} />);
+
+    await waitFor(() => expect(api.getConfig).toHaveBeenCalled());
+    expect(screen.queryByRole("textbox", { name: "Texto libre del aviso" })).not.toBeInTheDocument();
+  });
+
+  it("con WEB_FREE_TEXT=true el backend lo habilita y aparece send --text", async () => {
+    const api = client({
+      getConfig: vi.fn(async () => ({ jaeger_ui_url: "http://jaeger.local:16686", free_text_enabled: true })),
+    });
+    render(<App client={api} openStream={openStream} />);
+
+    expect(await screen.findByRole("textbox", { name: "Texto libre del aviso" })).toBeInTheDocument();
   });
 });

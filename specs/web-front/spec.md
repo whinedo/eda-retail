@@ -46,7 +46,7 @@ La cabecera SHALL ofrecer el botón «Resetear simulación», que devuelve la pa
 
 ### Requirement: Menú de comandos
 
-El menú SHALL ofrecer los comandos de `scripts/notice.sh`: `seed`, `send`, `send --example` (delay, loss, out_of_stock, injection), `send --text` (texto libre) e `interactive --timeout N`. El backend MUST ejecutarlos invocando `scripts/notice.sh` con una lista blanca de argumentos, sin shell, y SHALL mostrar su salida (estándar y de error) en el menú a medida que se produce. Los ejemplos admitidos son los de `eda_retail.synthetic.sample.EXAMPLES`; el texto libre MUST tener entre 1 y 2000 caracteres. Una ejecución MUST terminar a los 15 minutos como mucho, para que un proceso colgado no bloquee el menú. El menú SHALL agrupar los comandos en dos secciones: «Preparación», solo con `seed`, que avisa de que no genera eventos (carga datos de referencia en `orders` y `stock`, no hechos del dominio), y «Avisos», con `send`, sus variantes e `interactive`, que ponen en marcha el flujo de eventos.
+El menú SHALL ofrecer los comandos de `scripts/notice.sh`: `seed`, `send`, `send --example` (delay, loss, out_of_stock, injection), `send --text` (texto libre) e `interactive --timeout N`. Como la PoC es un ejemplo académico, el texto libre está deshabilitado por defecto: solo se ofrece con `WEB_FREE_TEXT=true`. Deshabilitado, el menú no muestra `send --text` y el backend MUST rechazar con 422 cualquier petición con `text`, sin lanzar ningún proceso. El backend MUST ejecutarlos invocando `scripts/notice.sh` con una lista blanca de argumentos, sin shell, y SHALL mostrar su salida (estándar y de error) en el menú a medida que se produce. Los ejemplos admitidos son los de `eda_retail.synthetic.sample.EXAMPLES`; el texto libre MUST tener entre 1 y 2000 caracteres. Una ejecución MUST terminar a los 15 minutos como mucho, para que un proceso colgado no bloquee el menú. El menú SHALL agrupar los comandos en dos secciones: «Preparación», solo con `seed`, que avisa de que no genera eventos (carga datos de referencia en `orders` y `stock`, no hechos del dominio), y «Avisos», con `send`, sus variantes e `interactive`, que ponen en marcha el flujo de eventos.
 
 #### Scenario: Preparar los datos de ejemplo
 
@@ -68,9 +68,16 @@ El menú SHALL ofrecer los comandos de `scripts/notice.sh`: `seed`, `send`, `sen
 - **WHEN** el backend la recibe
 - **THEN** la rechaza con 422 y no lanza ningún proceso
 
+#### Scenario: Texto libre deshabilitado
+
+- **GIVEN** el backend sin `WEB_FREE_TEXT=true`
+- **WHEN** se abre el menú o llega `POST /api/commands` con `{"command": "send", "text": "…"}`
+- **THEN** el menú no muestra `send --text`
+- **AND** el backend responde 422 con «el texto libre está deshabilitado (WEB_FREE_TEXT)» y no lanza ningún proceso
+
 #### Scenario: Texto libre
 
-- **GIVEN** un texto escrito en `send --text`
+- **GIVEN** `WEB_FREE_TEXT=true` y un texto escrito en `send --text`
 - **WHEN** se envía
 - **THEN** el texto se pasa como un único argumento, sin interpretación del shell
 
@@ -328,7 +335,7 @@ La cabecera SHALL ofrecer un enlace a la interfaz web de Jaeger, que se abre en 
 | `GET /api/topology` | Nodos y aristas del mapa |
 | `GET /api/nodes/{id}` | Detalle y métricas de un nodo |
 | `GET /api/health` | Kafka, PostgreSQL, Ollama y procesos |
-| `GET /api/config` | Configuración para el front (`jaeger_ui_url`) |
+| `GET /api/config` | Configuración para el front (`jaeger_ui_url`, `free_text_enabled`) |
 | `POST /api/commands` | Ejecuta un comando de la lista blanca; devuelve `run_id` |
 | `GET /api/commands/{run_id}/stream` | SSE con la salida y, al final, el código de salida |
 | `POST /api/commands/{run_id}/input` | Línea para `interactive` |
