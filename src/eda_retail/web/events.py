@@ -13,6 +13,9 @@ from eda_retail.web.routing import node_condition, receivers
 
 DEFAULT_LIMIT = 100
 MAX_LIMIT = 500
+_SELECT = (
+    "SELECT seq, event_id, event_type, occurred_at, correlation_id, causation_id, producer, payload FROM events"
+)
 
 
 def list_events(
@@ -36,8 +39,7 @@ def list_events(
         where.append(condition)
         params.extend(node_params)
     sql = (
-        "SELECT seq, event_id, event_type, occurred_at, correlation_id, causation_id, producer, payload"
-        " FROM events"
+        _SELECT
         + (" WHERE " + " AND ".join(where) if where else "")
         + " ORDER BY seq DESC LIMIT %s"
     )
@@ -48,6 +50,16 @@ def list_events(
         "events": [_row(r) for r in rows],
         "next_before_seq": rows[-1]["seq"] if more else None,
     }
+
+
+def events_after(conn: psycopg.Connection, after_seq: int, limit: int = MAX_LIMIT) -> list[dict[str, Any]]:
+    """Eventos con `seq` mayor que `after_seq`, en orden de `seq` (stream en vivo)."""
+    rows = conn.execute(f"{_SELECT} WHERE seq > %s ORDER BY seq LIMIT %s", (after_seq, limit)).fetchall()
+    return [_row(r) for r in rows]
+
+
+def last_seq(conn: psycopg.Connection) -> int:
+    return conn.execute("SELECT coalesce(max(seq), 0) AS seq FROM events").fetchone()["seq"]
 
 
 def _row(r: dict[str, Any]) -> dict[str, Any]:
