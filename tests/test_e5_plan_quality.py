@@ -31,7 +31,7 @@ def _wrong_on(cause: str, seed: int, incidents: int) -> FakeLlmClient:
 
 def test_planner_evaluation():
     """Evaluación del planificador"""
-    report = run_e5(seed=4, incidents=40, repetitions=1, llm=lambda data: _wrong_on("wrong_address", 4, 40))
+    report = run_e5(seed=4, incidents=40, repetitions=1, llm=lambda data, n: _wrong_on("wrong_address", 4, 40))
     run = report.runs[0]
     assert set(run["by_cause"]) == {"delay", "loss", "damage", "wrong_address", "strike", "unknown"}
     assert run["by_cause"]["wrong_address"] == 0.0 and run["by_cause"]["loss"] == 1.0
@@ -45,7 +45,7 @@ def test_planner_evaluation():
 def test_quality_gate():
     """Puerta de calidad"""
     report = run_e5(seed=4, incidents=40, repetitions=1, threshold=0.95,
-                    llm=lambda data: _wrong_on("loss", 4, 40))
+                    llm=lambda data, n: _wrong_on("loss", 4, 40))
     assert report.metrics["accuracy_mean"] < 0.95
     assert report.hypothesis == {"H5": False}
     assert run_e5(seed=4, incidents=12, repetitions=1).hypothesis == {"H5": True}  # oráculo: acierto total
@@ -53,7 +53,12 @@ def test_quality_gate():
 
 def test_three_repetitions_of_e5():
     """Tres repeticiones de E5"""
-    report = run_e5(seed=4, incidents=12, repetitions=3)
-    assert [r["repetition"] for r in report.runs] == [1, 2, 3]
+    seen = []
+
+    def factory(data, n):
+        seen.append(n)
+        return Oracle(data).client()
+    report = run_e5(seed=4, incidents=12, repetitions=3, llm=factory)
+    assert seen == [1, 2, 3] and [r["repetition"] for r in report.runs] == [1, 2, 3]
     assert all("accuracy" in r for r in report.runs)
     assert report.metrics["accuracy_range"] == [1.0, 1.0] and report.config["repetitions"] == 3
