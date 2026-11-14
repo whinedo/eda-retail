@@ -32,6 +32,15 @@ jobs:
           uv python install 3.12
           uv sync --locked
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Instalar dependencias del front
+        run: npm ci --prefix web
+
       - name: Levantar PostgreSQL y Kafka
         run: docker compose up -d --wait postgres kafka
 
