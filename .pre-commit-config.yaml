@@ -26,3 +26,10 @@ repos:
         language: system
         types: [python]
         pass_filenames: false
+
+      - id: web
+        name: web (vitest + tsc)
+        entry: bash -c 'cd web && npm test && npm run typecheck'
+        language: system
+        files: ^web/
+        pass_filenames: false

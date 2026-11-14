@@ -1,7 +1,7 @@
 # Feature: web-front (FastAPI + React/Vite)
 
 Objective: local web UI with a command menu (`scripts/notice.sh`), a systems map and a horizontally scrollable events panel, per `specs/web-front/spec.md` and the mockups in `docs/front/`.
-Branch: `feat/web-front` · Delivery: ask-on-risk · Runner: `uv run pytest` (backend), `npm test` (front).
+Branch: `feat/web-front` · Delivery: ask-on-risk · Runner: `uv run pytest` (backend), `npm test` and `npm run typecheck` in `web/` (front).
 
 ## Specs
 
@@ -26,8 +26,8 @@ Branch: `feat/web-front` · Delivery: ask-on-risk · Runner: `uv run pytest` (ba
 | T2 | S7, S8 events API (`/api/events`, sender/receiver from catalogue, filters, pagination) | inline | done (RED ModuleNotFoundError eda_retail.web.routing → GREEN unit 113 passed; integration green in CI) | feat(web-front): events API (PR #19) |
 | T3 | S6 SSE stream by `seq` with `Last-Event-ID` | inline | done (RED ModuleNotFoundError eda_retail.web.stream → GREEN unit 120 passed; integration green in CI) | feat(web-front): live events stream (PR #20) |
 | T4 | S4, S10 command runner (whitelist, single run, streamed output, pty for `interactive`) | inline | done (RED TypeError create_app(notice_script) + Host 200≠403 → GREEN unit 147 passed, command tests stable over 5 runs; integration green in CI; judgment-day APPROVED, 0 critical) | feat(web-front): command runner (PR #21) |
-| T5 | S5, S9 topology, `/api/health` (pgrep, Kafka, PostgreSQL, Ollama) and node detail with LLM metrics | inline | in review (RED ModuleNotFoundError eda_retail.web.health → GREEN unit 160 passed; integration node tests run in CI) | feat(web-front): topology, health and node detail |
-| T6 | S2, S3 front skeleton `web/` (Vite + React + TS), layout, API client | | pending | |
+| T5 | S5, S9 topology, `/api/health` (pgrep, Kafka, PostgreSQL, Ollama) and node detail with LLM metrics | inline | done (RED ModuleNotFoundError eda_retail.web.health → GREEN unit 160 passed; integration green in CI) | feat(web-front): topology, health and node detail (PR #22) |
+| T6 | S2, S3 front skeleton `web/` (Vite + React + TS), layout, API client | inline | in review (RED unresolved ./App and ./client → GREEN vitest 10 passed, tsc clean, build ok; layout checked in the browser without backend) | feat(web-front): front scaffolding |
 | T7 | S4, S10 command menu and output area | | pending | |
 | T8 | S3, S5 systems map component (nodes, edges, status, highlight) | | pending | |
 | T9 | S6, S9 events panel and node detail drawer with filter | | pending | |
@@ -49,3 +49,4 @@ Order: T1 → T2 → T3 → T4 → T5 (backend), then T6 → T7 → T8 → T9; T
 - L7 (2026-11-14) T3: spec "Actualización en vivo" extended: `GET /api/events/stream`, `after_seq` for the first connection (EventSource cannot send `Last-Event-ID` on the first request), `Last-Event-ID` wins, no position starts after the last `seq`, poll at least every 0.5 s. Stream reads `events` by `seq` through its own read-only connection; `create_app(stream_max_polls=)` bounds the stream in tests. No keep-alive comments yet.
 - L8 (2026-11-14) T4: spec extended: `Host` header must be localhost/127.0.0.1/[::1] (DNS rebinding, closes the L4 follow-up), runs capped at 15 min (process group killed: one run at a time means a hung process would block the menu), free text 1..2000 chars, input lines up to 200 chars and 409 for non-interactive or finished runs. Free text goes as one `--text=<text>` argument so argparse never reads it as an option. Tests use a fake `notice.sh` in `tmp_path`; the real script was not run. Only the last run is kept in memory.
 - L9 (2026-11-14) judgment-day on PR #21: APPROVED (0 critical); warnings W1–W3 confirmed by both judges, merged as is; ledger in the session notes folder, follow-up T13. T5: spec adds the insurer (`claims`) to the simulated services (executors/services.py), node ids equal event sender/receiver names (`intake` for eda-notice), `/api/health` checks with a 2 s cap each (moved from open decisions to decisions), node detail with `writer` metrics for notify_customer and file_claim. `/api/health` not tried against the real services (it would call Ollama during E6).
+- L10 (2026-11-14) T6: `web/` with React 19, Vite 8, Vitest 5, TypeScript 7 (latest at install), fonts from `@fontsource` (no external requests). Container-presentational: `App` + `useHealth` poll `/api/health` every 5 s, `Header` renders the pills. Vite proxies `/api` to 127.0.0.1:8000 keeping Host `localhost:5173` (allowed by the guard). New pre-commit hook `web` (vitest + tsc) and CI installs Node 24 + `npm ci --prefix web`. User: "no uses andamiaje di scaffolding".
