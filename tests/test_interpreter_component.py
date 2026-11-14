@@ -13,7 +13,7 @@ from eda_retail.infra.commands import CommandEnvelope
 from eda_retail.interpreter import handler
 from eda_retail.llm.fake import FakeLlmClient
 from eda_retail.llm.generation import BUDGET_EXHAUSTED, Budget
-from eda_retail.queries.cost_per_incident import IncidentCost
+from eda_retail.queries.cost_per_incident import IncidentCost, budget_from_cost
 
 DELAY = {"order_ids": ["P-1", "P-9"], "cause": "delay", "estimated_delay_hours": 24, "severity": "low"}
 
@@ -36,7 +36,7 @@ def _preparer(llm, *, interpreted=False, known=("P-1",), budget=None):
     return handler.NoticePreparer(
         llm, rules,
         interpreted=lambda notice: interpreted,
-        budget=lambda incident: budget or handler.budget_from_cost(None, rules),
+        budget=lambda incident: budget or budget_from_cost(None, rules),
         known_orders=lambda order_ids: [o for o in order_ids if o in known],
     )
 
@@ -51,11 +51,11 @@ def test_pending_notice_timeout_has_a_default_and_reads_the_environment(monkeypa
 def test_budget_comes_from_the_cost_projection_and_no_row_means_nothing_spent():
     """Presupuesto por incidencia: se consulta cost_per_incident; sin fila no se ha gastado nada"""
     rules = BusinessRules()
-    assert handler.budget_from_cost(None, rules) == Budget(0, 0, rules.max_tokens_per_incident,
+    assert budget_from_cost(None, rules) == Budget(0, 0, rules.max_tokens_per_incident,
                                                            rules.max_llm_calls_per_incident)
     cost = IncidentCost(incident_id="I-1", llm_calls=2, tokens_in=100, tokens_out=50, claims=0, reissues=0,
                         refunds_amount=Decimal(0), llm_cost=Decimal(0), effects_cost=Decimal(0), applied={})
-    assert handler.budget_from_cost(cost, rules) == Budget(150, 2, rules.max_tokens_per_incident,
+    assert budget_from_cost(cost, rules) == Budget(150, 2, rules.max_tokens_per_incident,
                                                            rules.max_llm_calls_per_incident)
 
 

@@ -30,12 +30,11 @@ from eda_retail.interpreter.handler import (
     SCHEMA,
     NoticePreparer,
     OpenIncident,
-    budget_from_cost,
     open_incident,
     shipment_delayed,
 )
 from eda_retail.llm.generation import LlmClient
-from eda_retail.queries.cost_per_incident import Prices, get_incident_cost
+from eda_retail.queries.cost_per_incident import Prices, budget_from_cost, get_incident_cost
 from eda_retail.queries.orders import get_orders
 
 _PARKED = """

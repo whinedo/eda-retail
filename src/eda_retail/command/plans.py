@@ -16,6 +16,7 @@ La cancelación de pasos no mantenidos y las compensaciones las hace la orquesta
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
@@ -36,9 +37,12 @@ def validate_plan(
     *,
     external_ids: set[str],
     completed: list[dict[str, Any]] | None = None,
+    order_amounts: Mapping[str, Decimal] | None = None,
 ) -> list[PlanStep]:
     """Valida los pasos; `external_ids` son pasos ya completados de los que se puede depender
-    y `completed` sus filas (acción y params), para las reglas que dependen de lo ya hecho."""
+    y `completed` sus filas (acción y params), para las reglas que dependen de lo ya hecho.
+    `order_amounts` son los importes de los pedidos en `view_orders`: con ellos, un reembolso
+    tampoco puede superar el importe de su pedido (el planificador, design.md §4)."""
     if not raw_steps:
         raise Rejected("invalid_plan", "el plan no tiene pasos")
     steps: list[PlanStep] = []
@@ -68,7 +72,7 @@ def validate_plan(
 
     for s in steps:
         if s.action == Action.ISSUE_REFUND:
-            _check_refund(ctx, s)
+            _check_refund(ctx, s, order_amounts)
     _reject_refund_and_reissue(steps, completed or [])
     return steps
 
@@ -105,7 +109,7 @@ def _reject_cycles(steps: list[PlanStep]) -> None:
         visit(node)
 
 
-def _check_refund(ctx: Context, s: PlanStep) -> None:
+def _check_refund(ctx: Context, s: PlanStep, order_amounts: Mapping[str, Decimal] | None) -> None:
     try:
         amount = Decimal(str(s.params["amount"]))
     except (KeyError, InvalidOperation) as exc:
@@ -114,6 +118,13 @@ def _check_refund(ctx: Context, s: PlanStep) -> None:
         raise Rejected("invalid_plan", f"{s.step_id}: amount debe ser un número positivo")
     if amount > ctx.rules.max_refund_amount:
         raise Rejected("refund_limit", f"{s.step_id}: {amount} > {ctx.rules.max_refund_amount}")
+    if order_amounts is None:
+        return
+    order_id = str(s.params.get("order_id"))
+    if order_id not in order_amounts:
+        raise Rejected("refund_limit", f"{s.step_id}: el pedido {order_id} no tiene importe en view_orders")
+    if amount > order_amounts[order_id]:
+        raise Rejected("refund_limit", f"{s.step_id}: {amount} > importe del pedido {order_amounts[order_id]}")
 
 
 def _insert_step(ctx: Context, s: PlanStep, origin_version: int) -> None:
