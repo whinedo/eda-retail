@@ -15,7 +15,7 @@ EXPECTED_TYPES = {
     "CarrierNoticeReceived", "ShipmentDelayed", "PlanCreated", "PlanRevised", "StepRequested",
     "StepCompleted", "StepFailed", "CustomerNotified", "ClaimFiled", "StockReserved",
     "StockReleased", "ShipmentReissued", "RefundIssued", "IncidentResolved", "IncidentEscalated",
-    "LlmCallRecorded", "StepCancelled",
+    "LlmCallRecorded", "StepCancelled", "OrderRegistered",
 }
 VERSION_2 = {"StepCompleted", "StepFailed"}
 
@@ -36,6 +36,19 @@ def test_catalog_has_every_event_of_readme():
     assert set(CATALOG) == EXPECTED_TYPES
     assert {name for name, spec in CATALOG.items() if spec.version == 2} == VERSION_2
     assert all(spec.version == 1 for name, spec in CATALOG.items() if name not in VERSION_2)
+
+
+def test_order_registered_carries_a_reference_not_personal_data():
+    """OrderRegistered lleva pedido, importe y customer_ref (alimenta view_orders), sin datos personales"""
+    payload = {"order_id": "P-1002", "customer_ref": "C-77", "amount": "49.90"}
+    ev = build_event("OrderRegistered", payload, correlation_id="P-1002", causation_id=None, producer="inventory")
+    assert ev.payload == {"order_id": "P-1002", "customer_ref": "C-77", "amount": "49.90"}
+    with pytest.raises(PayloadError):
+        build_event("OrderRegistered", {**payload, "amount": "0"}, correlation_id="P-1002", causation_id=None,
+                    producer="inventory")
+    with pytest.raises(PersonalDataError):
+        build_event("OrderRegistered", {**payload, "customer_ref": "ana@example.com"}, correlation_id="P-1002",
+                    causation_id=None, producer="inventory")
 
 
 def test_build_event_validates_payload_and_sets_envelope():

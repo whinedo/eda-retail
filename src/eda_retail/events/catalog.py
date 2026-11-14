@@ -148,6 +148,14 @@ class RefundIssued(_Payload):
     refund_id: str
 
 
+class OrderRegistered(_Payload):
+    """Pedido registrado por `inventory`; alimenta la proyección `view_orders` (spec cqrs-views)."""
+
+    order_id: str
+    customer_ref: str
+    amount: Decimal = Field(gt=0)
+
+
 class IncidentResolved(_Payload):
     incident_id: str
     outcome: Literal["resolved", "refunded"]
@@ -185,7 +193,7 @@ CATALOG: dict[str, EventSpec] = {
         CarrierNoticeReceived, ShipmentDelayed, PlanCreated, PlanRevised, StepRequested,
         StepCompleted, StepFailed, StepCancelled, CustomerNotified, ClaimFiled, StockReserved,
         StockReleased, ShipmentReissued, RefundIssued, IncidentResolved, IncidentEscalated,
-        LlmCallRecorded,
+        LlmCallRecorded, OrderRegistered,
     )
 }
 
