@@ -1,4 +1,5 @@
 import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import App from "./App";
 import type { ApiClient, Health } from "./api/client";
@@ -46,5 +47,18 @@ describe("Distribución de la pantalla", () => {
     render(<App client={client({ getHealth: vi.fn(async () => Promise.reject(new Error("boom"))) })} />);
 
     expect(await screen.findByText("Backend: sin conexión")).toBeInTheDocument();
+  });
+
+  it("al pulsar un nodo del mapa queda seleccionado", async () => {
+    const topology = {
+      nodes: [{ id: "relay", label: "Relay", kind: "code" as const, description: "", monitored: true }],
+      edges: [],
+    };
+    render(<App client={client({ getTopology: vi.fn(async () => topology) })} />);
+
+    const relay = await screen.findByRole("button", { name: "Relay" });
+    await userEvent.setup().click(relay);
+
+    expect(relay).toHaveAttribute("aria-pressed", "true");
   });
 });
