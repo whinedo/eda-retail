@@ -30,6 +30,7 @@ def _script(tmp_path: Path, body: str) -> Path:
 
 
 def _client(script: Path, **kwargs) -> TestClient:
+    kwargs.setdefault("interactive", True)  # la mayoría de tests prueban interactive habilitado
     return TestClient(create_app(notice_script=script, **kwargs), base_url="http://localhost")
 
 
@@ -249,7 +250,9 @@ def test_send_line_does_not_hold_the_run_lock(tmp_path: Path, monkeypatch: pytes
 
     from eda_retail.web import commands
 
-    app = create_app(notice_script=_script(tmp_path, "#!/usr/bin/env bash\nread -r line\necho \"got:$line\"\n"))
+    app = create_app(
+        notice_script=_script(tmp_path, "#!/usr/bin/env bash\nread -r line\necho \"got:$line\"\n"), interactive=True
+    )
     client = TestClient(app, base_url="http://localhost")
     run_id = client.post("/api/commands", json={"command": "interactive", "timeout": 30}).json()["run_id"]
     run = app.state.runner.get(run_id)
@@ -300,7 +303,7 @@ def test_backend_shutdown_kills_the_running_command(tmp_path: Path):
     pid_file = tmp_path / "child.pid"
     script = _script(tmp_path, f"#!/usr/bin/env bash\nsleep 60 &\necho $! > '{pid_file}'\nwait\n")
 
-    with TestClient(create_app(notice_script=script), base_url="http://localhost") as client:
+    with TestClient(create_app(notice_script=script, interactive=True), base_url="http://localhost") as client:
         assert client.post("/api/commands", json={"command": "seed"}).status_code == 202
         _wait_until(pid_file.exists)
         _wait_until(lambda: pid_file.read_text().strip() != "")
@@ -320,7 +323,7 @@ def test_output_follower_failure_still_ends_the_run(tmp_path: Path, monkeypatch:
     script = _script(tmp_path, "#!/usr/bin/env bash\necho start\nsleep 30\n")
     monkeypatch.setattr(commands, "_read", broken_read)
     # Con `with`, la parada del backend termina también la segunda ejecución del final.
-    with TestClient(create_app(notice_script=script), base_url="http://localhost") as client:
+    with TestClient(create_app(notice_script=script, interactive=True), base_url="http://localhost") as client:
         run_id = client.post("/api/commands", json={"command": "seed"}).json()["run_id"]
 
         _, code = _output(client, run_id)
@@ -390,3 +393,28 @@ def test_interactive_keeps_free_text_when_enabled(tmp_path: Path):
 
     assert run["argv"] == ["scripts/notice.sh", "interactive", "--timeout", "30"]
     assert _output(client, run["run_id"])[1] == 0
+
+
+def test_interactive_disabled_by_default(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """Interactive deshabilitado: 422 y ningún proceso, y /api/config lo dice"""
+    monkeypatch.delenv("WEB_INTERACTIVE", raising=False)
+    client = _client(_script(tmp_path, f"#!/usr/bin/env bash\ntouch {tmp_path / 'launched'}\n"), interactive=None)
+
+    response = client.post("/api/commands", json={"command": "interactive", "timeout": 60})
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == "el comando interactive está deshabilitado (WEB_INTERACTIVE)"
+    assert not (tmp_path / "launched").exists()
+    assert client.get("/api/config").json()["interactive_enabled"] is False
+    assert client.post("/api/commands", json={"command": "seed"}).status_code == 202
+
+
+@pytest.mark.parametrize(("value", "enabled"), [("true", True), ("1", True), ("false", False), ("", False)])
+def test_interactive_enabled_by_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, value: str, enabled: bool):
+    """WEB_INTERACTIVE=true vuelve a habilitar interactive"""
+    monkeypatch.setenv("WEB_INTERACTIVE", value)
+    client = _client(_script(tmp_path, ECHO_ARGS), interactive=None)
+
+    assert client.get("/api/config").json()["interactive_enabled"] is enabled
+    response = client.post("/api/commands", json={"command": "interactive", "timeout": 5})
+    assert response.status_code == (202 if enabled else 422)

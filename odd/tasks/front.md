@@ -22,6 +22,7 @@ Branch: `feat/web-front` · Delivery: ask-on-risk · Runner: `uv run pytest` (ba
 - S15 User (L23): "la tabla de eventos debe tener tamaño vertical variable. Si se quiere centrar la vista en las comunicaciones del mapa de red, se debe poder hacer más pequeña (sólo en vertical)" (spec: Panel de eventos intercambiados, "Reducir el panel para ver el mapa").
 - S16 User (L24): "como es un ejemplo académico, deshabilita el comando de texto libre (lo podremos volver a habilitar en el futuro)" (spec: Menú de comandos, "Texto libre deshabilitado").
 - S17 User (L25), after asking why `out_of_stock` sends a notice like `loss`: "sí, añade una descripción de lo que hace el comando" (spec: Menú de comandos, "Descripción de los ejemplos").
+- S18 User (L27): "quita interactive timeout (deshabilítala) y la habilitaremos más adelante. Podría ser un valor de configuración en .env porque no se cambiará muy a menudo"; asked, the user chose to disable the whole command (spec: Menú de comandos, "Interactive deshabilitado").
 
 ## Tasks
 
@@ -45,7 +46,8 @@ Branch: `feat/web-front` · Delivery: ask-on-risk · Runner: `uv run pytest` (ba
 | T16 | S15 events panel height adjustable (vertical only) with a separator | inline | done (PR #35) | 41e2191 |
 | T17 | S16 free text disabled behind `WEB_FREE_TEXT` (backend 422 + menu hides `send --text`) | inline | done (PR #36) | d944127 |
 | T18 | S17 each `send --example` example says what it triggers | inline | done (PR #37) | 9032571 |
-| T19 | S16 no free text inside `interactive` either (`--no-free-text`) | inline | in review (RED 4 pytest → GREEN 196) | feat(notice): no free text in interactive |
+| T19 | S16 no free text inside `interactive` either (`--no-free-text`) | inline | done (PR #38) | fc098e9 |
+| T20 | S18 `interactive` disabled behind `WEB_INTERACTIVE` (backend 422 + menu hides it) | inline | in review (RED 39 pytest + 2 vitest → GREEN 201 / 80) | feat(web-front): disable interactive |
 
 Order: T1 → T2 → T3 → T4 → T5 (backend), then T6 → T7 → T8 → T9; T10 can run any time; T12 after T9; T11 last. Each task goes test first (RED, then green) as in the other task files.
 
@@ -77,3 +79,4 @@ Order: T1 → T2 → T3 → T4 → T5 (backend), then T6 → T7 → T8 → T9; T
 - L24 (2026-11-14) T17 (branched from the T16 tip). `WEB_FREE_TEXT` (`true`/`1`, default off) decides it in the backend: `POST /api/commands` with `text` answers 422 «el texto libre está deshabilitado (WEB_FREE_TEXT)» and launches nothing; `/api/config` adds `free_text_enabled`, and the menu shows `send --text` only when it is true (hidden while config loads). Not covered: `interactive` still offers its own `t) texto libre` option inside `eda-notice`.
 - L25 (2026-11-14) T18 (branched from the T17 tip; #34 merged meanwhile). `EXAMPLE_INFO` in `CommandMenu` holds one line per example, shown as a list under the chips and as each chip's `title`. Both `loss` and `out_of_stock` are losses; P-1004 (`SKU-SOFA`) has 0 stock, so its reservation fails and the plan is revised.
 - L26 (2026-11-14) User: "deshabilita también el texto libre en interactive". `eda-notice interactive --no-free-text` drops `t) texto libre` from the menu and treats `t` as an invalid option; the web backend adds the flag whenever `WEB_FREE_TEXT` is off (`CommandRequest.args(free_text)`). Running `eda-notice` or `scripts/notice.sh` by hand in a terminal keeps free text unless the flag is passed.
+- L27 (2026-11-14) T20 (branched from the T19 tip; #38 merged meanwhile). Same pattern as `WEB_FREE_TEXT`: `WEB_INTERACTIVE` (`true`/`1`, default off) makes `POST /api/commands` with `interactive` answer 422 «el comando interactive está deshabilitado (WEB_INTERACTIVE)»; `/api/config` adds `interactive_enabled`; the menu hides the card and its timeout. The 39 RED backend tests were the existing interactive tests, which now pass `interactive=True`.

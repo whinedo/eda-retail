@@ -15,7 +15,7 @@ const HEALTH: Health = {
 function client(overrides: Partial<ApiClient> = {}): ApiClient {
   return {
     getHealth: vi.fn(async () => HEALTH),
-    getConfig: vi.fn(async () => ({ jaeger_ui_url: "http://jaeger.local:16686", free_text_enabled: false })),
+    getConfig: vi.fn(async () => ({ jaeger_ui_url: "http://jaeger.local:16686", free_text_enabled: false, interactive_enabled: false })),
     getTopology: vi.fn(async () => ({ nodes: [], edges: [] })),
     getEvents: vi.fn(async () => ({ events: [], next_before_seq: null })),
     getNode: vi.fn(async () => Promise.reject(new Error("sin detalle en este test"))),
@@ -290,10 +290,29 @@ describe("Texto libre según /api/config", () => {
 
   it("con WEB_FREE_TEXT=true el backend lo habilita y aparece send --text", async () => {
     const api = client({
-      getConfig: vi.fn(async () => ({ jaeger_ui_url: "http://jaeger.local:16686", free_text_enabled: true })),
+      getConfig: vi.fn(async () => ({ jaeger_ui_url: "http://jaeger.local:16686", free_text_enabled: true, interactive_enabled: false })),
     });
     render(<App client={api} openStream={openStream} />);
 
     expect(await screen.findByRole("textbox", { name: "Texto libre del aviso" })).toBeInTheDocument();
+  });
+});
+
+describe("Interactive según /api/config", () => {
+  it("Interactive deshabilitado: sin interactive_enabled no aparece interactive", async () => {
+    const api = client();
+    render(<App client={api} openStream={openStream} />);
+
+    await waitFor(() => expect(api.getConfig).toHaveBeenCalled());
+    expect(screen.queryByRole("button", { name: /^interactive/ })).not.toBeInTheDocument();
+  });
+
+  it("con WEB_INTERACTIVE=true el backend lo habilita y aparece interactive", async () => {
+    const api = client({
+      getConfig: vi.fn(async () => ({ jaeger_ui_url: "", free_text_enabled: false, interactive_enabled: true })),
+    });
+    render(<App client={api} openStream={openStream} />);
+
+    expect(await screen.findByRole("button", { name: /^interactive/ })).toBeInTheDocument();
   });
 });

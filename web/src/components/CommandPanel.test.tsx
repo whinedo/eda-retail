@@ -32,7 +32,7 @@ const ARGV: Record<string, string[]> = {
   send: ["scripts/notice.sh", "send"],
 };
 
-function setup(runCommand?: ApiClient["runCommand"], freeText = false) {
+function setup(runCommand?: ApiClient["runCommand"], freeText = false, interactive = true) {
   const client = {
     runCommand:
       runCommand ??
@@ -50,7 +50,7 @@ function setup(runCommand?: ApiClient["runCommand"], freeText = false) {
     sendInput: vi.fn(async () => undefined),
   } as unknown as ApiClient;
   const openStream = vi.fn((url: string) => new FakeStream(url));
-  render(<CommandPanel client={client} openStream={openStream} freeText={freeText} />);
+  render(<CommandPanel client={client} openStream={openStream} freeText={freeText} interactive={interactive} />);
   return { client, openStream, user: userEvent.setup() };
 }
 
@@ -120,6 +120,13 @@ describe("Menú de comandos", () => {
 
     expect(client.runCommand).toHaveBeenNthCalledWith(1, { command: "seed" });
     expect(client.runCommand).toHaveBeenNthCalledWith(2, { command: "send" });
+  });
+
+  it("Interactive deshabilitado: el menú no muestra interactive ni su timeout", () => {
+    setup(undefined, false, false);
+
+    expect(screen.queryByRole("button", { name: /^interactive/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("spinbutton", { name: "timeout" })).not.toBeInTheDocument();
   });
 
   it("Texto libre deshabilitado: el menú no muestra send --text", () => {

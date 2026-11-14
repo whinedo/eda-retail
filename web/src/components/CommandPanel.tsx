@@ -10,12 +10,14 @@ export function CommandPanel({
   client,
   openStream = openEventSource,
   freeText = false,
+  interactive = false,
   resetKey = 0,
   onRunningChange,
 }: {
   client: ApiClient;
   openStream?: OpenStream;
   freeText?: boolean;
+  interactive?: boolean;
   resetKey?: number;
   onRunningChange?: (running: boolean) => void;
 }) {
@@ -30,5 +32,5 @@ export function CommandPanel({
     onRunningChange?.(running);
   }, [running, onRunningChange]);
 
-  return <CommandMenu run={run} freeText={freeText} onRun={(request) => void start(request)} onSendLine={(line) => void sendLine(line)} />;
+  return <CommandMenu run={run} freeText={freeText} interactive={interactive} onRun={(request) => void start(request)} onSendLine={(line) => void sendLine(line)} />;
 }

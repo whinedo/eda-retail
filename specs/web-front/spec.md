@@ -46,7 +46,7 @@ La cabecera SHALL ofrecer el botón «Resetear simulación», que devuelve la pa
 
 ### Requirement: Menú de comandos
 
-El menú SHALL ofrecer los comandos de `scripts/notice.sh`: `seed`, `send`, `send --example` (delay, loss, out_of_stock, injection), `send --text` (texto libre) e `interactive --timeout N`. Como la PoC es un ejemplo académico, el texto libre está deshabilitado por defecto: solo se ofrece con `WEB_FREE_TEXT=true`. Deshabilitado, el menú no muestra `send --text` y el backend MUST rechazar con 422 cualquier petición con `text`, sin lanzar ningún proceso. Tampoco se ofrece dentro de `interactive`: el backend MUST lanzarlo con `--no-free-text`, que quita la opción `t) texto libre` de su menú. El backend MUST ejecutarlos invocando `scripts/notice.sh` con una lista blanca de argumentos, sin shell, y SHALL mostrar su salida (estándar y de error) en el menú a medida que se produce. Los ejemplos admitidos son los de `eda_retail.synthetic.sample.EXAMPLES`, y cada uno SHALL llevar en el menú una descripción corta de lo que provoca, porque los avisos de `loss` y `out_of_stock` se parecen y lo que cambia es el camino del plan; el texto libre MUST tener entre 1 y 2000 caracteres. Una ejecución MUST terminar a los 15 minutos como mucho, para que un proceso colgado no bloquee el menú. El menú SHALL agrupar los comandos en dos secciones: «Preparación», solo con `seed`, que avisa de que no genera eventos (carga datos de referencia en `orders` y `stock`, no hechos del dominio), y «Avisos», con `send`, sus variantes e `interactive`, que ponen en marcha el flujo de eventos.
+El menú SHALL ofrecer los comandos de `scripts/notice.sh`: `seed`, `send`, `send --example` (delay, loss, out_of_stock, injection), `send --text` (texto libre) e `interactive --timeout N`. Como la PoC es un ejemplo académico, `interactive` está deshabilitado por defecto: solo se ofrece con `WEB_INTERACTIVE=true`; deshabilitado, el menú no lo muestra y el backend MUST rechazar con 422 cualquier petición `interactive`, sin lanzar ningún proceso. Por lo mismo, el texto libre está deshabilitado por defecto: solo se ofrece con `WEB_FREE_TEXT=true`. Deshabilitado, el menú no muestra `send --text` y el backend MUST rechazar con 422 cualquier petición con `text`, sin lanzar ningún proceso. Tampoco se ofrece dentro de `interactive`: el backend MUST lanzarlo con `--no-free-text`, que quita la opción `t) texto libre` de su menú. El backend MUST ejecutarlos invocando `scripts/notice.sh` con una lista blanca de argumentos, sin shell, y SHALL mostrar su salida (estándar y de error) en el menú a medida que se produce. Los ejemplos admitidos son los de `eda_retail.synthetic.sample.EXAMPLES`, y cada uno SHALL llevar en el menú una descripción corta de lo que provoca, porque los avisos de `loss` y `out_of_stock` se parecen y lo que cambia es el camino del plan; el texto libre MUST tener entre 1 y 2000 caracteres. Una ejecución MUST terminar a los 15 minutos como mucho, para que un proceso colgado no bloquee el menú. El menú SHALL agrupar los comandos en dos secciones: «Preparación», solo con `seed`, que avisa de que no genera eventos (carga datos de referencia en `orders` y `stock`, no hechos del dominio), y «Avisos», con `send`, sus variantes e `interactive`, que ponen en marcha el flujo de eventos.
 
 #### Scenario: Preparar los datos de ejemplo
 
@@ -73,6 +73,13 @@ El menú SHALL ofrecer los comandos de `scripts/notice.sh`: `seed`, `send`, `sen
 - **GIVEN** una petición de ejecución con un subcomando o ejemplo no previsto
 - **WHEN** el backend la recibe
 - **THEN** la rechaza con 422 y no lanza ningún proceso
+
+#### Scenario: Interactive deshabilitado
+
+- **GIVEN** el backend sin `WEB_INTERACTIVE=true`
+- **WHEN** se abre el menú o llega `POST /api/commands` con `{"command": "interactive", "timeout": 60}`
+- **THEN** el menú no muestra `interactive`
+- **AND** el backend responde 422 con «el comando interactive está deshabilitado (WEB_INTERACTIVE)» y no lanza ningún proceso
 
 #### Scenario: Texto libre deshabilitado
 
@@ -269,7 +276,7 @@ El backend SHALL leer los eventos de la tabla `events` y el estado de las incide
 
 ### Requirement: Comando interactivo
 
-`interactive --timeout N` SHALL ejecutarse con una pseudoterminal y el front SHALL ofrecer una entrada de texto para enviar líneas a su entrada estándar mientras dure la sesión. N MUST estar entre 1 y 600. Cada línea MUST tener como mucho 200 caracteres y ningún salto de línea; enviar una línea a una ejecución que no es interactiva o que ya terminó se rechaza con 409. Enviar una línea MUST NOT bloquear la salida del proceso: si su entrada está llena porque no la lee, la línea se rechaza con 409 y la salida sigue llegando. Si el seguimiento de la salida falla, la ejecución MUST terminar con un código de salida para no dejar el menú ocupado.
+Con `WEB_INTERACTIVE=true`, `interactive --timeout N` SHALL ejecutarse con una pseudoterminal y el front SHALL ofrecer una entrada de texto para enviar líneas a su entrada estándar mientras dure la sesión. N MUST estar entre 1 y 600. Cada línea MUST tener como mucho 200 caracteres y ningún salto de línea; enviar una línea a una ejecución que no es interactiva o que ya terminó se rechaza con 409. Enviar una línea MUST NOT bloquear la salida del proceso: si su entrada está llena porque no la lee, la línea se rechaza con 409 y la salida sigue llegando. Si el seguimiento de la salida falla, la ejecución MUST terminar con un código de salida para no dejar el menú ocupado.
 
 #### Scenario: Responder al menú
 
@@ -342,7 +349,7 @@ La cabecera SHALL ofrecer un enlace a la interfaz web de Jaeger, que se abre en 
 | `GET /api/topology` | Nodos y aristas del mapa |
 | `GET /api/nodes/{id}` | Detalle y métricas de un nodo |
 | `GET /api/health` | Kafka, PostgreSQL, Ollama y procesos |
-| `GET /api/config` | Configuración para el front (`jaeger_ui_url`, `free_text_enabled`) |
+| `GET /api/config` | Configuración para el front (`jaeger_ui_url`, `free_text_enabled`, `interactive_enabled`) |
 | `POST /api/commands` | Ejecuta un comando de la lista blanca; devuelve `run_id` |
 | `GET /api/commands/{run_id}/stream` | SSE con la salida y, al final, el código de salida |
 | `POST /api/commands/{run_id}/input` | Línea para `interactive` |
