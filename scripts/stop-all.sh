@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Para todos los procesos de la PoC (los de scripts/run-agents.sh y cualquier eda-* suelto)
-# y después los contenedores de docker compose.
+# Para todos los procesos de la PoC (los de scripts/start-all.sh, run-agents.sh y run-web.sh, el
+# front con su servidor de Vite y cualquier eda-* suelto) y después los contenedores de docker compose.
 #
 # Uso: scripts/stop-all.sh [--dry-run] [--keep-docker]
 #
@@ -24,9 +24,9 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-# run-agents.sh y cada proceso de la PoC: tanto `uv run eda-…` como el python que lanza.
+# start-all.sh, run-agents.sh, run-web.sh, el Vite del front y cada proceso de la PoC: tanto `uv run eda-…` como el python que lanza.
 # Todos reciben SIGTERM a la vez; los que sigan vivos a los 10 s, SIGKILL.
-PATTERN='scripts/run-agents\.sh|(^|/| )eda-(relay|projector|orchestrator|executor|agent|notice)( |$)'
+PATTERN='scripts/(start-all|run-agents|run-web)\.sh|eda-retail[^ ]*/web/node_modules/\.bin/vite|(^|/| )eda-(relay|projector|orchestrator|executor|agent|notice|web)( |$)'
 
 list_pids() {
   pgrep -f "$PATTERN" 2>/dev/null | grep -vx "$$" || true

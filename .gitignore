@@ -6,3 +6,7 @@ __pycache__/
 reports/
 .DS_Store
 logs/
+
+# Front web (web/)
+web/node_modules/
+web/dist/

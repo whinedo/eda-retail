@@ -15,9 +15,12 @@ from eda_retail.queries.incident_status import IncidentStatus, get_incident_stat
 from eda_retail.synthetic.sample import EXAMPLES, seed, send_notice
 
 FINAL = ("resolved", "escalated")
-MENU = ["\nAvisos de ejemplo:"] + [f"  {i}) {name}: {text}" for i, (name, text) in enumerate(EXAMPLES.items(), 1)] + [
-    "  t) texto libre    s) cargar datos de ejemplo    q) salir",
+_EXAMPLES_MENU = ["\nAvisos de ejemplo:"] + [
+    f"  {i}) {name}: {text}" for i, (name, text) in enumerate(EXAMPLES.items(), 1)
 ]
+MENU = [*_EXAMPLES_MENU, "  t) texto libre    s) cargar datos de ejemplo    q) salir"]
+# Sin texto libre (`--no-free-text`, el front con WEB_FREE_TEXT apagado): solo los ejemplos.
+MENU_NO_FREE_TEXT = [*_EXAMPLES_MENU, "  s) cargar datos de ejemplo    q) salir"]
 
 Out = Callable[[str], None]
 
@@ -63,11 +66,23 @@ def watch(
         sleep(interval)
 
 
-def run(conn: psycopg.Connection, ask: Callable[[str], str], out: Out, *, timeout: float = 180.0, **kw) -> None:
-    """Bucle del menú. `ask` lee una respuesta (input) y `out` escribe (print)."""
+def run(
+    conn: psycopg.Connection,
+    ask: Callable[[str], str],
+    out: Out,
+    *,
+    timeout: float = 180.0,
+    free_text: bool = True,
+    **kw,
+) -> None:
+    """Bucle del menú. `ask` lee una respuesta (input) y `out` escribe (print).
+
+    Con `free_text=False` el menú no ofrece `t) texto libre` y `t` es una opción no válida.
+    """
     names = list(EXAMPLES)
+    menu = MENU if free_text else MENU_NO_FREE_TEXT
     while True:
-        out("\n".join(MENU))
+        out("\n".join(menu))
         choice = ask("> ").strip().lower()
         if choice in ("q", "quit", "salir", ""):
             return
@@ -75,7 +90,7 @@ def run(conn: psycopg.Connection, ask: Callable[[str], str], out: Out, *, timeou
             orders, stock = seed(conn)
             out(f"datos de ejemplo: {orders} pedidos y {stock} filas de stock nuevos")
             continue
-        if choice == "t":
+        if choice == "t" and free_text:
             text = ask("texto del aviso: ").strip()
         elif choice.isdigit() and 1 <= int(choice) <= len(names):
             text = EXAMPLES[names[int(choice) - 1]]
