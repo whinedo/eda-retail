@@ -16,6 +16,7 @@ Branch: `feat/web-front` · Delivery: ask-on-risk · Runner: `uv run pytest` (ba
 - S9 Node detail with LLM metrics from `LlmCallRecorded` (spec: Detalle de un nodo).
 - S10 `interactive` through a pty with stdin lines (spec: Comando interactivo).
 - S11 Partition/offset: open decision. Default "—" until the relay records them; recording them needs an Alembic migration (CLAUDE.md).
+- S12 Jaeger (L5): header link to the Jaeger UI and a per-event "ver traza" link to `<JAEGER_UI_URL>/trace/<trace_id>`, `trace_id` read from `outbox.trace_context` (spec: Acceso a las trazas en Jaeger).
 
 ## Tasks
 
@@ -31,12 +32,14 @@ Branch: `feat/web-front` · Delivery: ask-on-risk · Runner: `uv run pytest` (ba
 | T8 | S3, S5 systems map component (nodes, edges, status, highlight) | | pending | |
 | T9 | S6, S9 events panel and node detail drawer with filter | | pending | |
 | T10 | S11 decision with the user: relay records partition/offset (migration) or keep "—" | | pending | |
+| T12 | S12 `trace_id` in `/api/events` from `outbox.trace_context`, `JAEGER_UI_URL` in config, header link and per-event link (after T2, T6 and T9) | | pending | |
 | T11 | all end-to-end check against the compose stack and docs (README, design.md section, `scripts/run-web.sh`) | | pending | |
 
-Order: T1 → T2 → T3 → T4 → T5 (backend), then T6 → T7 → T8 → T9; T10 can run any time; T11 last. Each task goes test first (RED, then green) as in the other task files.
+Order: T1 → T2 → T3 → T4 → T5 (backend), then T6 → T7 → T8 → T9; T10 can run any time; T12 after T9; T11 last. Each task goes test first (RED, then green) as in the other task files.
 
 ## Log
 
 - L1 (2026-11-14) user: "quiero preparar un front también para este proyecto ... a la izquierda un menú con los comandos del cli scripts/notice.sh y ocupando el espacio principal el mapa de sistemas ... en la parte inferior los eventos que se intercambian con emisor, destino, tipo de evento y timestamp (tiene que tener un scroll lateral derecha)"
 - L2 (2026-11-14) user chose "Prototipo navegable + spec", "FastAPI + React/Vite" and "Ejecutarlo de verdad". User: "el código lo desarrollará Code".
 - L3 (2026-11-14) user: "adelante el diseño es perfecto" on the three mockups (`docs/front/*.png`).
+- L5 (2026-11-14) user: "sería interesante que desde el front se pudiera acceder a la interfaz web de Jaeger para revisar la observabilidad"; chose "Enlace y traza por evento". `outbox` rows are kept after publishing and `outbox.trace_context` holds the W3C `traceparent`, so every published event keeps its trace id.

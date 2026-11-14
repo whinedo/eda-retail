@@ -150,11 +150,33 @@ El backend SHALL exponer los eventos nuevos por Server-Sent Events, con `seq` co
 - **WHEN** reconecta con `Last-Event-ID: 1290`
 - **THEN** recibe desde 1291 en adelante
 
+### Requirement: Acceso a las trazas en Jaeger
+
+La cabecera SHALL ofrecer un enlace a la interfaz web de Jaeger, que se abre en una pestaña nueva. Cada fila del panel de eventos SHALL ofrecer un enlace «ver traza» a la traza de ese evento en Jaeger (`<JAEGER_UI_URL>/trace/<trace_id>`). El backend MUST obtener el `trace_id` del `traceparent` guardado en `outbox.trace_context` para ese `seq`, con una consulta de solo lectura. La URL base sale de `JAEGER_UI_URL` (por defecto `http://localhost:16686`, el puerto publicado en `docker-compose.yml`). El front MUST NOT consultar la API de Jaeger: solo enlaza a su interfaz.
+
+#### Scenario: Abrir Jaeger desde la cabecera
+
+- **GIVEN** el front abierto
+- **WHEN** el usuario pulsa el enlace a Jaeger de la cabecera
+- **THEN** se abre `JAEGER_UI_URL` en una pestaña nueva
+
+#### Scenario: Ver la traza de un evento
+
+- **GIVEN** un evento cuyo `outbox.trace_context` tiene `traceparent` `00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01`
+- **WHEN** se muestra en el panel de eventos
+- **THEN** su enlace «ver traza» apunta a `http://localhost:16686/trace/4bf92f3577b34da6a3ce929d0e0e4736`
+
+#### Scenario: Evento sin traza
+
+- **GIVEN** un evento escrito con las trazas desactivadas (`TRACING_ENABLED=false`), sin `trace_context` o con un `traceparent` mal formado
+- **WHEN** se muestra en el panel de eventos
+- **THEN** la columna de traza muestra «—» y no hay enlace
+
 ## API prevista
 
 | Método y ruta | Uso |
 | --- | --- |
-| `GET /api/events?limit=&before_seq=&incident_id=&node=` | Página de eventos con emisor y destino |
+| `GET /api/events?limit=&before_seq=&incident_id=&node=` | Página de eventos con emisor, destino y `trace_id` |
 | `GET /api/events/stream` | SSE de eventos nuevos |
 | `GET /api/topology` | Nodos y aristas del mapa |
 | `GET /api/nodes/{id}` | Detalle y métricas de un nodo |
