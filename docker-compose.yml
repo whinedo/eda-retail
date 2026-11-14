@@ -2,6 +2,11 @@
 # Arranque:  docker compose up -d
 # Parada:    docker compose down          (conserva los datos)
 # Reinicio limpio: docker compose down -v (borra los volúmenes)
+#
+# El nombre del proyecto es fijo: los contenedores tienen `container_name` fijo, así que desde
+# cualquier checkout (también un git worktree) `docker compose` debe ver el mismo proyecto.
+
+name: eda-retail
 
 services:
   kafka:
