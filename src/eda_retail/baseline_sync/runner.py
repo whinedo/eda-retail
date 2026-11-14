@@ -147,12 +147,10 @@ class SyncSystem:
         if v.severity.value == "low":
             steps = planner.low_severity_plan(orders)
         else:
-            steps = self._ask(inc, LlmRequest(
-                agent="planner", incident_id=inc.incident_id, system=planner.SYSTEM,
-                schema=strict_schema(PlanProposal),
-                prompt=(f"Incidencia: causa {v.cause.value}, gravedad {v.severity.value}, "
-                        f"retraso estimado {v.estimated_delay_hours} h.\nPedidos afectados:\n{text}"),
-            ), PlanProposal, lambda p: self._rejection(p.command_steps(), external_ids=set())).command_steps()
+            request = planner.plan_request(inc.incident_id, v.cause.value, v.severity.value,
+                                           v.estimated_delay_hours, text)
+            steps = self._ask(inc, request, PlanProposal,
+                              lambda p: self._rejection(p.command_steps(), external_ids=set())).command_steps()
         inc.plan_version = 1
         inc.steps = {s["step_id"]: Step(s["step_id"], s["action"], s["params"], list(s["depends_on"]), 1)
                      for s in steps}
