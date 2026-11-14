@@ -218,13 +218,13 @@ Todos llevan `command_id` y `expected_version` (`RecordLlmCall` lo ignora: es un
 Con Docker y Ollama instalados, y `.env` creado a partir de `.env.example` (fija `LLM_MODEL` a un modelo descargado, p. ej. `qwen2.5:7b-instruct`):
 
 ```bash
-docker compose up -d           # kafka, postgres y jaeger
-scripts/run-agents.sh          # terminal 1: todos los procesos, con un log por proceso en logs/
-scripts/notice.sh              # terminal 2: CLI interactivo de avisos
-scripts/run-web.sh             # opcional, terminal 4: front web en http://localhost:5173
+scripts/start-all.sh           # terminal 1: contenedores, migraciones, todos los procesos y el front web
+scripts/notice.sh              # terminal 2: CLI interactivo de avisos (o el menú del front)
 tail -f logs/*.log             # terminal 3: seguir el flujo
-scripts/stop-all.sh            # al terminar: para los procesos y los contenedores
+scripts/stop-all.sh            # al terminar: para los procesos, el front y los contenedores
 ```
+
+`scripts/start-all.sh` equivale a `docker compose up -d` más `scripts/run-agents.sh` y `scripts/run-web.sh`, que también se pueden lanzar por separado. El front queda en `http://localhost:5173`.
 
 En el CLI interactivo, `s` carga los datos de ejemplo (pedidos `P-1001`…`P-1005` y su stock) y `1`…`4` envían un aviso de ejemplo; después se muestra cómo avanza la incidencia hasta que se resuelve o se escala. Las trazas completas están en Jaeger: `http://localhost:16686`.
 
@@ -234,10 +234,11 @@ El front web (`scripts/run-web.sh`, spec `web-front`) hace lo mismo desde el nav
 
 | Script | Qué hace |
 | --- | --- |
+| `scripts/start-all.sh [--logs DIR] [--no-web]` | Arranca todo: `docker compose up -d`, espera a que postgres y kafka estén healthy, aplica las migraciones y lanza `run-agents.sh` y `run-web.sh` (sin el front con `--no-web`). Ctrl+C para los procesos y el front y deja los contenedores; si uno de los dos scripts termina, para el otro |
 | `scripts/run-agents.sh [--logs DIR] [--no-migrate]` | Comprueba que kafka y postgres están en marcha y que Ollama tiene `LLM_MODEL`, aplica las migraciones y arranca todos los procesos cargando `.env`; deja un log por proceso en `logs/` y los para todos con Ctrl+C o si alguno termina |
 | `scripts/notice.sh [argumentos de eda-notice]` | Abre `eda-notice` (por defecto, el modo interactivo) con la misma configuración (`.env`) |
 | `scripts/run-web.sh [--logs DIR]` | Arranca el front web: `eda-web` en `127.0.0.1:WEB_PORT` (8000 por defecto) y Vite en `http://localhost:5173`; la primera vez instala las dependencias de `web/` (`npm ci`, requiere Node 24). Carga `.env` (`WEB_PORT`, `JAEGER_UI_URL`) y para los dos con Ctrl+C o si uno termina |
-| `scripts/stop-all.sh [--dry-run] [--keep-docker]` | Para todos los procesos de la PoC y después los contenedores (`docker compose stop`, sin borrar datos); `--keep-docker` deja los contenedores y `--dry-run` solo muestra qué pararía |
+| `scripts/stop-all.sh [--dry-run] [--keep-docker]` | Para todos los procesos de la PoC (también el front, su backend y Vite) y después los contenedores (`docker compose stop`, sin borrar datos); `--keep-docker` deja los contenedores y `--dry-run` solo muestra qué pararía |
 
 ### Comandos
 
