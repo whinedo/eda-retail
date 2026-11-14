@@ -47,7 +47,7 @@ Branch: `feat/web-front` · Delivery: ask-on-risk · Runner: `uv run pytest` (ba
 | T17 | S16 free text disabled behind `WEB_FREE_TEXT` (backend 422 + menu hides `send --text`) | inline | done (PR #36) | d944127 |
 | T18 | S17 each `send --example` example says what it triggers | inline | done (PR #37) | 9032571 |
 | T19 | S16 no free text inside `interactive` either (`--no-free-text`) | inline | done (PR #38) | fc098e9 |
-| T20 | S18 `interactive` disabled behind `WEB_INTERACTIVE` (backend 422 + menu hides it) | inline | in review (RED 39 pytest + 2 vitest → GREEN 201 / 80) | feat(web-front): disable interactive |
+| T20 | S18 `interactive` disabled behind `WEB_INTERACTIVE` (backend 422 + menu hides it) | inline | done (PR #39) | bdd4d8a |
 
 Order: T1 → T2 → T3 → T4 → T5 (backend), then T6 → T7 → T8 → T9; T10 can run any time; T12 after T9; T11 last. Each task goes test first (RED, then green) as in the other task files.
 
