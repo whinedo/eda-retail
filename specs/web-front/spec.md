@@ -182,13 +182,25 @@ El backend SHALL leer los eventos de la tabla `events` y el estado de las incide
 
 ### Requirement: Actualización en vivo
 
-El backend SHALL exponer los eventos nuevos por Server-Sent Events, con `seq` como identificador, de modo que el cliente retome desde `Last-Event-ID` tras una reconexión sin perder ni duplicar filas.
+El backend SHALL exponer los eventos nuevos en `GET /api/events/stream` por Server-Sent Events, con `seq` como identificador y cada evento con las mismas columnas que la página de eventos, de modo que el cliente retome desde `Last-Event-ID` tras una reconexión sin perder ni duplicar filas. En la primera conexión el navegador no puede enviar `Last-Event-ID`, así que el stream SHALL admitir `after_seq` (el `seq` más alto que el panel ya muestra); si llegan los dos, manda `Last-Event-ID`. Sin ninguno, el stream empieza tras el último `seq` del log. El backend SHALL consultar el log al menos cada 0,5 s para cumplir el plazo de 2 s del panel.
 
 #### Scenario: Reconexión
 
 - **GIVEN** un cliente que recibió hasta `seq` 1290 y perdió la conexión
 - **WHEN** reconecta con `Last-Event-ID: 1290`
 - **THEN** recibe desde 1291 en adelante
+
+#### Scenario: Primera conexión tras cargar el panel
+
+- **GIVEN** un panel que cargó la página de eventos hasta `seq` 1290
+- **WHEN** abre el stream con `after_seq=1290`
+- **THEN** recibe desde 1291 en adelante, en orden de `seq`
+
+#### Scenario: Conexión sin posición
+
+- **GIVEN** un log con eventos hasta `seq` 1290
+- **WHEN** se abre el stream sin `Last-Event-ID` ni `after_seq`
+- **THEN** solo recibe los eventos añadidos después, desde 1291
 
 ### Requirement: Acceso a las trazas en Jaeger
 
@@ -217,7 +229,7 @@ La cabecera SHALL ofrecer un enlace a la interfaz web de Jaeger, que se abre en 
 | Método y ruta | Uso |
 | --- | --- |
 | `GET /api/events?limit=&before_seq=&incident_id=&node=` | Página de eventos con emisor, destino y `trace_id` |
-| `GET /api/events/stream` | SSE de eventos nuevos |
+| `GET /api/events/stream?after_seq=` | SSE de eventos nuevos (`Last-Event-ID` al reconectar) |
 | `GET /api/topology` | Nodos y aristas del mapa |
 | `GET /api/nodes/{id}` | Detalle y métricas de un nodo |
 | `GET /api/health` | Kafka, PostgreSQL, Ollama y procesos |

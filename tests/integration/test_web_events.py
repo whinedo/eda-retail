@@ -128,3 +128,36 @@ def test_direct_write_is_rejected(database_url: str):
     """Escritura directa rechazada: la conexión del front no puede escribir"""
     with read_only_connect(database_url) as conn, pytest.raises(psycopg.errors.ReadOnlySqlTransaction):
         conn.execute("INSERT INTO inbox (consumer, event_id) VALUES ('web', gen_random_uuid())")
+
+
+def _stream(database_url: str, **kwargs) -> list[int]:
+    headers = kwargs.pop("headers", {})
+    client = TestClient(create_app(database_url=database_url, stream_max_polls=1))
+    response = client.get("/api/events/stream", params=kwargs, headers=headers)
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/event-stream")
+    return [int(line.removeprefix("id: ")) for line in response.text.splitlines() if line.startswith("id: ")]
+
+
+def test_stream_reconnection(conn, database_url: str):
+    """Reconexión: con Last-Event-ID recibe desde el seq siguiente"""
+    incident = _incident()
+    seqs = [_append(conn, incident, "ShipmentDelayed", {"incident_id": incident}) for _ in range(3)]
+
+    assert _stream(database_url, headers={"Last-Event-ID": str(seqs[0])}) == seqs[1:]
+
+
+def test_stream_first_connection_after_page(conn, database_url: str):
+    """Primera conexión tras cargar el panel: after_seq"""
+    incident = _incident()
+    seqs = [_append(conn, incident, "ShipmentDelayed", {"incident_id": incident}) for _ in range(3)]
+
+    assert _stream(database_url, after_seq=seqs[1]) == seqs[2:]
+
+
+def test_stream_without_position_skips_existing_events(conn, database_url: str):
+    """Conexión sin posición: no reenvía los eventos que ya estaban en el log"""
+    incident = _incident()
+    _append(conn, incident, "ShipmentDelayed", {"incident_id": incident})
+
+    assert _stream(database_url) == []
