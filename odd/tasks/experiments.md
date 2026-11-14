@@ -31,6 +31,7 @@ Assumptions (marked):
 - A5 E3 uses only `loss` incidents (taken from a seeded set of `incidents × 6`) with both warehouses empty; every reservation fails, so H3 expects a refund or an escalation in each one.
 - A6 E4 rebuilds the four views with `projectors.rebuild` after the run, with no writers active.
 - A7 E7 injects a 50 % failure rate on `reserve_stock` so revised plans appear, and samples the incidents with `random.Random(seed)`. A decision is a `StepRequested`; its agent is the actor of the plan event with the same version; its reason is `PlanRevised.reason` or, for a created plan, the cause and severity of the `ShipmentDelayed` reached through `causation_id`.
+- A8 The baseline keeps its business state in PostgreSQL (user choice, L11): a database of its own per run with `orders`, `stock`, `reservations`, effect tables and `incidents`, and no `events`, outbox, inbox, views or Kafka. It calls the same action `prepare`/`execute`, `validate_plan`, agent prompts and checks, and ports the saga rules (ready steps, refund pivot, compensations) to an in-memory step map. Ready steps run one at a time in (origin version, `step_id`) order. It applies business faults and duplicates (the same notice received N times; a repeated notice returns the existing incident); consumer crashes and delivery delays have no synchronous equivalent.
 
 ## Tasks
 
@@ -41,8 +42,9 @@ Assumptions (marked):
 | T3a | 3a | S4 oracle LLM, writer-compatible order ids (A4) | inline | done (RED → GREEN 284 passed) | e3086c1 (PR #9, merged 0755746) |
 | T3b | 3b | S3, S4 harness, idempotency modes (A3), non-idempotent services | inline | done (slice alone: 280 passed) | e061343 (PR #10, merged 5e337e5) |
 | T3c | 3c | S3, S4 report, E1, E2, `eda-experiment`, docs | inline | done (RED → GREEN 284 passed) | 253a642 (PR #11, merged 6f89ab8) |
-| T4 | 4 | S4 E3, E4, E7 (A5–A7), per-experiment default size | inline | done (RED collection error → GREEN) | PR 4 (this commit) |
-| T5 | 5 | S5 baseline_sync | inline | pending | |
+| T4 | 4 | S4 E3, E4, E7 (A5–A7), per-experiment default size | inline | done (RED collection error → GREEN) | 39ba3e2 (PR #12, merged fa4f265) |
+| T5a | 5a | S5 saga rules in memory (`baseline_sync/saga.py`), shared harness helpers | inline (mapping by one read-only explorer) | done (unit tests GREEN; slice alone 292 passed) | cecb2cc (PR #13, merged 1386145) |
+| T5b | 5b | S5 synchronous runner (A8) | inline | done (RED collection error → GREEN) | PR 5b (this commit) |
 | T6 | 6 | S6 E5, E6, repetitions | inline | pending | |
 
 Route evidence: sequential units, each depends on the previous one; no writer trigger.
@@ -59,3 +61,7 @@ Route evidence: sequential units, each depends on the previous one; no writer tr
 - L8 (2026-11-14, user): "Yes, commit 3a" / "Yes, push and PR" / "mergeada PR" — 3a and 3b committed, PRs #9 and #10 merged after CI passed; each slice was tested alone before its commit.
 - L9 (2026-11-14, user): "mergeada" — PR #11 (3c) merged after CI passed (6f89ab8); T4 started.
 - L10 (2026-11-14): T4 finding. The oracle replanner kept completed steps in the revised plan, against the replanner rule "No incluyas los pasos ya completados"; the handler rejected every proposal and E3 escalated 4/4 with `llm_output_invalid`. The oracle now drops completed steps and the oracle test pins it; E3 then resolves with refunds.
+- L11 (2026-11-14, user): "Merge it yourself" — PR #12 merged (fa4f265). Baseline design question answered "A: PostgreSQL" (A8).
+- L12 (2026-11-14): T5. Mapping showed agents' prompts/checks, `validate_plan`, `Writer.draft`, services and `compute_idempotency_key` reuse without the log, while the saga rules live in SQL on `plan_steps`; they were ported to `baseline_sync/runner.py`. The harness gained `isolated_database` and `effect_duplicates`, shared by both versions.
+- L13 (2026-11-14): T5 measured ~510 changed lines; one slicing pass split it into 5a (saga rules as pure functions with unit tests, harness helpers) and 5b (runner, integration tests, docs).
+- L14 (2026-11-14, user): "Yes, commit 5a" / "Yes, push and PR" / "mergeada" — PR #13 (5a) merged after CI passed.
