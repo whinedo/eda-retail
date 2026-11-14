@@ -27,8 +27,8 @@ Assumptions (marked):
 | T2 | S1, S4, S5 cost projector + query | inline | done (RED collection error → GREEN 242 passed) | c98364d |
 | T3 | S2, S5 audit projector + query | inline | done (RED collection error → GREEN 246 passed) | ccade9b |
 | T4 | S3, S4, S5 carrier projector + query | inline | done (RED collection error → GREEN 250 passed) | 07f0ec8 |
-| T5 | S6 rebuild with fingerprint + CLI with four projectors | inline | done (RED collection error → GREEN 257 passed; dev DB: 4 views identical over 49 events) | (pending commit) |
-| T6 | specs/ scenarios, docs/README, `.env.example` text for the user | inline | pending | |
+| T5 | S6 rebuild with fingerprint + CLI with four projectors | inline | done (RED collection error → GREEN 257 passed; dev DB: 4 views identical over 49 events) | c8b5f91 |
+| T6 | specs/ scenarios, docs/README, `.env.example` text for the user | inline | done (257 passed; .env.example text handed to the user) | (pending commit) |
 
 Route evidence: each task is one understood unit of about 100–200 lines; no writer trigger (no parallel units, no context backstop).
 
