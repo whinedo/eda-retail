@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { type ApiClient, createApiClient } from "./api/client";
 import { CommandPanel } from "./components/CommandPanel";
 import { EventsPanel } from "./components/EventsPanel";
@@ -18,6 +18,15 @@ export default function App({ client, openStream = openEventSource }: { client?:
   const jaegerUrl = useJaegerUrl(api);
   const events = useLiveEvents(api, openStream);
   const [selectedNode, setSelectedNode] = useState<string | null>(null);
+  const [commandRunning, setCommandRunning] = useState(false);
+  const [resetKey, setResetKey] = useState(0);
+  const { reset: resetEvents } = events;
+  // Reinicio de la vista: solo estado del front; no se escribe nada en el backend.
+  const resetView = useCallback(() => {
+    resetEvents();
+    setSelectedNode(null);
+    setResetKey((key) => key + 1);
+  }, [resetEvents]);
   // Comunicación en curso: el último evento recibido en vivo resalta su camino en el mapa.
   const last = events.lastEvent;
   const highlight = useMemo<Highlight | null>(
@@ -27,8 +36,8 @@ export default function App({ client, openStream = openEventSource }: { client?:
 
   return (
     <div className="app">
-      <Header health={health} jaegerUrl={jaegerUrl} />
-      <CommandPanel client={api} openStream={openStream} />
+      <Header health={health} jaegerUrl={jaegerUrl} onReset={resetView} resetDisabled={commandRunning} />
+      <CommandPanel client={api} openStream={openStream} resetKey={resetKey} onRunningChange={setCommandRunning} />
       <main className="main">
         <SystemMapPanel
           client={api}

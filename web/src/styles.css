@@ -33,7 +33,7 @@ body {
 
 .app {
   display: grid;
-  grid-template-columns: 320px 1fr;
+  grid-template-columns: 240px 1fr;
   grid-template-rows: 56px 1fr;
   grid-template-areas:
     "header header"
@@ -107,7 +107,7 @@ body {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  padding: 20px;
+  padding: 16px 12px;
   border-right: 1px solid var(--line);
   overflow-y: auto;
 }
@@ -697,4 +697,31 @@ button:disabled {
 
 .header__link:hover {
   text-decoration: underline;
+}
+
+.header__reset {
+  margin-left: auto;
+  padding: 5px 12px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.header__reset:hover:not(:disabled) {
+  background: var(--canvas);
+}
+
+.header__reset:disabled {
+  color: var(--muted);
+  cursor: not-allowed;
+}
+
+.header__reset + .header__link {
+  margin-left: 12px;
 }
