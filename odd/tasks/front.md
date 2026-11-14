@@ -11,7 +11,7 @@ Branch: `feat/web-front` · Delivery: ask-on-risk · Runner: `uv run pytest` (ba
 - S4 Command menu with a whitelist of arguments, one run at a time, output streamed (spec: Menú de comandos, Segunda ejecución simultánea).
 - S5 Systems map from a static topology plus live process/health status (spec: Mapa de sistemas).
 - S6 Events panel: columns, sticky header, horizontal scroll, filters, pause, SSE by `seq` (spec: Panel de eventos, Actualización en vivo).
-- S7 Sender/receiver derived from the event catalogue (spec: Origen de emisor y destino).
+- S7 Sender from `producer`; receiver from the event types each component declares, projectors last (spec: Origen de emisor y destino, corrected in T2: the catalogue module declares no consumers).
 - S8 Read-only access to `events` and `view_*`; bound to `127.0.0.1` (spec: Acceso de solo lectura y local). The front MUST NOT write to the log (cqrs-views).
 - S9 Node detail with LLM metrics from `LlmCallRecorded` (spec: Detalle de un nodo).
 - S10 `interactive` through a pty with stdin lines (spec: Comando interactivo).
@@ -23,7 +23,7 @@ Branch: `feat/web-front` · Delivery: ask-on-risk · Runner: `uv run pytest` (ba
 | ID | Specs | Route | Status | Commit |
 | --- | --- | --- | --- | --- |
 | T1 | S2, S8 backend skeleton `src/eda_retail/web/` (FastAPI app, config, localhost binding, `eda-web` script) | inline | done (RED ModuleNotFoundError eda_retail.web → GREEN 12 passed; non-integration suite 108 passed) | feat(web-front): backend skeleton |
-| T2 | S7, S8 events API (`/api/events`, sender/receiver from catalogue, filters, pagination) | | pending | |
+| T2 | S7, S8 events API (`/api/events`, sender/receiver from catalogue, filters, pagination) | inline | in review (RED ModuleNotFoundError eda_retail.web.routing → GREEN unit 113 passed; integration `tests/integration/test_web_events.py` pending a run with Postgres) | feat(web-front): events API |
 | T3 | S6 SSE stream by `seq` with `Last-Event-ID` | | pending | |
 | T4 | S4, S10 command runner (whitelist, single run, streamed output, pty for `interactive`) | | pending | |
 | T5 | S5, S9 topology, `/api/health` (pgrep, Kafka, PostgreSQL, Ollama) and node detail with LLM metrics | | pending | |
@@ -44,3 +44,4 @@ Order: T1 → T2 → T3 → T4 → T5 (backend), then T6 → T7 → T8 → T9; T
 - L3 (2026-11-14) user: "adelante el diseño es perfecto" on the three mockups (`docs/front/*.png`).
 - L4 (2026-11-14) T1 in worktree `eda-retail-worktrees/web-front` (E6 running in the main checkout). New deps: `fastapi`, `uvicorn`; dev `httpx2` (Starlette deprecates `httpx` for `TestClient`). `eda-web` always binds 127.0.0.1 (`WEB_PORT`, `--port`). `LocalOriginGuard` returns 403 for any non-localhost `Origin` (preflight included) before CORS. `read_only_connect` sets `default_transaction_read_only=on`. `WEB_PORT` pending in `.env.example` (deny rule). Integration suite not run (needs Postgres on 5432 during E6). Follow-up for T4: also check the `Host` header against DNS rebinding (needs a spec line).
 - L5 (2026-11-14) user: "sería interesante que desde el front se pudiera acceder a la interfaz web de Jaeger para revisar la observabilidad"; chose "Enlace y traza por evento". `outbox` rows are kept after publishing and `outbox.trace_context` holds the W3C `traceparent`, so every published event keeps its trace id.
+- L6 (2026-11-14) T2: spec corrected ("Origen de emisor y destino" now names `agents.cli.AGENTS`, `orchestrator.runner.EVENT_TYPES` and `executor-<acción>`; `events/catalog.py` has no consumers) and new requirement "Página de eventos" (limit 1..500, `before_seq`, `incident_id`, `node`, `next_before_seq`). Endpoints use `read_only_connect`. Integration tests not run yet: they recreate `eda_test` on 5432 while E6 runs.
