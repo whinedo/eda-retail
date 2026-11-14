@@ -145,7 +145,7 @@ def test_answer_the_interactive_menu(tmp_path: Path):
     """Responder al menú"""
     client = _client(_script(tmp_path, "#!/usr/bin/env bash\necho 'elige:'\nread -r line\necho \"got:$line\"\n"))
     run = client.post("/api/commands", json={"command": "interactive", "timeout": 60}).json()
-    assert run["argv"] == ["scripts/notice.sh", "interactive", "--timeout", "60"]
+    assert run["argv"] == ["scripts/notice.sh", "interactive", "--timeout", "60", "--no-free-text"]
 
     assert client.post(f"/api/commands/{run['run_id']}/input", json={"line": "2"}).status_code == 202
 
@@ -369,3 +369,24 @@ def test_free_text_enabled_by_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
     assert client.get("/api/config").json()["free_text_enabled"] is enabled
     response = client.post("/api/commands", json={"command": "send", "text": "hola"})
     assert response.status_code == (202 if enabled else 422)
+
+
+def test_interactive_without_free_text_by_default(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """Texto libre deshabilitado: interactive se lanza con --no-free-text"""
+    monkeypatch.delenv("WEB_FREE_TEXT", raising=False)
+    client = _client(_script(tmp_path, ECHO_ARGS))
+
+    run = client.post("/api/commands", json={"command": "interactive", "timeout": 30}).json()
+
+    lines = _output(client, run["run_id"])[0].replace("\r\n", "\n").splitlines()
+    assert lines[:5] == ["argc:4", "arg:interactive", "arg:--timeout", "arg:30", "arg:--no-free-text"]
+
+
+def test_interactive_keeps_free_text_when_enabled(tmp_path: Path):
+    """Con WEB_FREE_TEXT=true, interactive conserva su opción de texto libre"""
+    client = _client(_script(tmp_path, ECHO_ARGS), free_text=True)
+
+    run = client.post("/api/commands", json={"command": "interactive", "timeout": 30}).json()
+
+    assert run["argv"] == ["scripts/notice.sh", "interactive", "--timeout", "30"]
+    assert _output(client, run["run_id"])[1] == 0

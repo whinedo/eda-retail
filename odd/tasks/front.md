@@ -42,9 +42,10 @@ Branch: `feat/web-front` · Delivery: ask-on-risk · Runner: `uv run pytest` (ba
 | T11 | all end-to-end check against the compose stack and docs (README, design.md section, `scripts/run-web.sh`) | inline | docs and script done (PR #30, 22228ff); end-to-end check pending (run by the user) | 22228ff |
 | T14 | S13 «Resetear simulación» (view only) and a narrower command menu (240 px) | inline | done (PR #32) | 403190a |
 | T15 | S14 `seed` in its own «Preparación» section, apart from «Avisos» | inline | done (PR #34) | ce2a11c |
-| T16 | S15 events panel height adjustable (vertical only) with a separator | inline | in review (RED 3 vitest → GREEN 73, tsc clean, dragged in the browser: 340 → 240 px) | feat(web-front): resizable events panel |
-| T17 | S16 free text disabled behind `WEB_FREE_TEXT` (backend 422 + menu hides `send --text`) | inline | in review (RED 8 pytest + 2 vitest → GREEN) | feat(web-front): disable free text |
-| T18 | S17 each `send --example` example says what it triggers | inline | in review (RED 1 vitest → GREEN 77, tsc clean, checked in the browser) | feat(web-front): example descriptions |
+| T16 | S15 events panel height adjustable (vertical only) with a separator | inline | done (PR #35) | 41e2191 |
+| T17 | S16 free text disabled behind `WEB_FREE_TEXT` (backend 422 + menu hides `send --text`) | inline | done (PR #36) | d944127 |
+| T18 | S17 each `send --example` example says what it triggers | inline | done (PR #37) | 9032571 |
+| T19 | S16 no free text inside `interactive` either (`--no-free-text`) | inline | in review (RED 4 pytest → GREEN 196) | feat(notice): no free text in interactive |
 
 Order: T1 → T2 → T3 → T4 → T5 (backend), then T6 → T7 → T8 → T9; T10 can run any time; T12 after T9; T11 last. Each task goes test first (RED, then green) as in the other task files.
 
@@ -75,3 +76,4 @@ Order: T1 → T2 → T3 → T4 → T5 (backend), then T6 → T7 → T8 → T9; T
 - L23 (2026-11-14) T16 (branched from the T15 tip while #34 is open). A `role=separator` between map and panel: mouse drag on `window` listeners, arrows ±20 px, Home/End to the limits. Height between 96 px and the viewport minus header (56), separator (6) and 160 px of map; kept in `localStorage` (try/catch, default 340). `.main` rows and the node drawer's `bottom` read `--events-height`.
 - L24 (2026-11-14) T17 (branched from the T16 tip). `WEB_FREE_TEXT` (`true`/`1`, default off) decides it in the backend: `POST /api/commands` with `text` answers 422 «el texto libre está deshabilitado (WEB_FREE_TEXT)» and launches nothing; `/api/config` adds `free_text_enabled`, and the menu shows `send --text` only when it is true (hidden while config loads). Not covered: `interactive` still offers its own `t) texto libre` option inside `eda-notice`.
 - L25 (2026-11-14) T18 (branched from the T17 tip; #34 merged meanwhile). `EXAMPLE_INFO` in `CommandMenu` holds one line per example, shown as a list under the chips and as each chip's `title`. Both `loss` and `out_of_stock` are losses; P-1004 (`SKU-SOFA`) has 0 stock, so its reservation fails and the plan is revised.
+- L26 (2026-11-14) User: "deshabilita también el texto libre en interactive". `eda-notice interactive --no-free-text` drops `t) texto libre` from the menu and treats `t` as an invalid option; the web backend adds the flag whenever `WEB_FREE_TEXT` is off (`CommandRequest.args(free_text)`). Running `eda-notice` or `scripts/notice.sh` by hand in a terminal keeps free text unless the flag is passed.

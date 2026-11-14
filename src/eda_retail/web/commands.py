@@ -67,11 +67,13 @@ class CommandRequest(BaseModel):
             raise ValueError("el texto no puede contener el carácter nulo")
         return self
 
-    def args(self) -> list[str]:
+    def args(self, free_text: bool = True) -> list[str]:
+        """Argumentos de scripts/notice.sh. Sin texto libre, `interactive` lleva `--no-free-text`."""
         if self.command == "seed":
             return ["seed"]
         if self.command == "interactive":
-            return ["interactive", "--timeout", str(self.timeout or DEFAULT_INTERACTIVE_TIMEOUT)]
+            args = ["interactive", "--timeout", str(self.timeout or DEFAULT_INTERACTIVE_TIMEOUT)]
+            return args if free_text else [*args, "--no-free-text"]
         if self.example is not None:
             return ["send", "--example", self.example]
         if self.text is not None:
@@ -135,11 +137,11 @@ class CommandRunner:
         self._runs: dict[str, Run] = {}  # solo la última ejecución
         self._current: Run | None = None
 
-    def start(self, request: CommandRequest) -> Run:
+    def start(self, request: CommandRequest, free_text: bool = True) -> Run:
         with self._lock:
             if self._current is not None and self._current.exit_code is None:
                 raise RunnerBusy
-            argv = [str(self._script), *request.args()]
+            argv = [str(self._script), *request.args(free_text)]
             interactive = request.command == "interactive"
             if interactive:
                 master, slave = pty.openpty()
