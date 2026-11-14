@@ -2,7 +2,8 @@
 
 Responde como lo haría un modelo perfecto, con las etiquetas del generador: el intérprete
 devuelve la causa, la gravedad y el retraso del aviso; el planificador, el plan esperado;
-el replanner quita el paso fallido (y lo que depende de él) y, si el reenvío ya no es
+el replanner quita el paso fallido (y lo que depende de él) y los ya completados, que no
+se repiten, y, si el reenvío ya no es
 posible, lo sustituye por un reembolso del importe del pedido; el redactor escribe un
 borrador válido. Así lo que se mide es la arquitectura, no la calidad del modelo (E5).
 """
@@ -57,12 +58,14 @@ class Oracle:
         for line in prompt.splitlines():
             m = _PLAN_LINE.match(line)
             if m and not m["id"].endswith("-comp"):  # las compensaciones las deriva el código
-                steps.append({"step_id": m["id"], "action": m["action"], "deps": eval_list(m["deps"])})
+                steps.append({"step_id": m["id"], "action": m["action"], "deps": eval_list(m["deps"]),
+                              "status": m["status"]})
         failed_id = _FAILED.search(prompt)["id"]
         failed = next(s for s in steps if s["step_id"] == failed_id)
         dropped = {failed_id} | ({s["step_id"] for s in steps if s["action"] in _REISSUE}
                                  if failed["action"] in _REISSUE else set())
         dropped |= {s["step_id"] for s in steps if set(s["deps"]) & dropped}
+        dropped |= {s["step_id"] for s in steps if s["status"] == "completed"}  # el replanner no los repite
         kept = [{"step_id": s["step_id"], "action": s["action"], "params": {"order_id": order},
                  "depends_on": s["deps"]} for s in steps if s["step_id"] not in dropped]
         if failed["action"] in _REISSUE:

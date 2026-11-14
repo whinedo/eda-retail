@@ -29,7 +29,8 @@ def test_oracle_interprets_and_plans_from_labels():
 
 
 def test_oracle_replans_with_refund_when_reissue_is_impossible():
-    """Tras un fallo de reserve_stock, el oráculo sustituye la reserva y el reenvío por un reembolso"""
+    """Tras un fallo de reserve_stock, el oráculo sustituye la reserva y el reenvío por un reembolso
+    y no repite los pasos completados (regla del replanner)"""
     data = generate(seed=11, size=12)
     n = next(x for x in data.notices if x.cause == "loss")
     amount = next(o.amount for o in data.orders if o.order_id == n.order_id)
@@ -42,9 +43,8 @@ def test_oracle_replans_with_refund_when_reissue_is_impossible():
         "Fallo: el paso S3 terminó con el error out_of_stock y no se puede reintentar."
     )
     plan = PlanProposal.model_validate(_ask(Oracle(data), "replanner", prompt)).command_steps()
-    assert [(s["step_id"], s["action"]) for s in plan] == [
-        ("S1", "notify_customer"), ("S2", "file_claim"), ("S5", "issue_refund")]
-    assert plan[2]["params"] == {"order_id": n.order_id, "amount": float(amount)}
+    assert [(s["step_id"], s["action"]) for s in plan] == [("S5", "issue_refund")]
+    assert plan[0]["params"] == {"order_id": n.order_id, "amount": float(amount)}
 
 
 def test_oracle_writes_valid_drafts():

@@ -28,6 +28,9 @@ Assumptions (marked):
 - A2 Variants are assigned in a seeded shuffled round-robin, so a set of 50 has 8 or 9 of each.
 - A3 Idempotency modes for E1 (user approved the harness design, L5): `full` (inbox everywhere, `effect_keys`, services keyed), `no_effect_keys` (executors lose inbox, `effect_keys` and service deduplication; agents and orchestrator keep their inbox) and `none` (everything off). H1 compares `full` and `no_effect_keys`; `none` is reported as an observation. A duplicate is a repeated external execution of a step (`FakeService.executions`) or an extra reservation row. The UNIQUE constraints on the effect tables stay: a repeated step crashes the executor after the external effect, Kafka redelivers, and the harness skips the message after 3 crashes (poison message).
 - A4 Generated order ids are `P-S<seed>N<nnnn>` (no inner hyphens), so the writer's validation reads them as one order reference.
+- A5 E3 uses only `loss` incidents (taken from a seeded set of `incidents × 6`) with both warehouses empty; every reservation fails, so H3 expects a refund or an escalation in each one.
+- A6 E4 rebuilds the four views with `projectors.rebuild` after the run, with no writers active.
+- A7 E7 injects a 50 % failure rate on `reserve_stock` so revised plans appear, and samples the incidents with `random.Random(seed)`. A decision is a `StepRequested`; its agent is the actor of the plan event with the same version; its reason is `PlanRevised.reason` or, for a created plan, the cause and severity of the `ShipmentDelayed` reached through `causation_id`.
 
 ## Tasks
 
@@ -37,8 +40,8 @@ Assumptions (marked):
 | T2 | 2 | S2 fault injection | inline | done (RED collection error → GREEN 272 passed) | 22b42f6 (PR #8, merged b625e3a) |
 | T3a | 3a | S4 oracle LLM, writer-compatible order ids (A4) | inline | done (RED → GREEN 284 passed) | e3086c1 (PR #9, merged 0755746) |
 | T3b | 3b | S3, S4 harness, idempotency modes (A3), non-idempotent services | inline | done (slice alone: 280 passed) | e061343 (PR #10, merged 5e337e5) |
-| T3c | 3c | S3, S4 report, E1, E2, `eda-experiment`, docs | inline | done (RED → GREEN 284 passed) | PR 3c (this commit) |
-| T4 | 4 | S4 E3, E4, E7 | inline | pending | |
+| T3c | 3c | S3, S4 report, E1, E2, `eda-experiment`, docs | inline | done (RED → GREEN 284 passed) | 253a642 (PR #11, merged 6f89ab8) |
+| T4 | 4 | S4 E3, E4, E7 (A5–A7), per-experiment default size | inline | done (RED collection error → GREEN) | PR 4 (this commit) |
 | T5 | 5 | S5 baseline_sync | inline | pending | |
 | T6 | 6 | S6 E5, E6, repetitions | inline | pending | |
 
@@ -54,3 +57,5 @@ Route evidence: sequential units, each depends on the previous one; no writer tr
 - L6 (2026-11-14): T3 findings. (a) The writer's order-reference regex read `P-11-0001` as two orders; generator ids changed (A4) with a test. (b) Without any inbox, a repeated `ShipmentDelayed` reaches the planner again, the handler rejects the second plan and the planner escalates the incident with `llm_output_invalid` before any step runs, so no effect duplicates can appear; E1 now runs three modes (A3). Seed 7, 12 incidents: `full` 0 duplicates; `no_effect_keys` 75 (2 deliveries) and 81 (3 deliveries), 69 consumer crashes, 23 poison messages; `none` 12/12 escalated. H1 holds.
 - L7 (2026-11-14): PR 3 measured ~797 changed lines; one slicing pass split it into 3a (oracle), 3b (harness) and 3c (report, E1, E2, CLI, docs), each within 400.
 - L8 (2026-11-14, user): "Yes, commit 3a" / "Yes, push and PR" / "mergeada PR" — 3a and 3b committed, PRs #9 and #10 merged after CI passed; each slice was tested alone before its commit.
+- L9 (2026-11-14, user): "mergeada" — PR #11 (3c) merged after CI passed (6f89ab8); T4 started.
+- L10 (2026-11-14): T4 finding. The oracle replanner kept completed steps in the revised plan, against the replanner rule "No incluyas los pasos ya completados"; the handler rejected every proposal and E3 escalated 4/4 with `llm_output_invalid`. The oracle now drops completed steps and the oracle test pins it; E3 then resolves with refunds.
