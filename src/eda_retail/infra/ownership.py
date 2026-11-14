@@ -16,7 +16,9 @@ from __future__ import annotations
 import re
 
 # Paquete bajo src/ -> esquema del componente. Cada tarea añade el suyo al migrar el componente.
-COMPONENT_PACKAGES: dict[str, str] = {}
+COMPONENT_PACKAGES: dict[str, str] = {
+    "eda_retail/event_log": "event_log",
+}
 
 _WRITE = re.compile(
     r"\b(?P<verb>INSERT\s+INTO|UPDATE|DELETE\s+FROM|TRUNCATE(?:\s+TABLE)?)\s+"

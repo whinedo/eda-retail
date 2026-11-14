@@ -192,15 +192,16 @@ El panel SHALL mostrar los eventos más recientes primero, con las columnas emis
 
 #### Scenario: Partición y offset de un evento publicado
 
-- **GIVEN** un evento que el relay publicó en la partición 2 con offset 1290 (spec event-backbone, "Kafka como bus de entrega")
+- **GIVEN** un evento que `event_log` consumió de la partición 2 con offset 1290 (spec event-backbone, "Kafka como bus de entrega")
 - **WHEN** se muestra la columna partición/offset
 - **THEN** muestra `p2 / 1290`
 
-#### Scenario: Evento sin publicar
+#### Scenario: Evento aún no consumido
 
-- **GIVEN** un evento que el relay aún no ha publicado, o que se publicó antes de que el relay guardara la posición
-- **WHEN** se muestra la columna partición/offset
-- **THEN** muestra «—»
+- **GIVEN** un evento que todavía no está en `event_log.events` (aún no se ha publicado o `event_log` no lo ha consumido)
+- **WHEN** se pide la página de eventos
+- **THEN** no aparece
+- **AND** aparece, con su partición y su offset, en cuanto `event_log` lo guarda
 
 ### Requirement: Origen de emisor y destino
 

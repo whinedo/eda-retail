@@ -1,6 +1,6 @@
 """Stream SSE de eventos nuevos (spec web-front, "Actualización en vivo").
 
-Lee `events` por `seq`, como los proyectores: cada lectura sigue tras el último `seq` enviado,
+Lee `event_log.events` por `seq`: cada lectura sigue tras el último `seq` enviado,
 así que una reconexión con `Last-Event-ID` no pierde ni duplica filas.
 """
 

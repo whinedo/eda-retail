@@ -256,6 +256,7 @@ Cada componente es un proceso independiente; los scripts anteriores los lanzan, 
 | Comando | Qué hace |
 | --- | --- |
 | `uv run eda-relay` | Publica en Kafka las filas pendientes del outbox, en orden de `seq` |
+| `uv run eda-event-log` | Consulta de CQRS `event_log`: consume `eda.events` y guarda cada evento en `event_log.events` con un `seq` creciente, su partición, su offset y su contexto de traza; su posición va en `event_log.offsets`. El front lee el log de ahí |
 | `uv run eda-projector` | Mantiene las cuatro vistas (`incident_status`, `cost_per_incident`, `audit_trail`, `carrier_dashboard`) leyendo `events` por `seq`, cada proyector con su posición en `projector_offsets` |
 | `uv run eda-projector rebuild <vista>` | Vacía una vista, reproduce el log desde `seq` 1 e imprime la huella antes y después, si son idénticas y el tiempo de reconstrucción (sale con código 1 si difieren). Se lanza sin escritores activos |
 | `uv run eda-agent interpreter` | Interpreta `CarrierNoticeReceived` y abre la incidencia |

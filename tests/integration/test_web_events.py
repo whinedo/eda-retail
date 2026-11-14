@@ -2,15 +2,16 @@
 
 from __future__ import annotations
 
+import itertools
 import uuid
 
 import psycopg
 import pytest
 from fastapi.testclient import TestClient
-from psycopg.types.json import Jsonb
 
+from eda_retail.event_log.store import record
 from eda_retail.events.envelope import new_event
-from eda_retail.infra.event_store import append_events
+from eda_retail.infra.positions import Position
 from eda_retail.web.app import create_app
 from eda_retail.web.db import read_only_connect
 
@@ -19,7 +20,14 @@ def _incident() -> str:
     return f"I-{uuid.uuid4().hex[:8]}"
 
 
-def _append(conn, incident_id: str, event_type: str, payload: dict, producer: str = "test") -> int:
+_OFFSETS = itertools.count(1)
+
+
+def _append(
+    conn, incident_id: str, event_type: str, payload: dict, producer: str = "test", *, partition: int = 0,
+    offset: int | None = None, trace_context: dict | None = None,
+) -> int:
+    """Lo que hace `event_log` al consumir un mensaje: lo guarda en event_log.events."""
     event = new_event(
         event_type=event_type,
         correlation_id=incident_id,
@@ -27,8 +35,9 @@ def _append(conn, incident_id: str, event_type: str, payload: dict, producer: st
         producer=producer,
         payload=payload,
     )
+    position = Position("eda.events", partition, next(_OFFSETS) if offset is None else offset)
     with conn.transaction():
-        [seq] = append_events(conn, [event])
+        seq = record(conn, event, position, trace_context)
     return seq
 
 
@@ -90,7 +99,7 @@ def test_event_row_has_sender_receiver_and_columns(conn, client: TestClient):
     assert row["receivers"] == ["orchestrator", "projectors"]
     assert row["incident_id"] == incident
     assert row["plan_version"] == 1
-    assert row["partition"] is None and row["offset"] is None
+    assert row["partition"] == 0 and isinstance(row["offset"], int)
     assert row["causation_id"] is None
     assert row["payload"]["incident_id"] == incident
     assert row["occurred_at"]
@@ -98,20 +107,24 @@ def test_event_row_has_sender_receiver_and_columns(conn, client: TestClient):
 
 
 def test_published_event_shows_partition_and_offset(conn, client: TestClient):
-    """Partición y offset de un evento publicado"""
+    """Partición y offset de un evento publicado: los que event_log guardó al consumirlo"""
     incident = _incident()
-    published = _append(conn, incident, "ShipmentDelayed", {"incident_id": incident})
-    pending = _append(conn, incident, "ShipmentDelayed", {"incident_id": incident})
-    with conn.transaction():
-        conn.execute(
-            "UPDATE outbox SET published_at = now(), kafka_partition = 2, kafka_offset = 1290 WHERE seq = %s",
-            (published,),
-        )
+    _append(conn, incident, "ShipmentDelayed", {"incident_id": incident}, partition=2, offset=1290)
 
-    rows = {e["seq"]: e for e in client.get("/api/events", params={"incident_id": incident}).json()["events"]}
+    [row] = client.get("/api/events", params={"incident_id": incident}).json()["events"]
 
-    assert (rows[published]["partition"], rows[published]["offset"]) == (2, 1290)
-    assert (rows[pending]["partition"], rows[pending]["offset"]) == (None, None)  # Evento sin publicar
+    assert (row["partition"], row["offset"]) == (2, 1290)
+
+
+def test_event_not_yet_consumed_is_not_shown(conn, client: TestClient):
+    """Evento aún no consumido: no aparece hasta que event_log lo guarda"""
+    incident = _incident()
+    assert client.get("/api/events", params={"incident_id": incident}).json()["events"] == []
+
+    seq = _append(conn, incident, "ShipmentDelayed", {"incident_id": incident})
+
+    assert [e["seq"] for e in client.get("/api/events", params={"incident_id": incident}).json()["events"]] == [seq]
+
 
 def test_filter_by_node(conn, client: TestClient):
     """Filtrar por nodo"""
@@ -226,16 +239,13 @@ def test_node_detail(conn, database_url: str):
     assert isinstance(body["up"], bool)
 
 
-def _set_trace_context(conn, seq: int, context: dict | None) -> None:
-    with conn.transaction():
-        conn.execute("UPDATE outbox SET trace_context = %s WHERE seq = %s", (Jsonb(context) if context else None, seq))
-
-
 def test_event_trace_id_in_page_and_stream(conn, client: TestClient, database_url: str):
-    """Ver la traza de un evento: la página y el stream llevan el trace_id de outbox.trace_context"""
+    """Ver la traza de un evento: la página y el stream llevan el trace_id de event_log.events.trace_context"""
     incident = _incident()
-    seq = _append(conn, incident, "ShipmentDelayed", {"incident_id": incident})
-    _set_trace_context(conn, seq, {"traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"})
+    seq = _append(
+        conn, incident, "ShipmentDelayed", {"incident_id": incident},
+        trace_context={"traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"},
+    )
 
     [row] = client.get("/api/events", params={"incident_id": incident}).json()["events"]
     stream = TestClient(create_app(database_url=database_url, stream_max_polls=1), base_url="http://localhost")
@@ -248,8 +258,7 @@ def test_event_trace_id_in_page_and_stream(conn, client: TestClient, database_ur
 def test_event_without_trace_context(conn, client: TestClient):
     """Evento sin traza: trace_id es null"""
     incident = _incident()
-    seq = _append(conn, incident, "ShipmentDelayed", {"incident_id": incident})
-    _set_trace_context(conn, seq, None)
+    _append(conn, incident, "ShipmentDelayed", {"incident_id": incident}, trace_context=None)
 
     [row] = client.get("/api/events", params={"incident_id": incident}).json()["events"]
 

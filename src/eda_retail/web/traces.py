@@ -1,6 +1,6 @@
 """Enlaces a Jaeger (spec web-front, "Acceso a las trazas en Jaeger").
 
-El `trace_id` sale del `traceparent` W3C que el relay guarda en `outbox.trace_context`; el front
+El `trace_id` sale del `traceparent` W3C que `event_log` guarda en `event_log.events.trace_context`; el front
 solo enlaza a la interfaz de Jaeger, nunca consulta su API.
 """
 

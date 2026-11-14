@@ -51,11 +51,11 @@ _AGENTS = {
 
 NODES: tuple[Node, ...] = (
     Node("intake", "eda-notice", "code", "CLI de avisos (scripts/notice.sh): registra CarrierNoticeReceived."),
-    Node("postgres", "PostgreSQL", "data", "Log de eventos, outbox, inbox, effect_keys y vistas view_*."),
+    Node("postgres", "PostgreSQL", "data", "Un esquema por componente: estado, outbox, inbox, el log event_log.events y las vistas views.*."),
     Node("relay", "Relay", "code", "Publica en Kafka las filas pendientes de outbox, en orden de seq.", "eda-relay"),
     Node("kafka", "Kafka (eda.events)", "data", "Topic único con todos los eventos."),
     Node("dlq", "eda.dlq", "data", "Mensajes que un consumidor no pudo procesar (dead letters)."),
-    Node("projectors", "Proyector", "code", "Mantiene las vistas view_* leyendo events por seq.", "eda-projector"),
+    Node("projectors", "Proyector", "code", "Mantiene las vistas views.view_* consumiendo Kafka, con su offset por partición.", "eda-projector"),
     *(Node(agent, label, "llm", desc, f"eda-agent {agent}", agent) for agent, (label, desc) in _AGENTS.items()),
     Node("orchestrator", "Orquestador", "code", "Avanza el plan, pide pasos y deriva compensaciones.",
          "eda-orchestrator"),
@@ -84,7 +84,8 @@ EDGES: tuple[tuple[str, str], ...] = (
     ("postgres", "relay"),
     ("relay", "kafka"),
     ("relay", "dlq"),
-    ("postgres", "projectors"),
+    ("kafka", "projectors"),
+    ("projectors", "postgres"),
     *(("kafka", c) for c in _CONSUMERS),
     *((c, "postgres") for c in _CONSUMERS),  # escriben a través del command handler
     *((agent, "ollama") for agent in _AGENTS),

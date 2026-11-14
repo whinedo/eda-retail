@@ -1,7 +1,7 @@
 """Página de eventos del log para el panel (spec web-front, "Página de eventos").
 
-Lee `events` y, de `outbox`, el contexto de traza y la partición y el offset que guardó el relay
-al publicar (None si aún no se ha publicado).
+Lee solo la vista del log `event_log.events`, que mantiene el componente de consulta `event_log`
+con la partición, el offset y el contexto de traza de cada mensaje que consume de Kafka.
 """
 
 from __future__ import annotations
@@ -17,8 +17,8 @@ DEFAULT_LIMIT = 100
 MAX_LIMIT = 500
 _SELECT = (
     "SELECT seq, event_id, event_type, occurred_at, correlation_id, causation_id, producer, payload,"
-    " o.trace_context, o.kafka_partition, o.kafka_offset"
-    " FROM events LEFT JOIN outbox o USING (seq)"
+    " trace_context, kafka_partition, kafka_offset"
+    " FROM event_log.events"
 )
 
 
@@ -63,7 +63,7 @@ def events_after(conn: psycopg.Connection, after_seq: int, limit: int = MAX_LIMI
 
 
 def last_seq(conn: psycopg.Connection) -> int:
-    return conn.execute("SELECT coalesce(max(seq), 0) AS seq FROM events").fetchone()["seq"]
+    return conn.execute("SELECT coalesce(max(seq), 0) AS seq FROM event_log.events").fetchone()["seq"]
 
 
 def _row(r: dict[str, Any]) -> dict[str, Any]:
