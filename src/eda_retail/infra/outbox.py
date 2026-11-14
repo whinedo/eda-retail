@@ -1,0 +1,268 @@
+"""Outbox y relay de cada componente (design.md §5, spec event-backbone "Publicación atómica con
+el estado (Outbox)").
+
+- `append` escribe los eventos en `<esquema>.outbox` dentro de la transacción del componente, junto
+  a su cambio de estado. Nunca publica en Kafka.
+- `ComponentRelay` publica el outbox del componente en `eda.events` (clave `correlation_id` =
+  `incident_id`) en orden de `id`, espera la confirmación del broker y guarda la partición y el
+  offset en la misma transacción. Publica también sus `dead_letters` en `eda.dlq`. Al menos una vez.
+- `RelayThread` ejecuta el relay en un hilo del proceso del componente, con su propia conexión.
+
+Un solo relay por componente conserva el orden de su outbox; Kafka conserva el orden por partición.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import threading
+from collections.abc import Iterable, Mapping
+from typing import Any
+
+import psycopg
+from confluent_kafka import KafkaError, Producer
+from opentelemetry.trace import SpanKind
+from psycopg.types.json import Jsonb
+
+from eda_retail.config import Settings
+from eda_retail.events.envelope import EventEnvelope
+from eda_retail.infra import tracing
+from eda_retail.infra.db import connect
+from eda_retail.infra.event_store import validate_event
+from eda_retail.infra.kafka import make_producer
+from eda_retail.infra.relay import RelayDeliveryError
+from eda_retail.infra.schemas import qualified
+
+log = logging.getLogger("eda_retail.outbox")
+
+_ENVELOPE_FIELDS = tuple(EventEnvelope.model_fields)
+
+
+def append(
+    conn: psycopg.Connection, schema: str, events: Iterable[EventEnvelope | Mapping[str, Any]]
+) -> list[int]:
+    """Valida y escribe los eventos en `<schema>.outbox`. Devuelve sus `id` en orden."""
+    table = qualified(schema, "outbox")
+    validated = [validate_event(e) for e in events]
+    ids: list[int] = []
+    for e in validated:
+        with tracing.tracer().start_as_current_span(
+            f"{e.event_type} create", kind=SpanKind.PRODUCER, attributes=tracing.event_attributes(e)
+        ):
+            trace_context = tracing.inject_current()
+            row = conn.execute(
+                f"""
+                INSERT INTO {table} (event_id, event_type, event_version, occurred_at, correlation_id,
+                                     causation_id, producer, payload, trace_context)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                RETURNING id
+                """,
+                (
+                    e.event_id,
+                    e.event_type,
+                    e.event_version,
+                    e.occurred_at,
+                    e.correlation_id,
+                    e.causation_id,
+                    e.producer,
+                    Jsonb(e.payload),
+                    Jsonb(trace_context) if trace_context else None,
+                ),
+            ).fetchone()
+        ids.append(row["id"])
+    return ids
+
+
+def encode_event(envelope: EventEnvelope) -> bytes:
+    return json.dumps(envelope.model_dump(mode="json"), ensure_ascii=False).encode()
+
+
+class ComponentRelay:
+    """Publica en Kafka el outbox y las dead letters de un componente."""
+
+    def __init__(
+        self,
+        conn: psycopg.Connection,
+        producer: Producer,
+        schema: str,
+        topic: str,
+        *,
+        dlq_topic: str | None = None,
+    ) -> None:
+        self._conn = conn
+        self._producer = producer
+        self._schema = schema
+        self._outbox = qualified(schema, "outbox")
+        self._dead_letters = qualified(schema, "dead_letters")
+        self._topic = topic
+        self._dlq_topic = dlq_topic
+
+    @classmethod
+    def from_settings(cls, settings: Settings, schema: str) -> ComponentRelay:
+        return cls(
+            connect(settings.database_url),
+            make_producer(settings.kafka_bootstrap_servers),
+            schema,
+            settings.events_topic,
+            dlq_topic=settings.dlq_topic,
+        )
+
+    def run_once(self, batch_size: int = 100, flush_timeout: float = 30.0) -> int:
+        """Publica un lote de pendientes. Devuelve cuántos publicó (0 si no había)."""
+        errors: list[KafkaError] = []
+        positions: dict[int, tuple[int, int]] = {}
+
+        def on_delivery_for(outbox_id: int):
+            def on_delivery(err: KafkaError | None, msg) -> None:
+                if err is not None:
+                    errors.append(err)
+                else:
+                    positions[outbox_id] = (msg.partition(), msg.offset())
+
+            return on_delivery
+
+        with self._conn.transaction():
+            rows = self._conn.execute(
+                f"""
+                SELECT id, trace_context, {", ".join(_ENVELOPE_FIELDS)}
+                FROM {self._outbox} WHERE published_at IS NULL
+                ORDER BY id LIMIT %s FOR UPDATE SKIP LOCKED
+                """,
+                (batch_size,),
+            ).fetchall()
+            if not rows:
+                return 0
+            for row in rows:
+                envelope = EventEnvelope.model_validate({k: row[k] for k in _ENVELOPE_FIELDS})
+                self._produce(envelope, row["trace_context"], on_delivery_for(row["id"]))
+            pending = self._producer.flush(flush_timeout)
+            if pending or errors:
+                # Rollback: las filas siguen pendientes y el lote se republica.
+                raise RelayDeliveryError(f"entrega no confirmada: pendientes={pending}, errores={errors}")
+            ids = [row["id"] for row in rows]
+            self._conn.execute(
+                f"""
+                UPDATE {self._outbox} o
+                SET published_at = now(), attempts = o.attempts + 1,
+                    kafka_partition = p.kafka_partition, kafka_offset = p.kafka_offset
+                FROM unnest(%s::bigint[], %s::integer[], %s::bigint[]) AS p(id, kafka_partition, kafka_offset)
+                WHERE o.id = p.id
+                """,
+                (
+                    ids,
+                    [positions.get(i, (None, None))[0] for i in ids],
+                    [positions.get(i, (None, None))[1] for i in ids],
+                ),
+            )
+        return len(rows)
+
+    def _produce(self, envelope: EventEnvelope, trace_context, on_delivery) -> None:
+        """Produce un mensaje dentro del span `<event_type> publish`, hijo del de escritura."""
+        attributes = tracing.event_attributes(envelope) | {
+            "messaging.system": "kafka",
+            "messaging.destination.name": self._topic,
+        }
+        with tracing.tracer().start_as_current_span(
+            f"{envelope.event_type} publish",
+            context=tracing.extract(trace_context),
+            kind=SpanKind.PRODUCER,
+            attributes=attributes,
+        ):
+            headers = [("event_type", envelope.event_type.encode())]
+            headers += [(k, v.encode()) for k, v in (tracing.inject_current() or {}).items()]
+            self._producer.produce(
+                self._topic,
+                key=envelope.correlation_id.encode(),
+                value=encode_event(envelope),
+                headers=headers,
+                on_delivery=on_delivery,
+            )
+
+    def publish_dead_letters(self, batch_size: int = 100, flush_timeout: float = 30.0) -> int:
+        """Publica en `eda.dlq` las dead letters pendientes del componente. Al menos una vez."""
+        if self._dlq_topic is None:
+            return 0
+        errors: list[KafkaError] = []
+
+        def on_delivery(err: KafkaError | None, _msg) -> None:
+            if err is not None:
+                errors.append(err)
+
+        with self._conn.transaction():
+            rows = self._conn.execute(
+                f"""
+                SELECT id, consumer, event_id, correlation_id, reason, raw_message, created_at
+                FROM {self._dead_letters} WHERE published_at IS NULL
+                ORDER BY id LIMIT %s FOR UPDATE SKIP LOCKED
+                """,
+                (batch_size,),
+            ).fetchall()
+            if not rows:
+                return 0
+            for row in rows:
+                body = {k: (str(v) if k in ("event_id", "created_at") and v is not None else v) for k, v in row.items()}
+                body["component"] = self._schema
+                self._producer.produce(
+                    self._dlq_topic,
+                    key=(row["correlation_id"] or "").encode(),
+                    value=json.dumps(body, ensure_ascii=False).encode(),
+                    headers=[("event_type", b"DeadLetter"), ("reason", row["reason"].encode())],
+                    on_delivery=on_delivery,
+                )
+            pending = self._producer.flush(flush_timeout)
+            if pending or errors:
+                raise RelayDeliveryError(f"dead letters sin confirmar: pendientes={pending}, errores={errors}")
+            self._conn.execute(
+                f"UPDATE {self._dead_letters} SET published_at = now() WHERE id = ANY(%s)",
+                ([r["id"] for r in rows],),
+            )
+        return len(rows)
+
+    def replay_from(self, outbox_id: int) -> int:
+        """Marca como pendientes las filas desde `outbox_id` (republicación tras perder el topic)."""
+        with self._conn.transaction():
+            cur = self._conn.execute(
+                f"UPDATE {self._outbox} SET published_at = NULL WHERE id >= %s", (outbox_id,)
+            )
+            return cur.rowcount
+
+    def run_until(self, stop: threading.Event, idle_sleep: float = 0.1) -> None:
+        while not stop.is_set():
+            try:
+                published, dead = self.run_once(), self.publish_dead_letters()
+            except RelayDeliveryError as exc:
+                log.warning("relay de %s: %s; se reintenta", self._schema, exc)
+                published = dead = 0
+            if published + dead == 0:
+                stop.wait(idle_sleep)
+
+    def close(self) -> None:
+        self._producer.flush(10)
+        self._conn.close()
+
+
+class RelayThread(threading.Thread):
+    """Relay de un componente en un hilo de su proceso. `stop()` lo detiene tras el lote en curso."""
+
+    def __init__(self, relay: ComponentRelay, *, idle_sleep: float = 0.1) -> None:
+        super().__init__(name="outbox-relay", daemon=True)
+        self._relay = relay
+        self._idle_sleep = idle_sleep
+        self._stop_requested = threading.Event()
+
+    def run(self) -> None:
+        try:
+            self._relay.run_until(self._stop_requested, self._idle_sleep)
+        finally:
+            self._relay.close()
+
+    def stop(self, timeout: float | None = None) -> None:
+        self._stop_requested.set()
+        self.join(timeout)
+
+
+def start_relay(settings: Settings, schema: str) -> RelayThread:
+    """Arranca el relay del componente `schema` con su propia conexión y su propio productor."""
+    thread = RelayThread(ComponentRelay.from_settings(settings, schema))
+    thread.start()
+    return thread

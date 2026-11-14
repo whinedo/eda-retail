@@ -36,6 +36,9 @@ def _validate(event: EventEnvelope | Mapping[str, Any]) -> EventEnvelope:
         raise InvalidEventError(f"evento rechazado, campos ausentes o inválidos: {fields}") from exc
 
 
+validate_event = _validate
+
+
 def append_events(
     conn: psycopg.Connection, events: Iterable[EventEnvelope | Mapping[str, Any]]
 ) -> list[int]:
