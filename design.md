@@ -215,7 +215,7 @@ docker compose up -d      # PostgreSQL con el esquema, Kafka y los topics
 docker compose ps         # postgres y kafka deben estar healthy
 ```
 
-`docker compose down` conserva los datos de ambos volúmenes; `docker compose down -v` los borra y vuelve a crear el esquema en el siguiente arranque.
+El proyecto de compose se llama siempre `eda-retail` (`name:` en `docker-compose.yml`): los contenedores tienen nombre fijo (`eda-kafka`, `eda-postgres`…), así que un git worktree en otra carpeta ve y usa los mismos contenedores en lugar de intentar crear otros con el mismo nombre. `docker compose down` conserva los datos de ambos volúmenes; `docker compose down -v` los borra y vuelve a crear el esquema en el siguiente arranque.
 
 ## 12. Estado de la verificación
 
