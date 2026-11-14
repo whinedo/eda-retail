@@ -238,3 +238,19 @@ Trazas distribuidas con OpenTelemetry (OpenTracing está archivado y se fusionó
 - Cada proceso llama a `setup_tracing("<componente>", settings)` al arrancar; el componente es el `service.name` en Jaeger.
 - Esquema: `outbox.trace_context` llega con la migración `0002` de Alembic. Tras `docker compose up -d`, aplicar las migraciones con `uv run alembic upgrade head` (la revisión `0001` no hace nada si el volumen ya tiene el esquema de `db/init/001_schema.sql`).
 - Demo: `uv run python scripts/trace_demo.py` lanza aviso → intérprete → planificador en procesos separados (base `eda_demo`, topic `eda.trace-demo`) e imprime la URL de la traza.
+
+## 14. Front web
+
+Interfaz local para operar y observar la PoC (spec `web-front`): un backend FastAPI (`src/eda_retail/web/`, comando `eda-web`) y un front React + Vite (`web/`). Se arranca con `scripts/run-web.sh`.
+
+| Parte | Cómo |
+| --- | --- |
+| Acceso | `eda-web` escucha solo en `127.0.0.1`; `LocalOriginGuard` rechaza Host y Origin que no sean de localhost (DNS rebinding). Lee PostgreSQL con `default_transaction_read_only=on`: el front nunca escribe en el log ni salta el command handler |
+| Eventos | `GET /api/events` pagina `events` por `seq` y añade, de `outbox`, el contexto de traza y la partición y el offset que guardó el relay (migración `0007`). `GET /api/events/stream` es SSE: sondea cada 0,5 s tras el último `seq` enviado y reanuda con `Last-Event-ID` |
+| Emisor y destino | Emisor = `producer`. Destino = los componentes que declaran ese tipo de evento (`agents.cli.AGENTS`, `orchestrator.runner.EVENT_TYPES`, `executor-<acción>` para `StepRequested`), con los proyectores siempre al final |
+| Mapa | Topología estática (`web/topology.py`) más el estado de cada proceso (`pgrep -f`, mismos patrones que `run-agents.sh`) y de PostgreSQL, Kafka y Ollama, con 2 s como máximo por comprobación |
+| Comandos | `POST /api/commands` lanza `scripts/notice.sh` con una lista blanca de argumentos y sin shell; una ejecución a la vez, 15 minutos como máximo, salida por SSE. `interactive` corre en una pseudoterminal y recibe líneas por `POST /api/commands/{run_id}/input`. Al parar el backend se termina el grupo de procesos en curso |
+| Trazas | Enlace a Jaeger en la cabecera y por evento (`<JAEGER_UI_URL>/trace/<trace_id>`, con `trace_id` de `outbox.trace_context`) |
+
+- Configuración: `WEB_PORT` (backend; Vite reenvía `/api` al mismo puerto) y `JAEGER_UI_URL` (por defecto `http://localhost:16686`; si no es http(s) se usa el valor por defecto).
+- Tests: pytest para el backend (los de `tests/integration/test_web_events.py`, contra PostgreSQL) y Vitest + Testing Library para el front, con un `EventSource` falso. El hook `web` de pre-commit lanza `npm test` y `npm run typecheck`.

@@ -296,4 +296,5 @@ La cabecera SHALL ofrecer un enlace a la interfaz web de Jaeger, que se abre en 
 ## Decisiones
 
 - Estado de procesos: se deduce con `pgrep -f` y los mismos patrones que `scripts/run-agents.sh`; PostgreSQL con `SELECT 1` en una conexión de solo lectura, Kafka listando los topics y Ollama con `GET /api/tags` (`OLLAMA_HOST`). Cada comprobación tiene un tiempo máximo de 2 s.
+- Arranque: `scripts/run-web.sh` lanza `eda-web` (127.0.0.1:`WEB_PORT`, 8000 por defecto) y el servidor de Vite en http://localhost:5173, que reenvía `/api` al mismo `WEB_PORT`; los dos leen `.env`. `scripts/stop-all.sh` también los para.
 - Partición y offset: el relay los guarda en `outbox` al confirmar el broker la entrega (migración 0007); la API los lee de ahí. `events` no cambia: el log es inmutable.
