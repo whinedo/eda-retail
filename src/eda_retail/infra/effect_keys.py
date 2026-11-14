@@ -25,6 +25,8 @@ from typing import Any
 import psycopg
 from psycopg.types.json import Jsonb
 
+from eda_retail.infra.schemas import qualified
+
 
 class ClaimStatus(enum.Enum):
     ACQUIRED = "acquired"
@@ -36,6 +38,11 @@ class ClaimStatus(enum.Enum):
 class Claim:
     status: ClaimStatus
     result: dict[str, Any] | None = None
+
+
+def _table(schema: str | None) -> str:
+    """`<schema>.effect_keys` del ejecutor; sin esquema, la tabla compartida (hasta T10)."""
+    return qualified(schema, "effect_keys") if schema is not None else "effect_keys"
 
 
 def compute_idempotency_key(incident_id: str, step_id: str, *, origin_plan_version: int) -> str:
@@ -53,6 +60,7 @@ def acquire(
     action: str,
     lock_seconds: int,
     enabled: bool = True,
+    schema: str | None = None,
 ) -> Claim:
     """Registra la clave con INSERT … ON CONFLICT DO NOTHING o informa de su estado.
 
@@ -61,9 +69,10 @@ def acquire(
     """
     if not enabled:
         return Claim(ClaimStatus.ACQUIRED)
+    table = _table(schema)
     inserted = conn.execute(
-        """
-        INSERT INTO effect_keys (idempotency_key, incident_id, step_id, action, status, locked_until)
+        f"""
+        INSERT INTO {table} (idempotency_key, incident_id, step_id, action, status, locked_until)
         VALUES (%s, %s, %s, %s, 'in_progress', now() + make_interval(secs => %s))
         ON CONFLICT DO NOTHING
         """,
@@ -73,9 +82,9 @@ def acquire(
         return Claim(ClaimStatus.ACQUIRED)
 
     row = conn.execute(
-        """
+        f"""
         SELECT status, result, locked_until > now() AS locked
-        FROM effect_keys WHERE idempotency_key = %s
+        FROM {table} WHERE idempotency_key = %s
         FOR UPDATE
         """,
         (key,),
@@ -86,21 +95,21 @@ def acquire(
         return Claim(ClaimStatus.BUSY)
     # in_progress con el plazo vencido: esta instancia toma el relevo.
     conn.execute(
-        "UPDATE effect_keys SET locked_until = now() + make_interval(secs => %s) WHERE idempotency_key = %s",
+        f"UPDATE {table} SET locked_until = now() + make_interval(secs => %s) WHERE idempotency_key = %s",
         (lock_seconds, key),
     )
     return Claim(ClaimStatus.ACQUIRED)
 
 
 def complete(
-    conn: psycopg.Connection, key: str, result: dict[str, Any], *, enabled: bool = True
+    conn: psycopg.Connection, key: str, result: dict[str, Any], *, enabled: bool = True, schema: str | None = None
 ) -> None:
     """Marca la clave como completada con su resultado (misma transacción que el efecto)."""
     if not enabled:
         return
     conn.execute(
-        """
-        UPDATE effect_keys
+        f"""
+        UPDATE {_table(schema)}
         SET status = 'completed', result = %s, completed_at = now(), locked_until = NULL
         WHERE idempotency_key = %s
         """,

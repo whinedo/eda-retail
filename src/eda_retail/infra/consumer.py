@@ -114,8 +114,10 @@ class EventConsumer:
         *,
         inbox_enabled: bool = True,
         on_dead_letter: DeadLetterHook | None = None,
+        schema: str | None = None,
     ) -> None:
         self.name = name
+        self.schema = schema  # esquema del componente: su inbox y sus dead letters
         self._on_dead_letter = on_dead_letter
         self._conn = conn
         self._kafka = kafka_consumer
@@ -126,7 +128,7 @@ class EventConsumer:
     @classmethod
     def from_settings(
         cls, settings: Settings, *, name: str, handlers: Mapping[str, Handler],
-        on_dead_letter: DeadLetterHook | None = None,
+        on_dead_letter: DeadLetterHook | None = None, schema: str | None = None,
     ) -> EventConsumer:
         """`name` es a la vez el `group.id` de Kafka y el nombre del consumidor en el inbox."""
         return cls(
@@ -137,6 +139,7 @@ class EventConsumer:
             handlers,
             inbox_enabled=settings.inbox_enabled,
             on_dead_letter=on_dead_letter,
+            schema=schema,
         )
 
     def poll(self, timeout: float) -> Message | None:
@@ -186,14 +189,16 @@ class EventConsumer:
         if isinstance(handler, UnitOfWork):
             return handler.process(self._conn, event)
         with self._conn.transaction():
-            if not inbox.register(self._conn, self.name, event.event_id, enabled=self._inbox_enabled):
+            if not inbox.register(
+                self._conn, self.name, event.event_id, enabled=self._inbox_enabled, schema=self.schema
+            ):
                 return Outcome.DUPLICATE
             handler(self._conn, event)
         return Outcome.PROCESSED
 
     def _dead_letter(self, bad: InvalidMessage) -> Outcome:
         return write_dead_letter(self._conn, self.name, bad, inbox_enabled=self._inbox_enabled,
-                                 hook=self._on_dead_letter)
+                                 hook=self._on_dead_letter, schema=self.schema)
 
     def commit(self, msg: Message) -> None:
         """Confirma el offset en Kafka. Llamar solo tras el COMMIT de PostgreSQL."""
@@ -222,17 +227,19 @@ class EventConsumer:
 
 def write_dead_letter(
     conn: psycopg.Connection, consumer: str, bad: InvalidMessage, *, inbox_enabled: bool = True,
-    hook: DeadLetterHook | None = None,
+    hook: DeadLetterHook | None = None, schema: str | None = None,
 ) -> Outcome:
     """Guarda el mensaje inválido en `dead_letters` (con su fila de inbox) y escala la incidencia."""
     with tracing.tracer().start_as_current_span(
         "dead letter", attributes={"eda.reason": dead_letters.INVALID_SCHEMA, "eda.consumer": consumer}
     ), conn.transaction():
-        if bad.event_id is not None and not inbox.register(conn, consumer, bad.event_id, enabled=inbox_enabled):
+        if bad.event_id is not None and not inbox.register(
+            conn, consumer, bad.event_id, enabled=inbox_enabled, schema=schema
+        ):
             return Outcome.DUPLICATE
         dead_letters.record(
             conn, consumer=consumer, reason=dead_letters.INVALID_SCHEMA, event_id=bad.event_id,
-            correlation_id=bad.correlation_id, raw=bad.raw,
+            correlation_id=bad.correlation_id, raw=bad.raw, schema=schema,
         )
         log.warning("dead letter %s (%s): %s", bad.event_type or "mensaje", bad.correlation_id or "-", bad)
         if hook is not None and bad.correlation_id and bad.event_id is not None:

@@ -152,7 +152,7 @@ despachador (hilo del orquestador), sobre su propia tabla:
 loop:
   leer command_outbox pendientes (FOR UPDATE SKIP LOCKED)
   POST <URL del target>/commands/<command_type>   (mismo command_id en cada intento)
-    202 o 200 -> marcar entregado (aceptado, o ya aceptado antes)
+    202       -> marcar entregado (aceptado; `Idempotent-Replayed: true` si ya lo estaba)
     422       -> marcar rechazado; la saga lo trata como fallo no reintentable
     red o 5xx -> reintentar con backoff y jitter
   si no hay filas: dormir un intervalo corto
