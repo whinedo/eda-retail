@@ -96,6 +96,23 @@ def test_event_row_has_sender_receiver_and_columns(conn, client: TestClient):
     assert row["occurred_at"]
 
 
+
+def test_published_event_shows_partition_and_offset(conn, client: TestClient):
+    """Partición y offset de un evento publicado"""
+    incident = _incident()
+    published = _append(conn, incident, "ShipmentDelayed", {"incident_id": incident})
+    pending = _append(conn, incident, "ShipmentDelayed", {"incident_id": incident})
+    with conn.transaction():
+        conn.execute(
+            "UPDATE outbox SET published_at = now(), kafka_partition = 2, kafka_offset = 1290 WHERE seq = %s",
+            (published,),
+        )
+
+    rows = {e["seq"]: e for e in client.get("/api/events", params={"incident_id": incident}).json()["events"]}
+
+    assert (rows[published]["partition"], rows[published]["offset"]) == (2, 1290)
+    assert (rows[pending]["partition"], rows[pending]["offset"]) == (None, None)  # Evento sin publicar
+
 def test_filter_by_node(conn, client: TestClient):
     """Filtrar por nodo"""
     incident = _incident()

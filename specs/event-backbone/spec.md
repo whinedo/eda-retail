@@ -67,7 +67,7 @@ Los eventos de una misma incidencia SHALL entregarse a cada consumidor en el ord
 
 ### Requirement: Kafka como bus de entrega
 
-Los eventos SHALL repartirse a los consumidores mediante Apache Kafka. El relay del outbox MUST publicar en el topic `eda.events` con `incident_id` como clave de partición. Kafka no es la fuente de verdad: si el contenido de un topic se pierde, el relay SHALL poder republicar desde el log de PostgreSQL.
+Los eventos SHALL repartirse a los consumidores mediante Apache Kafka. El relay del outbox MUST publicar en el topic `eda.events` con `incident_id` como clave de partición. Kafka no es la fuente de verdad: si el contenido de un topic se pierde, el relay SHALL poder republicar desde el log de PostgreSQL. Al confirmar el broker cada mensaje, el relay MUST guardar en su fila de `outbox` la partición y el offset que le asignó Kafka (`kafka_partition`, `kafka_offset`); si el evento se republica, se guarda la posición de la última publicación.
 
 #### Scenario: Pérdida del topic
 
@@ -75,6 +75,13 @@ Los eventos SHALL repartirse a los consumidores mediante Apache Kafka. El relay 
 - **WHEN** se ejecuta la republicación desde el log
 - **THEN** el topic recibe de nuevo todos los eventos en su orden de `seq`
 - **AND** los consumidores no repiten ningún efecto gracias al inbox y a las claves de idempotencia
+
+#### Scenario: Posición del mensaje publicado
+
+- **GIVEN** un evento pendiente en el outbox
+- **WHEN** el relay lo publica y el broker confirma la entrega
+- **THEN** su fila de `outbox` guarda la partición y el offset del mensaje en `eda.events`
+- **AND** tras republicarlo desde el log, la fila guarda la partición y el offset de la nueva publicación
 
 ### Requirement: Entrega al menos una vez
 

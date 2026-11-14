@@ -1,8 +1,8 @@
 """Relay del outbox (design.md §5): único proceso que publica en Kafka.
 
 Lee las filas pendientes de `outbox` por `seq`, las produce con clave `correlation_id`
-(= `incident_id`), espera la confirmación del broker y las marca como publicadas en la
-misma transacción. Garantía: al menos una vez. Se ejecuta UNA sola instancia para
+(= `incident_id`), espera la confirmación del broker y las marca como publicadas, con la
+partición y el offset que confirmó, en la misma transacción. Garantía: al menos una vez. Se ejecuta UNA sola instancia para
 conservar el orden por `seq`.
 """
 
@@ -35,6 +35,15 @@ WHERE o.published_at IS NULL
 ORDER BY o.seq
 LIMIT %s
 FOR UPDATE OF o SKIP LOCKED
+"""
+
+# Marca el lote como publicado con la posición que confirmó el broker (la última, si se republica).
+_MARK_PUBLISHED = """
+UPDATE outbox o
+SET published_at = now(), attempts = o.attempts + 1, kafka_partition = p.kafka_partition,
+    kafka_offset = p.kafka_offset
+FROM unnest(%s::bigint[], %s::integer[], %s::bigint[]) AS p(seq, kafka_partition, kafka_offset)
+WHERE o.seq = p.seq
 """
 
 
@@ -79,10 +88,16 @@ class OutboxRelay:
     def run_once(self, batch_size: int = 100, flush_timeout: float = 30.0) -> int:
         """Publica un lote de pendientes. Devuelve cuántos publicó (0 si no había)."""
         errors: list[KafkaError] = []
+        positions: dict[int, tuple[int, int]] = {}
 
-        def on_delivery(err: KafkaError | None, _msg) -> None:
-            if err is not None:
-                errors.append(err)
+        def on_delivery_for(seq: int):
+            def on_delivery(err: KafkaError | None, msg) -> None:
+                if err is not None:
+                    errors.append(err)
+                else:
+                    positions[seq] = (msg.partition(), msg.offset())
+
+            return on_delivery
 
         with self._conn.transaction():
             rows = self._conn.execute(_SELECT_PENDING, (batch_size,)).fetchall()
@@ -92,14 +107,19 @@ class OutboxRelay:
                 envelope = EventEnvelope.model_validate(
                     {k: v for k, v in row.items() if k not in ("seq", "trace_context")}
                 )
-                self._produce(row["seq"], envelope, row["trace_context"], on_delivery)
+                self._produce(row["seq"], envelope, row["trace_context"], on_delivery_for(row["seq"]))
             pending = self._producer.flush(flush_timeout)
             if pending or errors:
                 # Rollback: las filas siguen pendientes y el lote se republica.
                 raise RelayDeliveryError(f"entrega no confirmada: pendientes={pending}, errores={errors}")
+            seqs = [row["seq"] for row in rows]
             self._conn.execute(
-                "UPDATE outbox SET published_at = now(), attempts = attempts + 1 WHERE seq = ANY(%s)",
-                ([row["seq"] for row in rows],),
+                _MARK_PUBLISHED,
+                (
+                    seqs,
+                    [positions.get(seq, (None, None))[0] for seq in seqs],
+                    [positions.get(seq, (None, None))[1] for seq in seqs],
+                ),
             )
         return len(rows)
 

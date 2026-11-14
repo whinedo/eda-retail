@@ -76,7 +76,13 @@ describe("Panel de eventos intercambiados", () => {
     expect([sender, receiver, type]).toEqual(["planner", "orchestrator", "PlanCreated"]);
   });
 
-  it("Evento sin partición registrada: la columna partición / offset muestra —", () => {
+  it("Partición y offset de un evento publicado: la columna muestra p2 / 1290", () => {
+    setup({ rows: [row(1302, { partition: 2, offset: 1290 })] });
+
+    expect(cells(1302)[7]).toBe("p2 / 1290");
+  });
+
+  it("Evento sin publicar: la columna partición / offset muestra —", () => {
     setup({ rows: [row(1303), row(1302, { partition: 1, offset: 52, plan_version: null })] });
 
     expect(cells(1303)[7]).toBe("—");
