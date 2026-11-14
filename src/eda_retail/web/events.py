@@ -1,6 +1,7 @@
 """Página de eventos del log para el panel (spec web-front, "Página de eventos").
 
-Solo lee `events`; la partición y el offset de Kafka no se guardan todavía (T10) y van a None.
+Lee `events` y, de `outbox`, el contexto de traza y la partición y el offset que guardó el relay
+al publicar (None si aún no se ha publicado).
 """
 
 from __future__ import annotations
@@ -16,7 +17,8 @@ DEFAULT_LIMIT = 100
 MAX_LIMIT = 500
 _SELECT = (
     "SELECT seq, event_id, event_type, occurred_at, correlation_id, causation_id, producer, payload,"
-    " (SELECT o.trace_context FROM outbox o WHERE o.seq = events.seq) AS trace_context FROM events"
+    " o.trace_context, o.kafka_partition, o.kafka_offset"
+    " FROM events LEFT JOIN outbox o USING (seq)"
 )
 
 
@@ -77,8 +79,8 @@ def _row(r: dict[str, Any]) -> dict[str, Any]:
         "receivers": consumers,
         "incident_id": payload.get("incident_id") or r["correlation_id"],
         "plan_version": payload.get("plan_version"),
-        "partition": None,
-        "offset": None,
+        "partition": r.get("kafka_partition"),
+        "offset": r.get("kafka_offset"),
         "causation_id": str(r["causation_id"]) if r["causation_id"] else None,
         "payload": payload,
         "trace_id": trace_id_from_context(r.get("trace_context")),

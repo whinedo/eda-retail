@@ -137,3 +137,30 @@ def test_topic_loss(connect_db, settings):
         for fut in admin.delete_topics([empty_topic]).values():
             with contextlib.suppress(Exception):  # limpieza best effort
                 fut.result(timeout=30)
+
+
+def test_published_message_position(connect_db, settings):
+    """Posición del mensaje publicado"""
+    incident = _incident()
+    conn = connect_db()
+    with conn.transaction():
+        [seq] = append_events(conn, [_ev(incident, "ShipmentDelayed")])
+
+    def position() -> tuple[int | None, int | None]:
+        row = conn.execute("SELECT kafka_partition, kafka_offset FROM outbox WHERE seq = %s", (seq,)).fetchone()
+        return row["kafka_partition"], row["kafka_offset"]
+
+    assert position() == (None, None)
+    relay = OutboxRelay.from_settings(settings)
+    try:
+        _drain(relay)
+        first = position()
+        relay.replay_from(seq)
+        _drain(relay)
+        second = position()
+    finally:
+        relay.close()
+
+    msgs = [m for m in read_all(settings.kafka_bootstrap_servers, settings.events_topic, 2) if m.key == incident]
+    assert sorted((m.partition, m.offset) for m in msgs) == [first, second]
+    assert second[1] > first[1]  # tras republicar, la fila guarda la última publicación

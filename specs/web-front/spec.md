@@ -129,11 +129,17 @@ El panel SHALL mostrar los eventos más recientes primero, con las columnas emis
 - **THEN** aparece en el panel en menos de 2 segundos, ordenado por `seq`
 - **AND** si el usuario pulsa «Pausar», no se añaden más filas hasta reanudar
 
-#### Scenario: Evento sin partición registrada
+#### Scenario: Partición y offset de un evento publicado
 
-- **GIVEN** que `events` no guarda partición ni offset de Kafka
+- **GIVEN** un evento que el relay publicó en la partición 2 con offset 1290 (spec event-backbone, "Kafka como bus de entrega")
 - **WHEN** se muestra la columna partición/offset
-- **THEN** muestra «—» para esos eventos
+- **THEN** muestra `p2 / 1290`
+
+#### Scenario: Evento sin publicar
+
+- **GIVEN** un evento que el relay aún no ha publicado, o que se publicó antes de que el relay guardara la posición
+- **WHEN** se muestra la columna partición/offset
+- **THEN** muestra «—»
 
 ### Requirement: Origen de emisor y destino
 
@@ -290,7 +296,4 @@ La cabecera SHALL ofrecer un enlace a la interfaz web de Jaeger, que se abre en 
 ## Decisiones
 
 - Estado de procesos: se deduce con `pgrep -f` y los mismos patrones que `scripts/run-agents.sh`; PostgreSQL con `SELECT 1` en una conexión de solo lectura, Kafka listando los topics y Ollama con `GET /api/tags` (`OLLAMA_HOST`). Cada comprobación tiene un tiempo máximo de 2 s.
-
-## Decisiones abiertas
-
-- Partición y offset: requieren que el relay los registre al publicar (cambio en `outbox`/`events` con migración Alembic). Hasta entonces la columna muestra «—».
+- Partición y offset: el relay los guarda en `outbox` al confirmar el broker la entrega (migración 0007); la API los lee de ahí. `events` no cambia: el log es inmutable.
