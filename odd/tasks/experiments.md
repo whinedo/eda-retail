@@ -26,14 +26,18 @@ Design decisions (approved, L2):
 Assumptions (marked):
 - A1 Expected plan per variant (the spec fixes only `delay`/`low` and `loss`/`high`). Severity: `delay` `low` up to 24 h, `medium` up to 72 h, `high` above; `loss` and `damage` `high`; `wrong_address`, `strike` and `unknown` `medium`. Actions: any `low` → `notify_customer`; `delay` `medium` → `notify_customer`; `delay` `high` → `notify_customer`, `file_claim`; `loss` and `damage` → `notify_customer`, `file_claim`, `reserve_stock`, `reissue_shipment` (S4 depends on S3); `wrong_address` → `notify_customer`, `reserve_stock`, `reissue_shipment`; `strike` and `unknown` → `notify_customer`. To be reviewed by the user in PR 1.
 - A2 Variants are assigned in a seeded shuffled round-robin, so a set of 50 has 8 or 9 of each.
+- A3 Idempotency modes for E1 (user approved the harness design, L5): `full` (inbox everywhere, `effect_keys`, services keyed), `no_effect_keys` (executors lose inbox, `effect_keys` and service deduplication; agents and orchestrator keep their inbox) and `none` (everything off). H1 compares `full` and `no_effect_keys`; `none` is reported as an observation. A duplicate is a repeated external execution of a step (`FakeService.executions`) or an extra reservation row. The UNIQUE constraints on the effect tables stay: a repeated step crashes the executor after the external effect, Kafka redelivers, and the harness skips the message after 3 crashes (poison message).
+- A4 Generated order ids are `P-S<seed>N<nnnn>` (no inner hyphens), so the writer's validation reads them as one order reference.
 
 ## Tasks
 
 | ID | PR | Specs | Route | Status | Commit |
 | --- | --- | --- | --- | --- | --- |
-| T1 | 1 | S1 generator, labels, dataset loading | inline | done (RED collection error → GREEN 264 passed) | dc84a8e |
-| T2 | 2 | S2 fault injection | inline | done (RED collection error → GREEN 272 passed) | (pending commit) |
-| T3 | 3 | S3, S4 harness, report, E1, E2 | inline | pending | |
+| T1 | 1 | S1 generator, labels, dataset loading | inline | done (RED collection error → GREEN 264 passed) | dc84a8e (PR #7, merged 6d8aa24) |
+| T2 | 2 | S2 fault injection | inline | done (RED collection error → GREEN 272 passed) | 22b42f6 (PR #8, merged b625e3a) |
+| T3a | 3a | S4 oracle LLM, writer-compatible order ids (A4) | inline | done (RED → GREEN 284 passed) | e3086c1 (PR #9, merged 0755746) |
+| T3b | 3b | S3, S4 harness, idempotency modes (A3), non-idempotent services | inline | done (slice alone: 280 passed) | e061343 (PR #10, merged 5e337e5) |
+| T3c | 3c | S3, S4 report, E1, E2, `eda-experiment`, docs | inline | done (RED → GREEN 284 passed) | PR 3c (this commit) |
 | T4 | 4 | S4 E3, E4, E7 | inline | pending | |
 | T5 | 5 | S5 baseline_sync | inline | pending | |
 | T6 | 6 | S6 E5, E6, repetitions | inline | pending | |
@@ -45,3 +49,8 @@ Route evidence: sequential units, each depends on the previous one; no writer tr
 - L1 (2026-11-14, user): "continua. Además se han definido specs para un front que se desarrollará cuando se haya terminado el resto"
 - L2 (2026-11-14, user): "Aprobada" — phase 6 proposal (D1–D7, S1–S6, six stacked PRs) approved.
 - L3 (2026-11-14, user): "mergea tú" — PR #7 (T1) merged after CI passed (6d8aa24).
+- L4 (2026-11-14, user): "Sí, todo" — T2 committed, PR #8 opened and merged after CI passed.
+- L5 (2026-11-14, user): "describe el harness que se ha aplicado" → design described; "Sí, sigue".
+- L6 (2026-11-14): T3 findings. (a) The writer's order-reference regex read `P-11-0001` as two orders; generator ids changed (A4) with a test. (b) Without any inbox, a repeated `ShipmentDelayed` reaches the planner again, the handler rejects the second plan and the planner escalates the incident with `llm_output_invalid` before any step runs, so no effect duplicates can appear; E1 now runs three modes (A3). Seed 7, 12 incidents: `full` 0 duplicates; `no_effect_keys` 75 (2 deliveries) and 81 (3 deliveries), 69 consumer crashes, 23 poison messages; `none` 12/12 escalated. H1 holds.
+- L7 (2026-11-14): PR 3 measured ~797 changed lines; one slicing pass split it into 3a (oracle), 3b (harness) and 3c (report, E1, E2, CLI, docs), each within 400.
+- L8 (2026-11-14, user): "Yes, commit 3a" / "Yes, push and PR" / "mergeada PR" — 3a and 3b committed, PRs #9 and #10 merged after CI passed; each slice was tested alone before its commit.
