@@ -152,7 +152,7 @@ def generate(seed: int, size: int) -> Dataset:
     rng.shuffle(variants)
     orders, notices = [], []
     for i, cause in enumerate(variants, start=1):
-        order_id = f"P-{seed}-{i:04d}"
+        order_id = f"P-S{seed}N{i:04d}"  # sin guiones internos: el redactor lo reconoce como un solo pedido
         carrier = rng.choice(CARRIERS)
         order = SyntheticOrder(
             order_id=order_id, customer_ref=f"CUST-{rng.randrange(10_000):04d}", sku=rng.choice(SKUS),
