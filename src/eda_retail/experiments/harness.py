@@ -62,6 +62,32 @@ POISON_AFTER = 3  # caídas con el mismo mensaje antes de saltarlo
 _SERVICE_EFFECTS = {"mail": "customer_messages", "claims": "claims", "carrier": "shipments", "payments": "refunds"}
 
 
+@contextlib.contextmanager
+def isolated_database(base: Settings, name: str) -> Iterator[str]:
+    """Crea una base de datos propia con el esquema y las migraciones; la borra al salir."""
+    base_url, _, _ = base.database_url.rpartition("/")
+    with psycopg.connect(f"{base_url}/postgres", autocommit=True) as admin:
+        admin.execute(f"CREATE DATABASE {name}")
+    try:
+        url = f"{base_url}/{name}"
+        upgrade(url)
+        yield url
+    finally:
+        with contextlib.suppress(Exception), psycopg.connect(f"{base_url}/postgres", autocommit=True) as admin:
+            admin.execute(f"DROP DATABASE IF EXISTS {name} WITH (FORCE)")
+
+
+def effect_duplicates(conn: psycopg.Connection, services: Services) -> dict[str, int]:
+    """Ejecuciones externas repetidas del mismo paso, por tabla de efecto, y reservas de más."""
+    out: Counter[str] = Counter()
+    for attr, table in _SERVICE_EFFECTS.items():
+        out[table] += sum(n - 1 for n in getattr(services, attr).executions.values() if n > 1)
+    with conn.transaction():
+        row = conn.execute("SELECT count(*) - count(DISTINCT order_id) AS extra FROM reservations").fetchone()
+    out["reservations"] += row["extra"]
+    return {k: v for k, v in out.items() if v}
+
+
 @dataclass(frozen=True)
 class RunConfig:
     seed: int
@@ -116,11 +142,8 @@ class Harness:
 
     # -- ciclo de vida ---------------------------------------------------------------------
     def __enter__(self) -> Self:
-        base_url, _, _ = self._base.database_url.rpartition("/")
-        with psycopg.connect(f"{base_url}/postgres", autocommit=True) as admin:
-            admin.execute(f"CREATE DATABASE {self.name}")
-        url = f"{base_url}/{self.name}"
-        upgrade(url)
+        self._database = isolated_database(self._base, self.name)
+        url = self._database.__enter__()
         topic = f"eda.{self.name}"
         self._admin = AdminClient({"bootstrap.servers": self._base.kafka_bootstrap_servers})
         for fut in self._admin.create_topics([NewTopic(t, num_partitions=3, replication_factor=1)
@@ -150,9 +173,7 @@ class Harness:
         for c in (self.conn, getattr(self, "_projector_conn", None)):
             with contextlib.suppress(Exception):
                 c.close()
-        base_url, _, _ = self._base.database_url.rpartition("/")
-        with contextlib.suppress(Exception), psycopg.connect(f"{base_url}/postgres", autocommit=True) as admin:
-            admin.execute(f"DROP DATABASE IF EXISTS {self.name} WITH (FORCE)")
+        self._database.__exit__(None, None, None)
         with contextlib.suppress(Exception):
             for fut in self._admin.delete_topics([self.settings.events_topic, self.settings.dlq_topic]).values():
                 fut.result(timeout=30)
@@ -252,15 +273,8 @@ class Harness:
 
     # -- métricas ----------------------------------------------------------------------------
     def duplicates(self) -> dict[str, int]:
-        out: Counter[str] = Counter()
-        for attr, table in _SERVICE_EFFECTS.items():
-            out[table] += sum(n - 1 for n in getattr(self.services, attr).executions.values() if n > 1)
-        rows = self.conn.execute(
-            "SELECT count(*) - count(DISTINCT order_id) AS extra FROM reservations"
-        ).fetchone()
-        self.conn.commit()
-        out["reservations"] += rows["extra"]
-        return {k: v for k, v in out.items() if v}
+        self.conn.commit()  # cierra la transacción implícita de las lecturas anteriores
+        return effect_duplicates(self.conn, self.services)
 
     def result(self, elapsed: float) -> RunResult:
         c = self.conn
