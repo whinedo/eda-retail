@@ -81,7 +81,8 @@ El mapa SHALL mostrar como nodos: `eda-notice`, PostgreSQL, relay, Kafka (`eda.e
 
 - **GIVEN** un comando ejecutándose que genera eventos
 - **WHEN** llega un evento nuevo
-- **THEN** la arista entre su emisor y su destino se resalta unos segundos
+- **THEN** se resaltan unos segundos (3 s) su emisor, su destino y las aristas del camino más corto entre ellos en el mapa (ningún par emisor y destino es una arista directa: un `StepRequested` va de `orchestrator` a `executor-<acción>` pasando por PostgreSQL, el relay y Kafka)
+- **AND** un id que no está en el mapa no resalta nada
 
 ### Requirement: Detalle de un nodo
 

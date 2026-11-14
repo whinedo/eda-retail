@@ -1,7 +1,8 @@
-import { render, screen } from "@testing-library/react";
+import { act, render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import App from "./App";
-import type { ApiClient, Health } from "./api/client";
+import type { ApiClient, EventRow, Health, NodeDetail } from "./api/client";
 import type { StreamLike } from "./useCommandRun";
 
 const HEALTH: Health = {
@@ -16,7 +17,7 @@ function client(overrides: Partial<ApiClient> = {}): ApiClient {
     getHealth: vi.fn(async () => HEALTH),
     getTopology: vi.fn(async () => ({ nodes: [], edges: [] })),
     getEvents: vi.fn(async () => ({ events: [], next_before_seq: null })),
-    getNode: vi.fn(),
+    getNode: vi.fn(async () => Promise.reject(new Error("sin detalle en este test"))),
     runCommand: vi.fn(),
     sendInput: vi.fn(),
     ...overrides,
@@ -25,13 +26,19 @@ function client(overrides: Partial<ApiClient> = {}): ApiClient {
 
 class FakeStream implements StreamLike {
   static all: FakeStream[] = [];
+  readonly listeners = new Map<string, (event: MessageEvent) => void>();
   closed = false;
   constructor(readonly url: string) {
     FakeStream.all.push(this);
   }
-  addEventListener() {}
+  addEventListener(type: string, listener: (event: MessageEvent) => void) {
+    this.listeners.set(type, listener);
+  }
   close() {
     this.closed = true;
+  }
+  emit(type: string, data: unknown) {
+    act(() => this.listeners.get(type)?.(new MessageEvent(type, { data: JSON.stringify(data) })));
   }
 }
 
@@ -61,6 +68,19 @@ describe("Distribución de la pantalla", () => {
     render(<App client={client({ getHealth: vi.fn(async () => Promise.reject(new Error("boom"))) })} openStream={openStream} />);
 
     expect(await screen.findByText("Backend: sin conexión")).toBeInTheDocument();
+  });
+
+  it("al pulsar un nodo del mapa queda seleccionado", async () => {
+    const topology = {
+      nodes: [{ id: "relay", label: "Relay", kind: "code" as const, description: "", monitored: true }],
+      edges: [],
+    };
+    render(<App client={client({ getTopology: vi.fn(async () => topology) })} openStream={openStream} />);
+
+    const relay = await screen.findByRole("button", { name: "Relay" });
+    await userEvent.setup().click(relay);
+
+    expect(relay).toHaveAttribute("aria-pressed", "true");
   });
 });
 
@@ -96,5 +116,53 @@ describe("Panel de eventos en la pantalla", () => {
     expect(FakeStream.all.map((s) => s.url)).toContain("/api/events/stream?after_seq=1303");
     unmount();
     expect(FakeStream.all.every((s) => s.closed)).toBe(true);
+  });
+
+  it("Filtrar eventos por nodo: desde el mapa se abre el detalle y se filtra el panel", async () => {
+    const topology = {
+      nodes: [{ id: "planner", label: "Planificador", kind: "llm" as const, description: "", monitored: true }],
+      edges: [],
+    };
+    const detail: NodeDetail = {
+      id: "planner", label: "Planificador", kind: "llm", description: "Propone el plan.", monitored: true,
+      up: true, consumes: ["ShipmentDelayed"], emits: ["PlanCreated"], llm: null,
+    };
+    const api = client({ getTopology: vi.fn(async () => topology), getNode: vi.fn(async () => detail) });
+    const user = userEvent.setup();
+    render(<App client={api} openStream={openStream} />);
+
+    await user.click(await screen.findByRole("button", { name: "Planificador" }));
+    await user.click(await screen.findByRole("button", { name: "Filtrar eventos" }));
+
+    expect(api.getNode).toHaveBeenCalledWith("planner");
+    expect(api.getEvents).toHaveBeenLastCalledWith(expect.objectContaining({ node: "planner" }));
+  });
+
+  it("Comunicación en curso: un evento en vivo resalta su camino en el mapa", async () => {
+    FakeStream.all = [];
+    const topology = {
+      nodes: [
+        { id: "orchestrator", label: "Orquestador", kind: "code" as const, description: "", monitored: true },
+        { id: "postgres", label: "PostgreSQL", kind: "data" as const, description: "", monitored: false },
+      ],
+      edges: [{ source: "orchestrator", target: "postgres" }],
+    };
+    const { container } = render(
+      <App client={client({ getTopology: vi.fn(async () => topology) })} openStream={openStream} />,
+    );
+    await screen.findByRole("button", { name: "Orquestador" });
+    const events = FakeStream.all.find((stream) => stream.url.startsWith("/api/events/stream"));
+    const row: EventRow = {
+      seq: 7, event_id: "e7", event_type: "StepRequested", occurred_at: "2026-11-14T16:00:00+00:00",
+      sender: "orchestrator", receiver: "postgres", receivers: ["postgres"], incident_id: "INC-1",
+      plan_version: 1, partition: null, offset: null, causation_id: null, payload: {},
+    };
+
+    events!.emit("event", row);
+
+    const active = Array.from(container.querySelectorAll("[data-edge].edge--active")).map((e) =>
+      e.getAttribute("data-edge"),
+    );
+    expect(active).toEqual(["orchestrator->postgres"]);
   });
 });

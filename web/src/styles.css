@@ -297,6 +297,157 @@ button:disabled {
   border-radius: 6px;
 }
 
+/* Mapa de sistemas (T8): nodos posicionados sobre una capa SVG de aristas. */
+.system-map {
+  position: relative;
+  margin-top: 12px;
+}
+
+.system-map__edges {
+  position: absolute;
+  inset: 0;
+  overflow: visible;
+}
+
+.edge {
+  fill: none;
+  stroke: var(--data-fg);
+  stroke-width: 1.2;
+}
+
+.edge__head {
+  fill: var(--data-fg);
+}
+
+.edge--active {
+  stroke: var(--llm-fg);
+  stroke-width: 2.5;
+}
+
+.edge__head--active {
+  fill: var(--llm-fg);
+}
+
+.node {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px 10px;
+  border: 1px solid;
+  border-radius: 8px;
+  color: var(--ink);
+  font: 600 13px var(--sans);
+  text-align: center;
+  cursor: pointer;
+}
+
+.node--llm {
+  border-color: var(--llm-fg);
+  background: var(--llm-bg);
+}
+
+.node--code {
+  border-color: var(--code-fg);
+  background: var(--code-bg);
+}
+
+.node--data {
+  border-color: var(--data-fg);
+  background: var(--data-bg);
+}
+
+.node--external {
+  border-color: var(--external-fg);
+  background: var(--external-bg);
+}
+
+.node--simulated {
+  border: 1px dashed var(--external-fg);
+  background: var(--external-bg);
+}
+
+.node--active {
+  box-shadow:
+    0 0 0 2px var(--surface),
+    0 0 0 4px var(--llm-fg);
+}
+
+.node--selected {
+  outline: 2px solid var(--ink);
+  outline-offset: 2px;
+}
+
+.node:focus-visible {
+  outline: 2px solid var(--llm-fg);
+  outline-offset: 2px;
+}
+
+.node__dot {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+}
+
+.node__dot--up {
+  background: var(--ok);
+}
+
+.node__dot--down {
+  background: var(--down);
+}
+
+.node__dot--unknown {
+  background: var(--pending);
+}
+
+.legend {
+  position: absolute;
+  left: 0;
+  top: 430px;
+  font-size: 13px;
+}
+
+.legend ul {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 10px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.legend li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--muted);
+}
+
+.legend__swatch {
+  width: 18px;
+  height: 11px;
+  border: 1px solid;
+  border-radius: 3px;
+}
+
+.map__error {
+  color: var(--down);
+  font-size: 13px;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
 /* Panel de eventos intercambiados. */
 .events__bar {
   display: flex;

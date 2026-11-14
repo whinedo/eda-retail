@@ -4,7 +4,8 @@ import { CommandPanel } from "./components/CommandPanel";
 import { EventsPanel } from "./components/EventsPanel";
 import { Header } from "./components/Header";
 import { NodeDetailPanel } from "./components/NodeDetail";
-import { SystemMap } from "./components/SystemMap";
+import type { Highlight } from "./components/SystemMap";
+import { SystemMapPanel } from "./components/SystemMapPanel";
 import { type OpenStream, openEventSource } from "./useCommandRun";
 import { useHealth } from "./useHealth";
 import { useLiveEvents } from "./useLiveEvents";
@@ -15,13 +16,25 @@ export default function App({ client, openStream = openEventSource }: { client?:
   const health = useHealth(api);
   const events = useLiveEvents(api, openStream);
   const [selectedNode, setSelectedNode] = useState<string | null>(null);
+  // Comunicación en curso: el último evento recibido en vivo resalta su camino en el mapa.
+  const last = events.lastEvent;
+  const highlight = useMemo<Highlight | null>(
+    () => (last ? { sender: last.sender, receiver: last.receiver, seq: last.seq } : null),
+    [last],
+  );
 
   return (
     <div className="app">
       <Header health={health} />
       <CommandPanel client={api} openStream={openStream} />
       <main className="main">
-        <SystemMap />
+        <SystemMapPanel
+          client={api}
+          health={health}
+          highlight={highlight}
+          selected={selectedNode}
+          onSelect={setSelectedNode}
+        />
         {selectedNode && (
           <NodeDetailPanel
             client={api}
