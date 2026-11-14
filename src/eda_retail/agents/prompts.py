@@ -21,4 +21,9 @@ def format_orders(conn: psycopg.Connection, order_ids: list[str]) -> str:
         "SELECT order_id, sku, quantity, amount FROM orders WHERE order_id = ANY(%s) ORDER BY order_id",
         (order_ids,),
     ).fetchall()
+    return order_lines(rows)
+
+
+def order_lines(rows: list[dict]) -> str:
+    """Una línea por pedido: referencia, cantidad, SKU e importe (sin datos personales)."""
     return "\n".join(f"- {r['order_id']}: {r['quantity']} x {r['sku']}, importe {r['amount']}" for r in rows)

@@ -308,6 +308,7 @@ E1 compara tres modos de idempotencia: `full` (todo activo), `no_effect_keys` (l
 | `uv run eda-experiment e2` | E2: el ejecutor de `notify_customer` cae tras la mitad de sus pasos y se reinicia |
 | `uv run eda-experiment e3` | E3: 30 incidencias de pérdida con los dos almacenes sin stock; el replanner sustituye la reserva y el reenvío por un reembolso |
 | `uv run eda-experiment e4` | E4: 200 incidencias; borra cada vista, la reconstruye desde `events` y compara las huellas |
+| `uv run eda-experiment e5` | E5: el planificador aislado, con la interpretación etiquetada, sobre 40 incidencias y 3 repeticiones con Ollama; acierto global, por causa y planes que no coinciden. `--llm oracle` lo ejecuta sin coste y `--threshold` cambia el umbral de H5 (0,8) |
 | `uv run eda-experiment e7` | E7: 50 incidencias con un 50 % de fallos en `reserve_stock`; explica 10 elegidas al azar con `audit_trail` y la cadena de `causation_id` |
 
 Sin `--incidents`, cada experimento usa el tamaño de su escenario en la spec (E1 y E2: 50; E3: 30; E4: 200; E7: 50).
