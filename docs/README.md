@@ -221,11 +221,14 @@ Con Docker y Ollama instalados, y `.env` creado a partir de `.env.example` (fija
 docker compose up -d           # kafka, postgres y jaeger
 scripts/run-agents.sh          # terminal 1: todos los procesos, con un log por proceso en logs/
 scripts/notice.sh              # terminal 2: CLI interactivo de avisos
+scripts/run-web.sh             # opcional, terminal 4: front web en http://localhost:5173
 tail -f logs/*.log             # terminal 3: seguir el flujo
 scripts/stop-all.sh            # al terminar: para los procesos y los contenedores
 ```
 
 En el CLI interactivo, `s` carga los datos de ejemplo (pedidos `P-1001`…`P-1005` y su stock) y `1`…`4` envían un aviso de ejemplo; después se muestra cómo avanza la incidencia hasta que se resuelve o se escala. Las trazas completas están en Jaeger: `http://localhost:16686`.
+
+El front web (`scripts/run-web.sh`, spec `web-front`) hace lo mismo desde el navegador: el menú de la izquierda lanza los comandos de `scripts/notice.sh`, el mapa muestra los agentes, servicios e integraciones con su estado y resalta el camino de cada evento nuevo, y el panel inferior sigue los eventos en vivo (emisor, destino, partición/offset de Kafka y enlace a su traza en Jaeger). Al pulsar un nodo se ven su detalle y, en los agentes, sus métricas del LLM. Solo escucha en localhost y lee la base de datos con una conexión de solo lectura.
 
 ### Scripts
 
@@ -233,6 +236,7 @@ En el CLI interactivo, `s` carga los datos de ejemplo (pedidos `P-1001`…`P-100
 | --- | --- |
 | `scripts/run-agents.sh [--logs DIR] [--no-migrate]` | Comprueba que kafka y postgres están en marcha y que Ollama tiene `LLM_MODEL`, aplica las migraciones y arranca todos los procesos cargando `.env`; deja un log por proceso en `logs/` y los para todos con Ctrl+C o si alguno termina |
 | `scripts/notice.sh [argumentos de eda-notice]` | Abre `eda-notice` (por defecto, el modo interactivo) con la misma configuración (`.env`) |
+| `scripts/run-web.sh [--logs DIR]` | Arranca el front web: `eda-web` en `127.0.0.1:WEB_PORT` (8000 por defecto) y Vite en `http://localhost:5173`; la primera vez instala las dependencias de `web/` (`npm ci`, requiere Node 24). Carga `.env` (`WEB_PORT`, `JAEGER_UI_URL`) y para los dos con Ctrl+C o si uno termina |
 | `scripts/stop-all.sh [--dry-run] [--keep-docker]` | Para todos los procesos de la PoC y después los contenedores (`docker compose stop`, sin borrar datos); `--keep-docker` deja los contenedores y `--dry-run` solo muestra qué pararía |
 
 ### Comandos
@@ -251,6 +255,7 @@ Cada componente es un proceso independiente; los scripts anteriores los lanzan, 
 | `uv run eda-notice` | Modo interactivo: menú para enviar avisos (de ejemplo o texto libre) y seguir cada incidencia en la vista `incident_status` hasta que se cierra |
 | `uv run eda-notice seed` | Carga pedidos (`P-1001`…`P-1005`) y stock de ejemplo; repetirlo no duplica nada |
 | `uv run eda-notice send [--example delay\|loss\|out_of_stock\|injection] [--text "…"]` | Registra un aviso del transportista: la entrada que pone en marcha el flujo |
+| `uv run eda-web [--port N]` | Backend del front web (API y streams SSE) en `127.0.0.1`, puerto `WEB_PORT` (8000 por defecto); nunca escucha en otra interfaz |
 | `uv run eda-executor <acción>` | Ejecuta los `StepRequested` de una acción (`notify_customer`, `file_claim`, `reserve_stock`, `release_stock`, `reissue_shipment`, `issue_refund`), un proceso por acción |
 
 Cada proceso escribe en stdout una línea por evento recibido, por comando (aceptado o rechazado, con los eventos que produce) y por reintento (`LOG_LEVEL`, por defecto `INFO`); el detalle completo está en las trazas de Jaeger (`http://localhost:16686`).
