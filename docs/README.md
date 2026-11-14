@@ -190,6 +190,7 @@ Lado de comandos (escritura) y lado de consultas (lectura). Los pasos (1) a (4) 
 | `RefundIssued` | Ejecutor | `order_id`, `amount`, `refund_id` |
 | `IncidentResolved` | Orquestación | `incident_id`, `outcome` |
 | `IncidentEscalated` | Orquestación | `incident_id`, `reason` |
+| `LlmCallRecorded` | Agentes con LLM | `incident_id`, `agent`, `model`, `tokens_in`, `tokens_out`, `latency_ms`, `validation_passed`, `attempt` |
 
 ## Catálogo de comandos
 
@@ -202,9 +203,10 @@ Lado de comandos (escritura) y lado de consultas (lectura). Los pasos (1) a (4) 
 | `RequestStep` | Orquestación | `StepRequested` |
 | `RecordStepResult` | Ejecutores | `StepCompleted` o `StepFailed` y el evento de efecto |
 | `CloseIncident` | Orquestación | `IncidentResolved` |
-| `EscalateIncident` | Cualquiera | `IncidentEscalated` |
+| `EscalateIncident` | Cualquiera | `IncidentEscalated` (si la incidencia aún no existe, la crea escalada a partir de su aviso) |
+| `RecordLlmCall` | Agentes con LLM | `LlmCallRecorded` (no usa `expected_version` y admite incidencias cerradas) |
 
-Todos llevan `command_id` y `expected_version`. Los comandos solo existen dentro del command handler; lo que se publica y se guarda son los eventos.
+Todos llevan `command_id` y `expected_version` (`RecordLlmCall` lo ignora: es un hecho de solo añadir). Los comandos solo existen dentro del command handler; lo que se publica y se guarda son los eventos.
 
 ## Decisiones asumidas
 

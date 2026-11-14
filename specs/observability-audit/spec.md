@@ -19,7 +19,7 @@ El sistema SHALL generar una traza por incidencia identificada por su `incident_
 
 ### Requirement: Registro de las llamadas al LLM
 
-Cada llamada al LLM SHALL registrarse con el agente, el modelo, los tokens de entrada y salida, la latencia y si la salida pasó la validación. El registro MUST NOT incluir datos personales en claro.
+Cada llamada al LLM SHALL registrarse con el agente, el modelo, los tokens de entrada y salida, la latencia y si la salida pasó la validación. El registro MUST NOT incluir datos personales en claro. Cada llamada, aceptada o no, SHALL quedar en el log como un evento `LlmCallRecorded` y sumarse al presupuesto de la incidencia.
 
 #### Scenario: Llamada del planificador
 
