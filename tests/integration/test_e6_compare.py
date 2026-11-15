@@ -18,6 +18,7 @@ def test_comparison_without_faults(base_settings):
         assert set(v["latency_ms"]) == {"mean", "median", "p95"} and v["latency_ms"]["mean"] > 0
         assert v["tokens_in"]["mean"] > 0 and v["tokens_out"]["mean"] > 0
         assert "mean" in v["cost"] and v["resolved"]["mean"] == 4
+        assert v["escalation_reasons"] == {}  # el oráculo resuelve todas
     assert report.hypothesis == {}
 
 
@@ -29,5 +30,6 @@ def test_comparison_with_faults(base_settings):
         assert v["closed"]["mean"] == 4 and v["duplicates"] == 0
         assert {"resolved", "escalated", "refunded"} <= set(v)
     assert report.config["faults"]["duplicates"] == 2
+    assert all(isinstance(r["escalation_reasons"], dict) for r in report.runs)
     assert [(r["repetition"], r["version"]) for r in report.runs] == [
         (1, "events"), (1, "sync"), (2, "events"), (2, "sync")]

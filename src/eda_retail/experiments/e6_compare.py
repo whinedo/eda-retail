@@ -11,11 +11,12 @@ arnés) y en la base síncrona (`baseline_sync`), en dos escenarios (supuesto A1
 Por versión y escenario, el informe da la latencia por incidencia (media, mediana y p95 de
 todas las repeticiones), los tokens, las llamadas y el coste en dinero (tokens por los
 precios de la configuración), las incidencias resueltas, reembolsadas y escaladas, y los
-efectos duplicados. H6 no fija umbral: el informe describe las diferencias.
+efectos duplicados, y las escaladas por motivo. H6 no fija umbral: el informe describe las diferencias.
 """
 
 from __future__ import annotations
 
+from collections import Counter
 from collections.abc import Callable
 from decimal import Decimal
 from typing import Any
@@ -57,6 +58,7 @@ def _row(version: str, result: Any, refunded: int, base: Settings) -> dict[str, 
         "refunded": refunded, "duplicates": sum(result.duplicates.values()), "latencies_ms": result.latencies_ms,
         "llm_calls": result.llm_calls, "tokens_in": result.tokens_in, "tokens_out": result.tokens_out,
         "cost": float(cost), "elapsed_seconds": result.elapsed_seconds,
+        "escalation_reasons": dict(result.escalation_reasons),
     }
 
 
@@ -81,6 +83,10 @@ def _aggregate(rows: list[dict[str, Any]]) -> dict[str, Any]:
                            "duplicates": sum(r["duplicates"] for r in rows)}
     for key in ("closed", "resolved", "escalated", "refunded", "llm_calls", "tokens_in", "tokens_out", "cost"):
         out[key] = _spread([r[key] for r in rows])
+    reasons = Counter[str]()
+    for r in rows:
+        reasons.update(r["escalation_reasons"])
+    out["escalation_reasons"] = dict(sorted(reasons.items()))  # total de todas las repeticiones
     return out
 
 

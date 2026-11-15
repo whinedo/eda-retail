@@ -20,6 +20,7 @@ from __future__ import annotations
 import contextlib
 import time
 import uuid
+from collections import Counter
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from decimal import Decimal
@@ -331,6 +332,7 @@ class SyncResult:
     received: list[str]
     injected_failures: set[tuple[str, str]]
     log_rows: int  # tablas de log, outbox o inbox en su esquema: 0 en la base síncrona
+    escalation_reasons: dict[str, int] = field(default_factory=dict)
 
 
 def seed(conn: psycopg.Connection, data: Dataset, empty: tuple[str, ...] = ()) -> None:
@@ -387,13 +389,14 @@ class SyncRun:
     def result(self) -> SyncResult:
         c = self.conn
         with c.transaction():
-            rows = c.execute("SELECT status FROM baseline_sync.incidents").fetchall()
+            rows = c.execute("SELECT status, reason FROM baseline_sync.incidents").fetchall()
             refunded = c.execute("SELECT count(DISTINCT incident_id) AS n FROM baseline_sync.refunds").fetchone()["n"]
             log_rows = c.execute(
                 "SELECT count(*) AS n FROM information_schema.tables WHERE table_schema = 'baseline_sync'"
                 " AND table_name IN ('events', 'outbox', 'inbox')").fetchone()["n"]
         statuses = [r["status"] for r in rows]
         resolved, escalated = statuses.count("resolved"), statuses.count("escalated")
+        reasons = Counter(r["reason"] or "unknown" for r in rows if r["status"] == "escalated")
         calls = self.system.calls
         return SyncResult(
             config=self.config, model=getattr(self.llm, "model", "unknown"), closed=resolved + escalated,
@@ -403,6 +406,7 @@ class SyncRun:
             tokens_in=sum(x.tokens_in for x in calls), tokens_out=sum(x.tokens_out for x in calls),
             elapsed_seconds=self.elapsed, received=list(self.system.received),
             injected_failures=set(self.system.injected_failures), log_rows=log_rows,
+            escalation_reasons=dict(sorted(reasons.items())),
         )
 
 

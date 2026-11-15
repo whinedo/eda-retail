@@ -223,6 +223,7 @@ class RunResult:
     tokens_in: int
     tokens_out: int
     elapsed_seconds: float
+    escalation_reasons: dict[str, int] = field(default_factory=dict)
 
     @property
     def repeated_steps(self) -> int:
@@ -461,6 +462,10 @@ class Harness:
             "SELECT coalesce(sum(llm_calls), 0) AS calls, coalesce(sum(tokens_in), 0) AS tin, "
             "coalesce(sum(tokens_out), 0) AS tout FROM views.view_cost_per_incident"
         ).fetchone()
+        reasons = {r["reason"]: r["n"] for r in c.execute(
+            "SELECT coalesce(escalation_reason, 'unknown') AS reason, count(*) AS n FROM views.view_incident_status"
+            " WHERE status = 'escalated' GROUP BY 1 ORDER BY 1"
+        ).fetchall()}
         c.commit()
         closed = statuses["resolved"] + statuses["escalated"]
         return RunResult(
@@ -469,7 +474,7 @@ class Harness:
             duplicates=self.duplicates(), consumer_crashes=self.crashes,
             poison_messages=self.poison_messages, latencies_ms=[float(v) for v in latencies],
             llm_calls=int(cost["calls"]), tokens_in=int(cost["tin"]), tokens_out=int(cost["tout"]),
-            elapsed_seconds=elapsed,
+            elapsed_seconds=elapsed, escalation_reasons=reasons,
         )
 
 
