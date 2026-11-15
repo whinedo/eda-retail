@@ -190,3 +190,20 @@ def test_order_projected_when_the_deadline_expires(base_settings, database_url, 
     events = outbox(conn, "interpreter", incident)
     assert [e["event_type"] for e in events] == ["LlmCallRecorded", "ShipmentDelayed"]
     assert events[1]["payload"]["order_ids"] == [order]
+
+
+def test_ambiguous_notice_is_unknown_with_at_least_medium_severity(base_settings, database_url, conn):
+    """Aviso ambiguo: ShipmentDelayed con cause unknown y severity igual o superior a medium; una salida unknown
+    con severity low no pasa la validación"""
+    order = f"P-{uuid.uuid4().hex[:8]}"
+    _project_order(conn, order)
+    event, incident = _notice(f"Incidencia con el pedido {order}, sin más detalles")
+    llm = FakeLlmClient([_interpretation([order], cause="unknown", severity="low"),
+                         _interpretation([order], cause="unknown", severity="medium")])
+
+    _consumer(conn, _settings(base_settings, database_url), llm).process(event)
+
+    events = outbox(conn, "interpreter", incident)
+    assert [e["event_type"] for e in events] == ["LlmCallRecorded", "LlmCallRecorded", "ShipmentDelayed"]
+    assert [e["payload"]["validation_passed"] for e in events[:2]] == [False, True]
+    assert (events[2]["payload"]["cause"], events[2]["payload"]["severity"]) == ("unknown", "medium")

@@ -184,3 +184,24 @@ def test_an_incident_already_planned_rejects_another_create_plan(database_url, c
     assert response.json()["reason"] == "plan_exists"
     assert len(llm.requests) == 1
     assert _types(conn, incident).count("PlanCreated") == 1
+
+
+def test_planner_call_records_tokens_latency_and_validation(database_url, conn):
+    """Llamada del planificador: al terminar se registran los tokens, la latencia y el resultado de la validación"""
+    order, incident = _order(conn), _incident()
+    invalid = {"steps": [_step("S1", "delete_order", order)]}
+    llm = FakeLlmClient([invalid, _loss_plan(order)])
+
+    _create(_api(database_url, llm), incident, order)
+
+    recorded = [e for e in outbox(conn, "planner", incident) if e["event_type"] == "LlmCallRecorded"]
+    assert [(e["payload"]["attempt"], e["payload"]["validation_passed"]) for e in recorded] == [(1, False), (2, True)]
+    for e in recorded:
+        p = e["payload"]
+        assert (p["agent"], p["model"]) == ("planner", "fake-model")
+        assert p["tokens_in"] > 0 and p["tokens_out"] > 0 and p["latency_ms"] >= 0
+    with conn.transaction():
+        rows = conn.execute("SELECT tokens_in, tokens_out, latency_ms, validation_passed, attempt"
+                            " FROM planner.llm_calls WHERE incident_id = %s ORDER BY attempt", (incident,)).fetchall()
+    assert rows == [{k: e["payload"][k] for k in ("tokens_in", "tokens_out", "latency_ms", "validation_passed",
+                                                   "attempt")} for e in recorded]

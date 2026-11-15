@@ -186,3 +186,28 @@ def test_execute_step_of_another_action_is_rejected_without_events(database_url,
     assert response.status_code == 422
     assert response.json()["reason"] == "action_not_handled"
     assert outbox(conn, "inventory", incident) == []
+
+
+def test_repeated_compensation_releases_nothing(database_url, conn):
+    """Compensación repetida: un release_stock ya completado para la reserva R1 que llega de nuevo no libera nada
+    y devuelve el resultado guardado"""
+    order, sku, incident = _fresh()
+    key, command_id = f"k-{uuid.uuid4().hex}", uuid.uuid4()
+    with _api(database_url) as api:
+        _seed(api, order=order, sku=sku, quantity=2, available=5)
+        _step(api, incident, "S3", "reserve_stock", {"order_id": order})
+        first = _step(api, incident, "S3-comp", "release_stock", {"order_id": order}, key=key, command_id=command_id)
+        redelivered = _step(api, incident, "S3-comp", "release_stock", {"order_id": order}, key=key,
+                            command_id=command_id)
+        again = _step(api, incident, "S3-comp", "release_stock", {"order_id": order}, key=key)
+
+    assert first.status_code == redelivered.status_code == again.status_code == 202
+    assert redelivered.json() == first.json() and redelivered.headers["Idempotent-Replayed"] == "true"
+    assert _available(conn, sku) == 5
+    [reservation] = _reservations(conn, incident)
+    assert reservation["status"] == "released"
+    events = outbox(conn, "inventory", incident)
+    assert [e["event_type"] for e in events] == ["StockReserved", "StepCompleted", "StockReleased", "StepCompleted",
+                                                 "StepCompleted"]
+    assert events[4]["payload"]["result"] == events[3]["payload"]["result"] == {
+        "released": True, "reservation_id": reservation["reservation_id"]}
