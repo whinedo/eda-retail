@@ -6,7 +6,14 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-from eda_retail.projectors import audit_trail, carrier_dashboard, cost_per_incident, incident_status, orders
+from eda_retail.projectors import (
+    audit_trail,
+    carrier_dashboard,
+    cost_per_incident,
+    incident_status,
+    order_status,
+    orders,
+)
 from eda_retail.projectors.base import Projector
 
 
@@ -30,6 +37,7 @@ PROJECTORS: dict[str, ProjectorSpec] = {
     carrier_dashboard.PROJECTOR_NAME: ProjectorSpec(
         carrier_dashboard.build_projector, ("views.view_carrier_dashboard", "views.view_carrier_incidents")
     ),
+    order_status.PROJECTOR_NAME: ProjectorSpec(order_status.build_projector, ("views.view_order_status",)),
 }
 
 

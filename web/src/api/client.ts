@@ -69,6 +69,31 @@ export interface NodeDetail extends TopologyNode {
   llm: LlmMetrics | null;
 }
 
+// Vista de analítica de pedidos (spec web-front): GET /api/analytics/orders, solo lee order_status.
+export type OrderStatus = "delayed" | "in_resolution" | "resolved" | "refunded" | "escalated";
+
+export interface OrderStatusRow {
+  order_id: string;
+  incident_id: string;
+  status: OrderStatus;
+  last_event_type: string;
+  last_event_id: string;
+  occurred_at: string;
+  kafka_partition: number;
+  kafka_offset: number;
+}
+
+export interface OrderAnalytics {
+  counts: Record<OrderStatus, number>;
+  orders: OrderStatusRow[];
+  applied: Record<string, number>;
+}
+
+export interface OrderAnalyticsQuery {
+  status?: OrderStatus;
+  incidentId?: string;
+}
+
 export type CommandRequest =
   | { command: "seed" }
   | { command: "send"; example?: string; text?: string }
@@ -101,6 +126,7 @@ export interface ApiClient {
   getTopology(): Promise<Topology>;
   getEvents(query?: EventsQuery): Promise<EventsPage>;
   getNode(id: string): Promise<NodeDetail>;
+  getOrderAnalytics(query?: OrderAnalyticsQuery): Promise<OrderAnalytics>;
   runCommand(request: CommandRequest): Promise<CommandRun>;
   sendInput(runId: string, line: string): Promise<void>;
 }
@@ -129,6 +155,7 @@ export function createApiClient(fetchFn: FetchFn = (input, init) => fetch(input,
     getTopology: () => call("GET", "/api/topology"),
     getEvents: (query = {}) => call("GET", `/api/events${eventsQueryString(query)}`),
     getNode: (id) => call("GET", `/api/nodes/${encodeURIComponent(id)}`),
+    getOrderAnalytics: (query = {}) => call("GET", `/api/analytics/orders${analyticsQueryString(query)}`),
     runCommand: (request) => call("POST", "/api/commands", request),
     sendInput: async (runId, line) => {
       await call("POST", `/api/commands/${encodeURIComponent(runId)}/input`, { line });
@@ -142,6 +169,14 @@ function eventsQueryString(query: EventsQuery): string {
   if (query.beforeSeq !== undefined) params.set("before_seq", String(query.beforeSeq));
   if (query.incidentId) params.set("incident_id", query.incidentId);
   if (query.node) params.set("node", query.node);
+  const text = params.toString();
+  return text ? `?${text}` : "";
+}
+
+function analyticsQueryString(query: OrderAnalyticsQuery): string {
+  const params = new URLSearchParams();
+  if (query.status) params.set("status", query.status);
+  if (query.incidentId) params.set("incident_id", query.incidentId);
   const text = params.toString();
   return text ? `?${text}` : "";
 }

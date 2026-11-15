@@ -16,11 +16,15 @@ export function Header({
   jaegerUrl,
   onReset,
   resetDisabled = false,
+  analyticsOpen = false,
+  onAnalytics,
 }: {
   health: HealthState;
   jaegerUrl: string;
   onReset?: () => void;
   resetDisabled?: boolean;
+  analyticsOpen?: boolean;
+  onAnalytics?: () => void;
 }) {
   return (
     <header className="header">
@@ -28,6 +32,19 @@ export function Header({
         <strong>EDA Retail</strong>
         <span>Incidencias logísticas · PoC académica</span>
       </div>
+      {onAnalytics && (
+        <a
+          className="header__link header__link--analytics"
+          href="#/analytics"
+          aria-current={analyticsOpen ? "page" : undefined}
+          onClick={(e) => {
+            e.preventDefault();
+            onAnalytics();
+          }}
+        >
+          Analítica
+        </a>
+      )}
       {onReset && (
         <button
           type="button"

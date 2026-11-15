@@ -210,7 +210,7 @@ Además de la vista principal, que es de auditoría (mapa y eventos), el front S
 La vista SHALL mostrar:
 
 - un contador por estado de la vista `order_status` (spec `cqrs-views`, «Estado de los pedidos»): Envío retrasado (`ShipmentDelayed`), En proceso de solución (`PlanCreated`/`PlanRevised`), Solucionada (`IncidentResolved` `resolved`), Reembolsada (`IncidentResolved` `refunded`) y Escalada (`IncidentEscalated`); pulsar un contador filtra la tabla por ese estado;
-- una tabla de pedidos, los cambiados más recientemente primero, con las columnas pedido, estado, incidencia, último evento, timestamp y `seq`.
+- una tabla de pedidos, los cambiados más recientemente primero, con las columnas pedido, estado, incidencia, último evento, timestamp y partición / offset.
 
 La vista SHALL seguir las consideraciones de UX de la vista principal: la tabla MUST ser más ancha que su panel cuando no quepa, con desplazamiento horizontal a la derecha sin mover el resto de la pantalla y la cabecera fija en el desplazamiento vertical; SHALL actualizarse en vivo (un cambio aparece en menos de 2 segundos) con un control «Pausar»/«Reanudar»; y SHALL poder filtrarse por incidencia, como el panel de eventos. Solo lee la vista `order_status` (CQRS): no consulta el log ni las tablas de ningún componente.
 

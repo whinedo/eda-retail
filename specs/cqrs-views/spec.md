@@ -124,7 +124,7 @@ El sistema SHALL mantener las vistas `orders` (pedido, importe y `customer_ref`,
 
 ### Requirement: Estado de los pedidos
 
-La vista `order_status` SHALL dar el estado de negocio de cada pedido afectado por una incidencia, para la analítica del front (spec `web-front`, «Vista de analítica de pedidos»). Tiene una fila por pedido e incidencia (`order_id`, `incident_id`, `status`, el tipo y el `seq` del último evento que lo cambió y su timestamp) y la mantiene un proyector que consume Kafka, como el resto de vistas. Los estados y los eventos reales que los producen SHALL ser:
+La vista `order_status` SHALL dar el estado de negocio de cada pedido afectado por una incidencia, para la analítica del front (spec `web-front`, «Vista de analítica de pedidos»). Tiene una fila por pedido e incidencia (`order_id`, `incident_id`, `status` y, del último evento que lo cambió, su tipo, su `event_id`, su timestamp y su posición en Kafka: partición y offset; no guarda el `seq` de la vista del log, que asigna otro consumidor) y la mantiene un proyector que consume Kafka, como el resto de vistas. Los estados y los eventos reales que los producen SHALL ser:
 
 | Estado | Etiqueta | Evento |
 | --- | --- | --- |
