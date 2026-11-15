@@ -94,7 +94,7 @@ El experimento E5 SHALL medir el acierto del planificador sobre un conjunto etiq
 
 ### Requirement: E6 Eventos frente a síncrono (hipótesis H6)
 
-El experimento E6 SHALL comparar las dos versiones en latencia total por incidencia, tokens, coste, comportamiento ante fallos y número de incidencias resueltas y escaladas, con las escaladas contadas por motivo. H6 no fija un umbral: el objetivo es medir y describir las diferencias, con la media, la mediana y el percentil 95.
+El experimento E6 SHALL comparar las dos versiones en latencia total por incidencia, tokens, coste, comportamiento ante fallos y número de incidencias resueltas y escaladas, con las escaladas contadas por motivo. H6 no fija un umbral: el objetivo es medir y describir las diferencias, con la media, la mediana y el percentil 95. E6 SHALL escalar los plazos de la saga con el número de incidencias, sin bajar de los valores por defecto, porque la base síncrona no tiene plazos y el LLM es una sola cola compartida; el informe SHALL decir qué plazos se usaron.
 
 #### Scenario: Comparación sin fallos
 

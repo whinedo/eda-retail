@@ -12,6 +12,8 @@ Por versión y escenario, el informe da la latencia por incidencia (media, media
 todas las repeticiones), los tokens, las llamadas y el coste en dinero (tokens por los
 precios de la configuración), las incidencias resueltas, reembolsadas y escaladas, y los
 efectos duplicados, y las escaladas por motivo. H6 no fija umbral: el informe describe las diferencias.
+
+Los plazos de la saga crecen con las incidencias (`DEADLINE_PER_INCIDENT_S`) y el informe dice cuáles se usaron.
 """
 
 from __future__ import annotations
@@ -39,10 +41,29 @@ FAILING = {"reserve_stock": 0.3}
 # 25 s cada una), así que 300 s cortaban la versión de eventos con incidencias aún abiertas.
 TIMEOUT_PER_INCIDENT_S = 120
 
+# Plazos de la saga en E6. Un plazo empieza en el primer envío, así que incluye lo que el trabajo espera en la
+# cola de su componente por el LLM. Con un solo LLM local (Ollama atiende una petición a la vez), cada incidencia
+# pide unas 3,5 llamadas de unos 7 s a esa cola compartida: con 50 incidencias simultáneas la cola supera los
+# plazos de producción y la versión de eventos escala por `plan_timeout`, mientras la base síncrona no tiene
+# plazos. Por eso E6 escala los plazos con las incidencias (30 s por incidencia) y nunca baja de los valores
+# por defecto de producción (`SAGA_PLAN_TIMEOUT_S`, `SAGA_STEP_TIMEOUT_S`), que no cambian. El tope del harness
+# (`TIMEOUT_PER_INCIDENT_S`) queda por encima.
+DEADLINE_PER_INCIDENT_S = 30
+DEFAULT_PLAN_TIMEOUT_S = 300.0
+DEFAULT_STEP_TIMEOUT_S = 60.0
+
+
+def saga_deadlines(incidents: int) -> dict[str, float]:
+    """Los plazos de la saga de una ejecución de E6 con `incidents` incidencias."""
+    scaled = incidents * DEADLINE_PER_INCIDENT_S
+    return {"plan_timeout_seconds": max(DEFAULT_PLAN_TIMEOUT_S, scaled),
+            "step_timeout_seconds": max(DEFAULT_STEP_TIMEOUT_S, scaled)}
+
 
 def run_config(scenario: str, seed: int, incidents: int) -> RunConfig:
     timeout = max(RunConfig.timeout_seconds, incidents * TIMEOUT_PER_INCIDENT_S)
-    return RunConfig(seed=seed, incidents=incidents, faults=_faults(scenario, seed), timeout_seconds=timeout)
+    return RunConfig(seed=seed, incidents=incidents, faults=_faults(scenario, seed), timeout_seconds=timeout,
+                     **saga_deadlines(incidents))
 
 
 def _faults(scenario: str, seed: int) -> FaultPlan:
@@ -121,6 +142,7 @@ def run_e6(base: Settings, *, seed: int = 42, incidents: int = 50, repetitions: 
         config={"incidents": incidents, "repetitions": repetitions, "scenarios": list(scenarios),
                 "temperature": runs[0]["temperature"] if runs else None,
                 "faults": {"duplicates": DUPLICATES, "fail_probability": FAILING},
+                "saga_deadlines": saga_deadlines(incidents),
                 "prices": {"in_per_1k": str(base.llm_price_in_per_1k), "out_per_1k": str(base.llm_price_out_per_1k)}},
         metrics=metrics, hypothesis={},
         runs=[{k: v for k, v in r.items() if k != "latencies_ms"} for r in runs],
