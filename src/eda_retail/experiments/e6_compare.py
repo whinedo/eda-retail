@@ -35,6 +35,16 @@ DUPLICATES = 2
 FAILING = {"reserve_stock": 0.3}
 
 
+# Tope total de una ejecución en el harness: con el LLM real, las incidencias esperan su turno en Ollama (unos
+# 25 s cada una), así que 300 s cortaban la versión de eventos con incidencias aún abiertas.
+TIMEOUT_PER_INCIDENT_S = 120
+
+
+def run_config(scenario: str, seed: int, incidents: int) -> RunConfig:
+    timeout = max(RunConfig.timeout_seconds, incidents * TIMEOUT_PER_INCIDENT_S)
+    return RunConfig(seed=seed, incidents=incidents, faults=_faults(scenario, seed), timeout_seconds=timeout)
+
+
 def _faults(scenario: str, seed: int) -> FaultPlan:
     if scenario == "faults":
         return FaultPlan(seed=seed, duplicates=DUPLICATES, fail_probability=FAILING)
@@ -97,7 +107,7 @@ def run_e6(base: Settings, *, seed: int = 42, incidents: int = 50, repetitions: 
     runs, model = [], "unknown"
     for n in range(1, repetitions + 1):
         for scenario in scenarios:
-            config = RunConfig(seed=seed, incidents=incidents, faults=_faults(scenario, seed))
+            config = run_config(scenario, seed, incidents)
             for version, runner in (("events", _run_events), ("sync", _run_sync)):
                 client = factory(data, n)
                 model = getattr(client, "model", "unknown")
