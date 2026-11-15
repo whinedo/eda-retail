@@ -85,3 +85,17 @@ def test_order_status_view_migration_reverts(scratch_db):
     assert _columns(scratch_db, "view_order_status", "views") == set()
     upgrade(scratch_db)
     assert "status" in _columns(scratch_db, "view_order_status", "views")
+
+
+def test_command_jobs_migration_reverts(scratch_db):
+    """0019 crea command_jobs en los componentes con trabajo largo y su downgrade la borra"""
+    from eda_retail.infra.schemas import JOB_COMPONENTS
+
+    upgrade(scratch_db)
+    for schema in JOB_COMPONENTS:
+        assert {"job_id", "command_id", "status", "lease_until", "trace_context"} <= _columns(
+            scratch_db, "command_jobs", schema)
+    downgrade(scratch_db, "0018")
+    assert all(_columns(scratch_db, "command_jobs", schema) == set() for schema in JOB_COMPONENTS)
+    upgrade(scratch_db)
+    assert "outcome" in _columns(scratch_db, "command_jobs", "planner")

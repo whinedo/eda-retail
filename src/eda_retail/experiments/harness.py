@@ -53,6 +53,7 @@ from eda_retail.infra.command_client import CommandReply, CommandUnavailable
 from eda_retail.infra.commands import Accepted, CommandEnvelope, CommandSpec, execute_command
 from eda_retail.infra.consumer import EventConsumer
 from eda_retail.infra.db import connect
+from eda_retail.infra.jobs import run_job_once
 from eda_retail.infra.kafka import make_consumer
 from eda_retail.infra.migrations import upgrade
 from eda_retail.infra.outbox import ComponentRelay
@@ -335,6 +336,8 @@ class Harness:
         self._dispatcher_conn = self._connect()
         self._timer_conn = self._connect()
         self._dispatch_backoff = Backoff(0.01, 0.05, seed=self.config.seed)
+        self._jobs_conn = self._connect()
+        self._job_backoff = Backoff(0.01, 0.05, seed=self.config.seed)
         self._relays = [ComponentRelay.from_settings(s, schema) for schema in PUBLISHERS]
         self._readers = [event_log.build(s), *(consumer_for(p, s, self._connect()) for p in build_all())]
         self._closables += [*self._relays, *self._readers]
@@ -398,6 +401,14 @@ class Harness:
                                  backoff=self._dispatch_backoff):
                 break
             progressed += 1
+        for target in self.targets.values():  # trabajos de los comandos largos (CreatePlan, ExecuteStep…)
+            if not any(spec.deferred for spec in target.specs.values()):
+                continue
+            for _ in range(TURN_COMMANDS):
+                if not run_job_once(self._jobs_conn, target.schema, target.specs,
+                                    lease_seconds=self.settings.job_lease_seconds, backoff=self._job_backoff):
+                    break
+                progressed += 1
         progressed += expire_once(self._timer_conn, self.settings, self.rules)
         progressed += interpreter.expire_parked(self._timer_conn)
         return progressed

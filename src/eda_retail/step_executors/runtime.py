@@ -1,13 +1,15 @@
 """Runtime común de los ejecutores con command handler REST (T9; specs step-execution, idempotency y resilience).
 
-La saga invoca `ExecuteStep` en `EXECUTOR_<ACCIÓN>_URL`; el ejecutor responde con eventos:
+La saga invoca `ExecuteStep` en `EXECUTOR_<ACCIÓN>_URL`. Es un comando con trabajo largo (design.md §4.4):
+la petición solo lo acepta (`accept_step` rechaza otra acción, otra incidencia o un paso sin la causa que
+necesita el redactor) y responde 202; el worker del ejecutor hace después:
 
 1. `prepare`, fuera de la transacción: si `effect_keys` ya tiene la clave completada, devuelve su
    resultado sin preparar nada. Si no, la preparación de la acción (pedido en `view_orders`, borrador
    del redactor) y la llamada al servicio con la `idempotency_key`, reintentando los errores
    transitorios con espera exponencial y jitter hasta `STEP_MAX_ATTEMPTS`. El servicio reconoce la
    clave, así que una llamada repetida no repite el efecto.
-2. `handle`, en la transacción del comando: un `LlmCallRecorded` (y su fila) por llamada del
+2. `handle`, en la transacción del trabajo: un `LlmCallRecorded` (y su fila) por llamada del
    redactor; un error termina en `StepFailed` con `retryable` y `attempts` (y antes
    `IncidentEscalated` si el error escala la incidencia); si no, la clave en `effect_keys`, la fila
    del efecto, el evento del efecto y `StepCompleted`. Una clave ya completada devuelve el resultado
@@ -100,6 +102,26 @@ def _missing_context(action: StepAction, step: ExecuteStep) -> bool:
     return action.needs_context and (step.cause is None or step.estimated_delay_hours is None)
 
 
+def _rejection(action: StepAction, command: CommandEnvelope, step: ExecuteStep) -> Rejected | None:
+    """Lo que hace inválido el comando para este ejecutor; lo mismo en la aceptación y en el trabajo."""
+    if step.action != action.action:
+        return Rejected(ACTION_NOT_HANDLED)
+    if command.correlation_id != step.incident_id:
+        return Rejected(INCIDENT_MISMATCH)
+    if _missing_context(action, step):
+        return Rejected(MISSING_CONTEXT)  # el redactor necesita cause y estimated_delay_hours
+    return None
+
+
+def accept_step(action: StepAction):
+    """`accept` del comando: comprueba el comando en la petición, sin base de datos ni servicio."""
+
+    def accept(conn: psycopg.Connection, command: CommandEnvelope, step: ExecuteStep) -> Rejected | None:
+        return _rejection(action, command, step)
+
+    return accept
+
+
 class StepPreparer:
     """`prepare` del comando: lo que se hace fuera de la transacción."""
 
@@ -145,12 +167,8 @@ def execute_step(action: RecordingAction, settings: Settings):
 
     def handle(conn: psycopg.Connection, command: CommandEnvelope, step: ExecuteStep,
                prepared: Prepared) -> Accepted | Rejected:
-        if step.action != action.action:
-            return Rejected(ACTION_NOT_HANDLED)
-        if command.correlation_id != step.incident_id:
-            return Rejected(INCIDENT_MISMATCH)
-        if _missing_context(action, step):
-            return Rejected(MISSING_CONTEXT)  # el redactor necesita cause y estimated_delay_hours
+        if (rejected := _rejection(action, command, step)) is not None:
+            return rejected
 
         def event(event_type: str, payload: dict[str, Any]) -> EventEnvelope:
             return _event(command, producer, event_type, payload)

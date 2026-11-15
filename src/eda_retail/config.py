@@ -92,6 +92,16 @@ class Settings:
     command_http_timeout_s: float = field(
         default_factory=lambda: float(os.environ.get("COMMAND_HTTP_TIMEOUT_S", "5"))
     )
+    # Worker de los comandos con trabajo largo (design.md §4.4): lease de un trabajo tomado (si el worker cae,
+    # otro lo retoma al vencer), sondeo cuando no hay trabajo y espera entre reintentos de un trabajo que falla.
+    job_lease_seconds: float = field(default_factory=lambda: float(os.environ.get("JOB_LEASE_SECONDS", "600")))
+    job_poll_interval_s: float = field(default_factory=lambda: float(os.environ.get("JOB_POLL_INTERVAL_S", "0.2")))
+    job_retry_base_seconds: float = field(
+        default_factory=lambda: float(os.environ.get("JOB_RETRY_BASE_SECONDS", "1"))
+    )
+    job_retry_max_seconds: float = field(
+        default_factory=lambda: float(os.environ.get("JOB_RETRY_MAX_SECONDS", "30"))
+    )
     # Plazo de un aviso aparcado por el intérprete hasta que llegue su pedido (design.md §4.3).
     pending_notice_timeout_s: float = field(
         default_factory=lambda: float(os.environ.get("PENDING_NOTICE_TIMEOUT_S", "300"))

@@ -13,6 +13,9 @@ Aquí se definen las tablas de infraestructura que reutiliza cada componente:
 
 Las tablas propias de cada dominio (estado y proyecciones) las añade su tarea.
 
+`command_jobs` (trabajos de los comandos largos, `infra/jobs.py`) la crea la migración 0019 en los
+componentes de `JOB_COMPONENTS`, sin tocar `ddl()`.
+
 La migración 0008 aplica `ddl()` a su lista congelada de componentes: cambiar estas tablas o
 añadir un componente exige una migración nueva, nunca editar `ddl()`, porque una base nueva y una
 ya migrada acabarían distintas.
@@ -46,6 +49,10 @@ COMPONENTS: dict[str, Component] = {
     "event_log": Component(publishes=False),
     "views": Component(publishes=False),
 }
+
+
+# Componentes con comandos de trabajo largo (`CommandSpec.deferred`): tienen `command_jobs` (migración 0019).
+JOB_COMPONENTS = ("planner", "replanner", *(f"executor_{action}" for action in EXECUTOR_ACTIONS))
 
 
 def qualified(schema: str, table: str) -> str:
