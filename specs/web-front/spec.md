@@ -205,7 +205,7 @@ El panel SHALL mostrar los eventos más recientes primero, con las columnas emis
 
 ### Requirement: Origen de emisor y destino
 
-El emisor de un evento SHALL ser su campo `producer`. El destino SHALL derivarse de los tipos de evento que declara cada componente (design.md §3): los agentes en `eda_retail.agents.cli.AGENTS` y el orquestador en `eda_retail.orchestrator.runner.EVENT_TYPES`. Los proyectores leen todos los eventos y SHALL figurar siempre como último consumidor. El destino principal es el primer consumidor de esa lista y el resto se muestra en el detalle; un evento que solo leen los proyectores tiene `projectors` como destino.
+El emisor de un evento SHALL ser su campo `producer`. El destino SHALL derivarse de los tipos de evento que declara cada componente (design.md §3): los agentes en `eda_retail.agents.cli.AGENTS` (salvo los que ya solo atienden comandos REST, como `planner`) y el orquestador en `eda_retail.orchestrator.consumer.EVENT_TYPES`. Los proyectores leen todos los eventos y SHALL figurar siempre como último consumidor. El destino principal es el primer consumidor de esa lista y el resto se muestra en el detalle; un evento que solo leen los proyectores tiene `projectors` como destino.
 
 #### Scenario: Evento con consumidor único
 

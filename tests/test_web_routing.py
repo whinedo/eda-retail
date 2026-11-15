@@ -28,4 +28,10 @@ def test_event_without_kafka_consumer():
 def test_agents_receive_the_event_they_declare():
     """Cada agente recibe el tipo de evento que declara en agents.cli.AGENTS"""
     assert receivers("CarrierNoticeReceived", {})[0] == "interpreter"
-    assert receivers("ShipmentDelayed", {})[0] == "planner"
+    assert receivers("StepFailed", {})[1] == "replanner"
+
+
+def test_shipment_delayed_goes_to_the_saga():
+    """La saga consume ShipmentDelayed e invoca CreatePlan por REST: el planificador no lo consume"""
+    assert receivers("ShipmentDelayed", {}) == ["orchestrator", PROJECTORS]
+    assert receivers("IncidentEscalated", {})[0] == "orchestrator"
