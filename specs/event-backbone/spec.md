@@ -30,8 +30,8 @@ El `correlation_id` de todos los eventos de una incidencia SHALL ser su `inciden
 #### Scenario: Cadena de causalidad
 
 - **GIVEN** un `ShipmentDelayed` con `event_id` E1 e `incident_id` I1
-- **WHEN** el planificador publica `PlanCreated` como consecuencia
-- **THEN** el `PlanCreated` lleva `correlation_id` I1 y `causation_id` E1
+- **WHEN** la saga invoca `CreatePlan` con `causation_id` E1 y el planificador publica `PlanCreated` como consecuencia
+- **THEN** el `PlanCreated` lleva `correlation_id` I1 y como `causation_id` el `command_id` de ese `CreatePlan`, cuyo `causation_id` es E1
 
 ### Requirement: Log de eventos inmutable
 
@@ -88,9 +88,9 @@ El bus MUST entregar cada evento a cada consumidor al menos una vez y reentregar
 
 #### Scenario: Reentrega tras falta de confirmación
 
-- **GIVEN** un consumidor que recibe un evento y falla antes de confirmarlo
-- **WHEN** vence el tiempo de confirmación
-- **THEN** el bus reentrega el evento al consumidor
+- **GIVEN** un consumidor que recibe un evento y falla antes de confirmar su offset
+- **WHEN** se reinicia en el mismo grupo de consumidores
+- **THEN** el bus le vuelve a entregar el evento
 
 ### Requirement: Invocación de comandos
 
@@ -170,8 +170,8 @@ Cada tipo de evento SHALL tener un `event_version`. Un cambio incompatible de es
 
 #### Scenario: Evento de versión anterior
 
-- **GIVEN** un evento `ShipmentDelayed` de la versión 1 en el log
-- **AND** un proyector que espera la versión 2
+- **GIVEN** un evento `StepCompleted` de la versión 1 en el log
+- **AND** un proyector que espera la versión 2 (la del catálogo)
 - **WHEN** el proyector lee el evento
 - **THEN** lo convierte a la versión 2 al leerlo
 - **AND** el evento del log no cambia

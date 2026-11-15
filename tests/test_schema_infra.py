@@ -72,11 +72,6 @@ def test_inbox_switch_still_applies_per_schema():
     assert conn.statements == []
 
 
-def test_shared_inbox_is_unchanged_without_schema():
-    """Comportamiento anterior: sin esquema sigue usando la tabla compartida (hasta T10)"""
-    conn = FakeConn()
-    inbox.register(conn, "planner", uuid.uuid4())
-    assert conn.statements[0][0].startswith("INSERT INTO inbox (consumer, event_id)")
 
 
 def test_effect_keys_live_in_the_executor_schema():

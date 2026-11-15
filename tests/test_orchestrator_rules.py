@@ -115,7 +115,7 @@ def test_revision_keeps_ids_and_adds_new_steps():
 
 
 def test_revision_compensates_a_reservation_whose_dependent_is_cancelled():
-    """Fallo del reenvío tras reservar: el código deriva release_stock"""
+    """Fallo del reenvío tras reservar stock: el código deriva release_stock (el plan revisado no lo trae)"""
     steps = [_s("S1", "reserve_stock", "completed", result={"reservation_id": "R1"}),
              _s("S2", "reissue_shipment", "failed", depends_on=["S1"])]
     revised = [{"step_id": "S3", "action": "issue_refund", "params": {"order_id": "P-1", "amount": 10},
@@ -148,7 +148,7 @@ def test_escalation_cancels_pending_steps_and_compensates_reservations():
 
 
 def test_escalation_after_a_failed_compensation_does_not_compensate_again():
-    """Liberación falla: se escala sin volver a compensar"""
+    """La liberación del stock falla: se escala sin volver a compensar"""
     steps = [_s("S1", "reserve_stock", "compensating"),
              _s("S1-comp", "release_stock", "failed", compensates="S1"),
              _s("S2", "reissue_shipment", "cancelled", depends_on=["S1"])]

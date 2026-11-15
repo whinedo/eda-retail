@@ -87,8 +87,19 @@ def test_a_transient_error_is_retried_with_backoff():
     assert service.executed == 1
 
 
+def test_transient_error_solved_on_the_second_attempt():
+    """Error transitorio resuelto en el segundo intento: espera lo configurado, el segundo intento tiene éxito
+    y el efecto se ejecuta una sola vez"""
+    service = FakeService("carrier", "SH", timeouts=1)
+    sleeps: list[float] = []
+    prepared = _preparer(_Action(service), sleeps=sleeps)(_command(_step()), _step())
+    assert prepared.error is None and prepared.attempts == 2
+    assert sleeps == [Backoff(0.5, 10, seed=1).delay(1)]
+    assert (service.calls, service.executed) == (2, 1)
+
+
 def test_transient_errors_exhausted_end_in_a_retryable_failure():
-    """Reintentos agotados: StepFailed con retryable verdadero y el número de intentos"""
+    """Error transitorio / Reintentos agotados: StepFailed con retryable verdadero y el número de intentos"""
     service = FakeService("carrier", "SH", down=True)
     prepared = _preparer(_Action(service))(_command(_step()), _step())
     assert (prepared.error.error, prepared.error.retryable, prepared.attempts) == ("timeout", True, 3)

@@ -28,10 +28,10 @@ def record(
     event_id: uuid.UUID | None,
     correlation_id: str | None,
     raw: Any,
-    schema: str | None = None,
+    schema: str,
 ) -> int:
-    """Guarda la dead letter en `<schema>.dead_letters` (o en la tabla compartida, sin esquema)."""
-    table = qualified(schema, "dead_letters") if schema is not None else "dead_letters"
+    """Guarda la dead letter en `<schema>.dead_letters`."""
+    table = qualified(schema, "dead_letters")
     row = conn.execute(
         f"""
         INSERT INTO {table} (consumer, event_id, correlation_id, reason, raw_message)

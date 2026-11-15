@@ -18,8 +18,6 @@ dependencies = [
 ]
 
 [project.scripts]
-eda-relay = "eda_retail.infra.relay:main"
-eda-agent = "eda_retail.agents.cli:main"
 eda-projector = "eda_retail.projectors.cli:main"
 eda-event-log = "eda_retail.event_log.cli:main"
 eda-intake = "eda_retail.intake.cli:main"
@@ -30,7 +28,6 @@ eda-replanner = "eda_retail.replanner.cli:main"
 eda-step-executor = "eda_retail.step_executors.cli:main"
 eda-experiment = "eda_retail.experiments.cli:main"
 eda-orchestrator = "eda_retail.orchestrator.cli:main"
-eda-executor = "eda_retail.executors.cli:main"
 eda-notice = "eda_retail.synthetic.cli:main"
 eda-web = "eda_retail.web.cli:main"
 

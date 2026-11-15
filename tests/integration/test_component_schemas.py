@@ -60,7 +60,7 @@ def test_no_foreign_key_crosses_schemas(scratch_db):
 
 
 def test_upgrade_is_idempotent_and_downgrade_drops_the_schemas(scratch_db):
-    upgrade(scratch_db)
+    upgrade(scratch_db, "0016")  # 0017 borra el modelo compartido y no tiene vuelta atrás
     downgrade(scratch_db, "0007")
     assert _tables(scratch_db) == set()
     upgrade(scratch_db)

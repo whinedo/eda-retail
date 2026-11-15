@@ -276,4 +276,4 @@ El sistema MUST ignorar los `StepCompleted` y `StepFailed` de una `plan_version`
 - **GIVEN** un plan en la versión 2
 - **WHEN** llega un `StepFailed` generado por la versión 1
 - **THEN** el sistema no lo usa para decidir
-- **AND** queda registrado como obsoleto
+- **AND** queda registrado solo en el inbox del orquestador, sin cambiar el estado de la saga

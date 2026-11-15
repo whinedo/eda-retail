@@ -11,12 +11,13 @@ from dataclasses import replace
 
 import pytest
 
-from eda_retail.command.rules import BusinessRules
 from eda_retail.events.catalog import build_event
 from eda_retail.infra import command_client
+from eda_retail.infra.effect_keys import compute_idempotency_key
 from eda_retail.orchestrator.consumer import dead_letter_hook
 from eda_retail.orchestrator.dispatcher import dispatch_once, expire_once
 from eda_retail.orchestrator.saga import Saga
+from eda_retail.rules import BusinessRules
 
 from .component_helpers import outbox
 
@@ -202,7 +203,7 @@ def _replace_reissue_with_refund(conn, saga, incident):
 
 
 def test_revision_compensates_the_reservation_and_holds_the_refund(conn, saga):
-    """Fallo del reenvío tras reservar: release_stock derivado y reembolso retenido"""
+    """Fallo del reenvío tras reservar stock: release_stock derivado por el código y reembolso retenido"""
     incident = _open(conn, saga, LOSS)
 
     _replace_reissue_with_refund(conn, saga, incident)
@@ -213,14 +214,16 @@ def test_revision_compensates_the_reservation_and_holds_the_refund(conn, saga):
     [comp] = [c for c in _commands(conn, incident, "ExecuteStep") if c["payload"]["step_id"] == "S3-comp"]
     assert comp["payload"]["action"] == "release_stock" and comp["target"] == "inventory"
     assert comp["payload"]["params"]["reservation_id"] == "R1"
+    assert comp["payload"]["idempotency_key"] == compute_idempotency_key(incident, "S3-comp", origin_plan_version=2)
     assert "StepCancelled" in _types(conn, incident)
     assert _incident_row(conn, incident)["plan_version"] == 2
 
 
 def test_finished_compensation_releases_the_refund(conn, saga):
-    """Compensación terminada: el original pasa a compensated y se invoca issue_refund"""
+    """Estados tras una compensación / Compensación terminada: compensating, después compensated e issue_refund"""
     incident = _open(conn, saga, LOSS)
     _replace_reissue_with_refund(conn, saga, incident)
+    assert _statuses(conn, incident)["S3"] == "compensating"
 
     _completed(conn, saga, incident, "S3-comp", plan_version=2, result={"released": True})
 
@@ -229,14 +232,18 @@ def test_finished_compensation_releases_the_refund(conn, saga):
 
 
 def test_failed_release_escalates_without_refund(conn, saga):
-    """Liberación falla: escalado con compensation_failed y nunca se emite el reembolso"""
+    """La liberación del stock falla: release_stock con los reintentos agotados -> IncidentEscalated
+    compensation_failed y nunca se emite el reembolso"""
     incident = _open(conn, saga, LOSS)
     _replace_reissue_with_refund(conn, saga, incident)
 
-    _failed(conn, saga, incident, "S3-comp", plan_version=2, error="warehouse_down")
+    _failed(conn, saga, incident, "S3-comp", plan_version=2, error="timeout", retryable=True)
 
     assert _incident_row(conn, incident)["reason"] == "compensation_failed"
+    escalated = outbox(conn, "orchestrator", incident)[-1]
+    assert (escalated["event_type"], escalated["payload"]["reason"]) == ("IncidentEscalated", "compensation_failed")
     assert "S5" not in _executed(conn, incident)
+    assert _statuses(conn, incident)["S5"] == "cancelled"
 
 
 def test_escalation_with_a_reservation_compensates_it(conn, saga):
@@ -254,7 +261,9 @@ def test_escalation_with_a_reservation_compensates_it(conn, saga):
 
 
 def test_an_old_version_result_does_not_decide(conn, saga):
-    """Versión antigua: un StepFailed de la versión 1 no se usa tras la versión 2"""
+    """Resultado de una versión antigua: un StepFailed de la versión 1 no se usa tras la versión 2
+
+    El orquestador no lo usa para decidir: solo queda en su inbox (no hay registro explícito de obsoleto)."""
     incident = _open(conn, saga, LOSS)
     _replace_reissue_with_refund(conn, saga, incident)
     before = (_statuses(conn, incident), len(_commands(conn, incident)))
@@ -403,3 +412,63 @@ def test_a_dead_letter_escalates_its_incident(conn, saga, settings):
 
     assert _incident_row(conn, incident)["reason"] == "invalid_schema"
     assert _types(conn, incident)[-1] == "IncidentEscalated"
+
+
+def test_restarted_orchestrator_recovers_its_incidents_from_its_tables(conn, connect_db, settings):
+    """Reinicio del orquestador: la versión vigente, los pasos pendientes y los plazos de cada incidencia
+    salen de orchestrator.plan_steps y orchestrator.deadlines"""
+    before = Saga(settings, RULES)
+    incident = _open(conn, before, LOSS)
+    _replace_reissue_with_refund(conn, before, incident)
+
+    restarted = Saga(replace(settings), RULES)  # un proceso nuevo, sin memoria: solo sus tablas
+    other = connect_db()
+    _failed(other, restarted, incident, "S2", plan_version=1)  # resultado de la versión 1: ya no decide
+    _completed(other, restarted, incident, "S3-comp", plan_version=2, result={"released": True})
+
+    assert _incident_row(conn, incident)["plan_version"] == 2
+    statuses = _statuses(conn, incident)
+    assert (statuses["S2"], statuses["S3"], statuses["S5"]) == ("requested", "compensated", "requested")
+    with conn.transaction():
+        open_deadlines = conn.execute(
+            "SELECT step_id FROM orchestrator.deadlines WHERE incident_id = %s AND kind = 'execute_step'"
+            " AND resolved_at IS NULL", (incident,)).fetchall()
+    assert {d["step_id"] for d in open_deadlines} == {"S1", "S2", "S5"}
+
+
+class _CountingInvoke:
+    """Invocación REST falsa que mide cuántas hay en curso a la vez."""
+
+    def __init__(self) -> None:
+        self.in_flight = 0
+        self.peak = 0
+        self.calls: list[dict] = []
+
+    def __call__(self, url, command_type, **kw):
+        self.in_flight += 1
+        self.peak = max(self.peak, self.in_flight)
+        try:
+            self.calls.append({"command_type": command_type, **kw})
+            return command_client.CommandReply(202, {"status": "accepted"})
+        finally:
+            self.in_flight -= 1
+
+
+def test_burst_of_pending_steps_is_invoked_within_the_limit(conn, saga, settings):
+    """Pico de incidencias: 50 pasos pendientes se invocan sin superar el límite de operaciones en curso
+    y ninguno se pierde"""
+    steps = [_step(f"S{i}", "notify_customer") for i in range(1, 51)]
+    incident = _open(conn, saga, steps)
+    with conn.transaction():
+        conn.execute("UPDATE orchestrator.command_outbox SET next_attempt_at = 'infinity'"
+                     " WHERE status = 'pending' AND incident_id <> %s", (incident,))
+    invoke = _CountingInvoke()
+
+    for _ in range(200):
+        if not dispatch_once(conn, settings, RULES, invoke=invoke):
+            break
+
+    assert invoke.peak <= settings.executor_max_concurrency
+    invoked = [c["payload"]["step_id"] for c in invoke.calls if c["command_type"] == "ExecuteStep"]
+    assert sorted(invoked) == sorted(s["step_id"] for s in steps)
+    assert {c["status"] for c in _commands(conn, incident, "ExecuteStep")} == {"delivered"}

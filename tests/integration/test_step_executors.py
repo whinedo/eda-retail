@@ -80,7 +80,8 @@ def test_notify_customer_sends_the_drafted_notice(database_url, conn):
 
 
 def test_a_repeated_step_does_not_repeat_the_effect(database_url, conn):
-    """Paso pedido dos veces (otro command_id, misma clave): un solo efecto y el resultado guardado"""
+    """Duplicado tardío / Paso pedido dos veces (otro command_id, misma clave): un solo efecto y el resultado
+    guardado. El ejecutor no sabe si la incidencia ya se cerró: effect_keys descarta el duplicado igual."""
     order, incident, key = _order(conn), _incident(), uuid.uuid4().hex
     carrier = FakeService("carrier", "SH")
     api = _api(database_url, "reissue_shipment", service=carrier)
@@ -108,7 +109,8 @@ def test_transient_errors_are_retried_within_the_command(database_url, conn):
 
 
 def test_retries_exhausted_publish_a_retryable_failure(database_url, conn):
-    """Reintentos agotados: StepFailed con retryable verdadero y attempts, sin efecto"""
+    """Error transitorio / Reintentos agotados: el servicio no responde a tiempo y, agotados los reintentos,
+    StepFailed con retryable verdadero y attempts, sin efecto"""
     order, incident = _order(conn), _incident()
     carrier = FakeService("carrier", "SH", down=True)
 
@@ -187,3 +189,61 @@ def test_another_action_or_incident_is_rejected(database_url, conn):
     assert _execute(api, _step("issue_refund", order, incident, amount="1")).json()["reason"] == "action_not_handled"
     assert _execute(api, _step("reissue_shipment", order, incident),
                     correlation=_incident()).json()["reason"] == "incident_mismatch"
+
+
+def test_claim_filed(database_url, conn):
+    """Reclamación creada: ExecuteStep de file_claim válido -> ClaimFiled con claim_id y StepCompleted con el mismo step_id"""
+    order, incident = _order(conn), _incident()
+    llm = FakeLlmClient([{"text": NOTICE}])
+
+    response = _execute(_api(database_url, "file_claim", llm=llm), _step("file_claim", order, incident, step_id="S2"))
+
+    assert response.status_code == 202
+    events = _events(conn, "file_claim", incident)
+    assert [e["event_type"] for e in events] == ["LlmCallRecorded", "ClaimFiled", "StepCompleted"]
+    claim_id = events[1]["payload"]["claim_id"]
+    assert claim_id.startswith("C-") and events[1]["payload"]["order_id"] == order
+    assert events[2]["payload"]["step_id"] == "S2"
+    assert events[2]["payload"]["result"] == {"claim_id": claim_id}
+    with conn.transaction():
+        [row] = conn.execute("SELECT claim_id, step_id FROM executor_file_claim.claims WHERE incident_id = %s",
+                             (incident,)).fetchall()
+    assert row == {"claim_id": claim_id, "step_id": "S2"}
+
+
+def test_transient_error_solved_on_the_second_attempt(database_url, conn):
+    """Error transitorio resuelto en el segundo intento: un timeout, el segundo intento tiene éxito y el efecto
+    se ejecuta una sola vez"""
+    order, incident = _order(conn), _incident()
+    carrier = FakeService("carrier", "SH", timeouts=1)
+
+    _execute(_api(database_url, "reissue_shipment", service=carrier), _step("reissue_shipment", order, incident))
+
+    assert [e["event_type"] for e in _events(conn, "reissue_shipment", incident)] == ["ShipmentReissued",
+                                                                                     "StepCompleted"]
+    assert (carrier.calls, carrier.executed) == (2, 1)
+    assert _count(conn, "executor_reissue_shipment.shipments", incident) == 1
+
+
+def test_executor_restarted_mid_plan_runs_only_the_pending_steps(database_url, conn):
+    """Caída de un ejecutor a mitad de un plan: tras reiniciarse procesa los dos pasos pendientes y no repite
+    los dos completados, aunque la saga vuelva a invocarlos con el mismo command_id"""
+    order, incident = _order(conn), _incident()
+    steps = [_step("reissue_shipment", order, incident, step_id=f"S{i}") for i in range(1, 5)]
+    commands = [uuid.uuid4() for _ in steps]
+    before = FakeService("carrier", "SH")
+    api = _api(database_url, "reissue_shipment", service=before)
+    for payload, command_id in zip(steps[:2], commands[:2], strict=True):
+        assert api.post("/commands/ExecuteStep", json=body(incident, payload, command_id)).status_code == 202
+
+    after = FakeService("carrier", "SH")  # el proceso nuevo no recuerda nada: solo su esquema
+    restarted = _api(database_url, "reissue_shipment", service=after)
+    replies = [restarted.post("/commands/ExecuteStep", json=body(incident, payload, command_id))
+               for payload, command_id in zip(steps, commands, strict=True)]
+
+    assert [r.headers.get("Idempotent-Replayed") for r in replies] == ["true", "true", None, None]
+    assert after.calls == 2
+    assert _count(conn, "executor_reissue_shipment.shipments", incident) == 4
+    completed = [e["payload"]["step_id"] for e in _events(conn, "reissue_shipment", incident)
+                 if e["event_type"] == "StepCompleted"]
+    assert completed == ["S1", "S2", "S3", "S4"]

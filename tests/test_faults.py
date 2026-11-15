@@ -120,7 +120,7 @@ def test_fault_plan_rejects_invalid_values():
 
 def test_non_idempotent_service_repeats_the_effect():
     """Un servicio sin idempotencia (E1) repite el efecto con la misma clave y cuenta cada ejecución"""
-    from eda_retail.executors.services import FakeService
+    from eda_retail.step_executors.services import FakeService
 
     idempotent = FakeService("mail", "M")
     assert idempotent.call("k") == idempotent.call("k")
