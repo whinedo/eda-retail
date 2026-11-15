@@ -22,6 +22,13 @@ El planificador SHALL publicar `PlanCreated` para toda incidencia con `severity`
 - **WHEN** el planificador lo procesa
 - **THEN** publica `PlanCreated` con los pasos `notify_customer`, `file_claim`, `reserve_stock` y `reissue_shipment`
 
+#### Scenario: Plan ya creado
+
+- **GIVEN** una incidencia para la que el planificador ya publicó `PlanCreated`
+- **WHEN** recibe otro `CreatePlan` de esa incidencia con un `command_id` distinto
+- **THEN** rechaza el comando con el motivo `plan_exists`, sin llamar al LLM
+- **AND** no publica otro `PlanCreated`
+
 ### Requirement: Plan estructurado y versionado
 
 Todo plan MUST incluir `plan_version` y una lista de pasos, cada uno con `step_id`, `action`, `params` y `depends_on`. Las acciones permitidas SHALL ser `notify_customer`, `file_claim`, `reserve_stock`, `reissue_shipment`, `release_stock` y `issue_refund`.

@@ -63,6 +63,7 @@ class Settings:
     inventory_url: str = field(
         default_factory=lambda: os.environ.get("INVENTORY_URL", "http://127.0.0.1:8102")
     )
+    planner_url: str = field(default_factory=lambda: os.environ.get("PLANNER_URL", "http://127.0.0.1:8103"))
     command_http_timeout_s: float = field(
         default_factory=lambda: float(os.environ.get("COMMAND_HTTP_TIMEOUT_S", "5"))
     )

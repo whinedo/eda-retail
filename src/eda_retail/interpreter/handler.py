@@ -28,7 +28,6 @@ from eda_retail.events.catalog import build_event
 from eda_retail.events.envelope import EventEnvelope
 from eda_retail.infra.commands import Accepted, CommandEnvelope, Rejected
 from eda_retail.llm.generation import Budget, LlmCall, LlmClient, generate
-from eda_retail.queries.cost_per_incident import IncidentCost
 
 SCHEMA = "interpreter"
 DUPLICATE_NOTICE = "duplicate_notice"
@@ -59,12 +58,6 @@ class Decision:
     kind: str  # delayed | parked | escalated
     order_ids: list[str]
     reason: str | None
-
-
-def budget_from_cost(cost: IncidentCost | None, rules: BusinessRules) -> Budget:
-    """Presupuesto gastado según la proyección `cost_per_incident` (sin fila: nada gastado)."""
-    used, calls = (cost.tokens_in + cost.tokens_out, cost.llm_calls) if cost is not None else (0, 0)
-    return Budget(used, calls, rules.max_tokens_per_incident, rules.max_llm_calls_per_incident)
 
 
 def decide(value: NoticeInterpretation | None, reason: str | None, *, known_orders: list[str]) -> Decision:

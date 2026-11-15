@@ -50,7 +50,7 @@ _AGENTS = {
 }
 
 # El intérprete ya es un componente con su propio proceso (T5); el resto de agentes, hasta T6 y T8.
-_PROCESSES = {"interpreter": "eda-interpreter"}
+_PROCESSES = {"interpreter": "eda-interpreter", "planner": "eda-planner"}
 
 NODES: tuple[Node, ...] = (
     Node("intake", "eda-notice", "code", "CLI de avisos (scripts/notice.sh): registra CarrierNoticeReceived."),
