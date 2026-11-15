@@ -344,3 +344,13 @@ Interfaz local para operar y observar la PoC (spec `web-front`): un backend Fast
 
 - Configuración: `WEB_PORT` (backend; Vite reenvía `/api` al mismo puerto), `WEB_FREE_TEXT` y `WEB_INTERACTIVE` (`true` para ofrecer `send --text` e `interactive`; por defecto deshabilitados, porque la PoC es un ejemplo académico) y `JAEGER_UI_URL` (por defecto `http://localhost:16686`; si no es http(s) se usa el valor por defecto).
 - Tests: pytest para el backend (los de `tests/integration/test_web_events.py`, contra PostgreSQL) y Vitest + Testing Library para el front, con un `EventSource` falso. El hook `web` de pre-commit lanza `npm test` y `npm run typecheck`.
+
+## 15. Segunda versión: MCP y A2A (fuera de alcance)
+
+No se desarrolla por el momento; el resumen y cuándo usar cada modo de comunicación están en `docs/README.md`, «Segunda versión». Lo que cambiaría en el diseño:
+
+| Parte | Cómo |
+| --- | --- |
+| Servidor de correo simulado (MCP) | Un servidor MCP nuevo, fuera de los esquemas de la PoC, con una herramienta de envío y su buzón simulado. El ejecutor de `notify_customer` es el cliente MCP: envía el texto ya validado y guarda en `effect_keys` la `idempotency_key` del paso, así que un reintento no envía dos correos. El destinatario se resuelve en el servidor desde `customer_ref` |
+| Agente del transportista (A2A) | Un proceso aparte que publica su Agent Card y atiende tareas A2A. El planificador le envía una tarea antes de la llamada al LLM, fuera de la transacción (regla 6), con un plazo; si no responde o falla, planifica sin esas opciones. La respuesta entra en el prompt como contenido no confiable y no cambia la validación del plan ni la lista de acciones permitidas. Cada consulta se registra con un evento nuevo del catálogo (sin datos personales), para la auditoría y el front |
+| Guardrails | MCP: el cliente solo admite la herramienta de envío (lista blanca), valida entrada y salida con pydantic y limita los envíos por incidencia. A2A: autenticación del agente y Agent Card verificada, respuesta validada con pydantic antes de llegar al prompt, plazo y máximo de rondas `input-required`, solo referencias en la petición y la respuesta delimitada como contenido no confiable (prompt injection). Un fallo de un guardrail se registra y el planificador sigue sin las opciones del transportista |
