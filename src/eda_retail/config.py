@@ -7,12 +7,13 @@ definidas: cualquier `uv run eda-*` usa el `.env` del proyecto aunque no se pase
 from __future__ import annotations
 
 import os
-from collections.abc import MutableMapping
+from collections.abc import Mapping, MutableMapping
 from dataclasses import dataclass, field
 from decimal import Decimal
 from pathlib import Path
 
 ENV_FILE = ".env"
+POC_VERSIONS = (1, 2)  # 1: la primera versión; 2: añade el servidor de correo MCP y el agente A2A (design.md §15)
 
 
 def _env_bool(name: str, default: bool) -> bool:
@@ -39,8 +40,18 @@ def _database_url() -> str:
     return f"postgresql://{user}:{password}@{host}:{port}/{db}"
 
 
+def poc_version_from_env(environ: Mapping[str, str] = os.environ) -> int:
+    """`POC_VERSION` (1 por defecto). Cualquier otro valor que 1 o 2 es un error de configuración."""
+    raw = environ.get("POC_VERSION", "1").strip() or "1"
+    if raw not in {str(v) for v in POC_VERSIONS}:
+        raise ValueError(f"POC_VERSION debe ser 1 o 2, no {raw!r}")
+    return int(raw)
+
+
 @dataclass(frozen=True)
 class Settings:
+    # Versión de la PoC (POC_VERSION): con 1, el sistema se comporta como la primera versión.
+    poc_version: int = field(default_factory=lambda: int(os.environ.get("POC_VERSION", "1")))
     database_url: str = field(default_factory=_database_url)
     kafka_bootstrap_servers: str = field(
         default_factory=lambda: os.environ.get("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
@@ -107,6 +118,14 @@ class Settings:
     pending_notice_timeout_s: float = field(
         default_factory=lambda: float(os.environ.get("PENDING_NOTICE_TIMEOUT_S", "300"))
     )
+    # Segunda versión (spec mcp-mail): el servidor de correo MCP y el límite de correos por incidencia.
+    mail_server_url: str = field(
+        default_factory=lambda: os.environ.get("MAIL_SERVER_URL", "http://127.0.0.1:8120/mcp")
+    )
+    mail_server_port: int = field(default_factory=lambda: int(os.environ.get("MAIL_SERVER_PORT", "8120")))
+    mcp_max_emails_per_incident: int = field(
+        default_factory=lambda: int(os.environ.get("MCP_MAX_EMAILS_PER_INCIDENT", "3"))
+    )
     tracing_enabled: bool = field(default_factory=lambda: _env_bool("TRACING_ENABLED", True))
     otlp_endpoint: str = field(
         default_factory=lambda: os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4318")
@@ -143,4 +162,5 @@ def load_env_file(path: Path, environ: MutableMapping[str, str] = os.environ) ->
 
 def load_settings() -> Settings:
     load_env_file(Path.cwd() / ENV_FILE)
+    poc_version_from_env()  # un POC_VERSION no válido para el proceso con un error claro
     return Settings()
