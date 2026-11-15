@@ -5,8 +5,8 @@ Lo llama `PlanPreparer` en el `prepare` de `CreatePlan` (worker del planificador
 transacción, antes del LLM) solo con `POC_VERSION=2` (`from_settings`). Es código, no el LLM:
 
 - **Autenticación y Agent Card.** Cada petición lleva `Authorization: Bearer <A2A_CARRIER_TOKEN>`. Antes
-  de la primera tarea se lee la Agent Card y se comprueba su nombre (`carrier-agent`), su URL JSON-RPC
-  (`CARRIER_AGENT_URL`), la skill `delivery_options` y el esquema bearer; la card válida se guarda en el
+  de la primera tarea se lee la Agent Card y se comprueba su nombre (`carrier-agent`), que todas sus URL
+  JSON-RPC son `CARRIER_AGENT_URL`, la skill `delivery_options` y el esquema bearer; la card válida se guarda en el
   proceso. Si no coincide, no se envía la tarea.
 - **Solo referencias.** La tarea lleva `order_id` y la causa (`request_data` rechaza cualquier otro
   campo); en una ronda `input-required` solo se responde `tracking_ref` (el sintético del pedido). Si
@@ -14,7 +14,8 @@ transacción, antes del LLM) solo con `POC_VERSION=2` (`from_settings`). Es cód
 - **Respuesta validada** con `DeliveryOptions` (`extra="forbid"`, `notes` ≤ 500): lo que no cumple el
   esquema se descarta.
 - **Plazo y rondas.** Un plazo total de `A2A_TIMEOUT_S` para toda la consulta (card incluida) y como
-  mucho `A2A_MAX_ROUNDS` rondas `input-required`; al superarlos se cancela la tarea si ya existe.
+  mucho `A2A_MAX_ROUNDS` rondas `input-required`; los envíos no bloquean
+  (`return_immediately`) y se sondea la tarea, así que al superarlos se cancela la tarea ya creada.
 - **Prompt injection.** `render_options` da el JSON que va al prompt dentro del bloque de contenido no
   confiable, sin `<` ni `>` para que `notes` no pueda cerrar el delimitador.
 
@@ -38,7 +39,17 @@ from a2a.client import ClientConfig, ClientFactory
 from a2a.client.card_resolver import A2ACardResolver
 from a2a.client.errors import A2AClientTimeoutError
 from a2a.helpers.proto_helpers import get_data_parts, new_data_part, new_message
-from a2a.types import AgentCard, CancelTaskRequest, Message, Role, SendMessageRequest, Task, TaskState
+from a2a.types import (
+    AgentCard,
+    CancelTaskRequest,
+    GetTaskRequest,
+    Message,
+    Role,
+    SendMessageConfiguration,
+    SendMessageRequest,
+    Task,
+    TaskState,
+)
 from opentelemetry import trace
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, ValidationError
 
@@ -49,9 +60,9 @@ log = logging.getLogger(__name__)
 
 AGENT_NAME = "carrier-agent"
 SKILL_ID = "delivery_options"
-REQUEST_FIELDS = ("order_id", "cause", "tracking_ref")
 ANSWERABLE = {"tracking_ref"}
 CANCEL_TIMEOUT_S = 1.0
+POLL_INTERVAL_S = 0.05
 
 Outcome = Literal["answered", "timeout", "failed", "rejected_by_guardrail"]
 
@@ -97,9 +108,7 @@ def request_data(order_id: str, cause: str, **extra: str) -> dict[str, str]:
     unexpected = sorted(set(extra) - {"tracking_ref"})
     if unexpected:
         raise ValueError(f"campos no permitidos en la tarea A2A: {', '.join(unexpected)}")
-    data = {"order_id": order_id, "cause": cause, **extra}
-    assert set(data) <= set(REQUEST_FIELDS), data
-    return data
+    return {"order_id": order_id, "cause": cause, **extra}
 
 
 def render_options(options: DeliveryOptions) -> str:
@@ -164,11 +173,12 @@ class CarrierClient:
 
     async def _verified_card(self, http: httpx.AsyncClient) -> AgentCard:
         card = await A2ACardResolver(http, self._url).get_agent_card()
+        # Todas las interfaces JSON-RPC: ClientFactory elige la suya y el token no debe salir a otro host.
         urls = {i.url.rstrip("/") for i in card.supported_interfaces if i.protocol_binding == "JSONRPC"}
         bearer = any(s.http_auth_security_scheme.scheme.lower() == "bearer" for s in card.security_schemes.values())
         problems = [name for name, ok in (
             ("nombre", card.name == AGENT_NAME),
-            ("url", self._url in urls),
+            ("url", urls == {self._url}),
             ("skill", SKILL_ID in {s.id for s in card.skills}),
             ("bearer", bearer),
         ) if not ok]
@@ -202,11 +212,18 @@ class CarrierClient:
 
     @staticmethod
     async def _send(client, message: Message, progress: _Progress) -> Task:
-        [response] = [r async for r in client.send_message(SendMessageRequest(message=message))]
+        """Envío sin bloquear (`return_immediately`): el cliente conoce la tarea en cuanto se crea, así
+        que un plazo vencido puede cancelarla; después sondea su estado hasta que deja de trabajar."""
+        request = SendMessageRequest(message=message,
+                                     configuration=SendMessageConfiguration(return_immediately=True))
+        [response] = [r async for r in client.send_message(request)]
         if not response.HasField("task"):
             raise TaskFailed("el agente respondió con un mensaje, no con una tarea")
-        progress.task = response.task
-        return response.task
+        task = progress.task = response.task
+        while task.status.state in (TaskState.TASK_STATE_SUBMITTED, TaskState.TASK_STATE_WORKING):
+            await asyncio.sleep(POLL_INTERVAL_S)
+            task = progress.task = await client.get_task(GetTaskRequest(id=task.id))
+        return task
 
     @staticmethod
     async def _cancel(client, task: Task | None) -> None:

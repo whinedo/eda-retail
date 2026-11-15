@@ -105,6 +105,18 @@ def test_agent_card_mismatch(card, caplog):
     assert "agent_card_mismatch" in caplog.text and "I-1" in caplog.text and "trace=" in caplog.text
 
 
+def test_agent_card_with_a_foreign_json_rpc_interface():
+    """Agent Card distinta: todas sus interfaces JSON-RPC deben ser CARRIER_AGENT_URL (el token no sale a otro host)"""
+    agent = Recording()
+    card = server.agent_card(URL, extra_interface_urls=["http://elsewhere.test"])
+    app = server.create_app(url=URL, token=TOKEN, seed=42, executor=agent, card=card)
+
+    result = _client(app).consult("P-1001", "strike", incident_id="I-1")
+
+    assert (result.outcome, result.options) == ("rejected_by_guardrail", None)
+    assert agent.received == []
+
+
 def test_too_many_rounds():
     """Demasiadas rondas"""
     agent = Recording(ask_always=True)
@@ -156,7 +168,8 @@ def test_timeout_answers_timeout():
     result = _client(_fake_app(agent), timeout_s=0.2).consult("P-1001", "strike", incident_id="I-1")
 
     assert (result.outcome, result.options) == ("timeout", None)
-    assert result.latency_ms < 1500
+    assert result.latency_ms < 2000
+    assert len(agent.received) == 1 and len(agent.cancelled) == 1  # el cliente cancela la tarea creada
 
 
 def test_a_wrong_token_is_a_failure():

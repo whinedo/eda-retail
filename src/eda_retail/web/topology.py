@@ -111,8 +111,10 @@ EDGES: tuple[tuple[str, str], ...] = (
 )
 
 
-def node(node_id: str) -> Node:
-    """Nodo por id; KeyError si no existe."""
+def node(node_id: str, version: int = 1) -> Node:
+    """Nodo por id en el mapa de la versión `version`; KeyError si no existe (la 1 no conoce `carrier_agent`)."""
+    if version == 2 and node_id == CARRIER_AGENT.id:
+        return CARRIER_AGENT
     return _BY_ID[node_id]
 
 
@@ -139,4 +141,3 @@ def edges(version: int) -> tuple[tuple[str, str], ...]:
 def monitored(version: int) -> tuple[Node, ...]:
     """Los nodos con proceso propio que vigila la salud, según la versión."""
     return tuple(n for n in nodes(version) if n.process)
-_BY_ID[CARRIER_AGENT.id] = CARRIER_AGENT  # el detalle de nodo lo encuentra en la versión 2

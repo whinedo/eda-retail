@@ -196,3 +196,33 @@ def test_version_2_health_counts_the_carrier_agent():
     report = checker.report()
     assert report["processes"]["carrier_agent"] is True
     assert (report["processes_up"], report["processes_total"]) == (1, 14)
+
+
+def test_version_1_does_not_know_the_carrier_agent_node(monkeypatch):
+    """POC_VERSION=1: /api/nodes/carrier_agent responde 404 sin consultar la base de datos, como antes"""
+    monkeypatch.setenv("POC_VERSION", "1")
+    with pytest.raises(KeyError):
+        node("carrier_agent")
+    assert node("carrier_agent", 2).process == "eda-carrier-agent"
+    client = _client()
+    assert client.get("/api/nodes/carrier_agent").status_code == 404
+    body = client.get("/api/topology").json()
+    assert {n["id"] for n in body["nodes"]} == SPEC_NODES
+    assert len(body["edges"]) == len(EDGES)
+
+
+def test_version_2_app_shows_and_checks_the_carrier_agent(monkeypatch):
+    """POC_VERSION=2: /api/topology incluye el agente del transportista y la salud vigila su proceso"""
+    monkeypatch.setenv("POC_VERSION", "2")
+    app = create_app(database_url="postgresql://x:x@127.0.0.1:1/none")
+    body = TestClient(app, base_url="http://localhost").get("/api/topology").json()
+
+    assert {n["id"] for n in body["nodes"]} == SPEC_NODES | {"carrier_agent"}
+    assert {"source": "planner", "target": "carrier_agent"} in body["edges"]
+    assert app.state.health.monitored == topology.monitored(2)
+
+
+def test_version_1_app_health_monitors_the_version_1_processes(monkeypatch):
+    monkeypatch.setenv("POC_VERSION", "1")
+    app = create_app(database_url="postgresql://x:x@127.0.0.1:1/none")
+    assert app.state.health.monitored == MONITORED

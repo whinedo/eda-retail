@@ -51,15 +51,16 @@ BEARER = "bearer"
 
 
 def agent_card(url: str, *, name: str = rules.AGENT_NAME, skill_id: str = rules.SKILL_ID, bearer: bool = True,
-               interface_url: str | None = None) -> AgentCard:
+               interface_url: str | None = None, extra_interface_urls: tuple[str, ...] | list[str] = ()) -> AgentCard:
     """La Agent Card. Los argumentos con nombre solo los cambian los tests de los guardrails del cliente."""
     schemes = {BEARER: SecurityScheme(http_auth_security_scheme=HTTPAuthSecurityScheme(scheme="Bearer"))}
     return AgentCard(
         name=name,
         description="Agente del transportista (simulado): opciones de entrega para un pedido con incidencia.",
         version="1.0.0",
-        supported_interfaces=[AgentInterface(url=(interface_url or url).rstrip("/") + RPC_PATH,
-                                             protocol_binding="JSONRPC", protocol_version="1.0")],
+        supported_interfaces=[AgentInterface(url=u.rstrip("/") + RPC_PATH, protocol_binding="JSONRPC",
+                                             protocol_version="1.0")
+                              for u in (interface_url or url, *extra_interface_urls)],
         capabilities=AgentCapabilities(streaming=False),
         security_schemes=schemes if bearer else {},
         security_requirements=[SecurityRequirement(schemes={BEARER: StringList()})] if bearer else [],

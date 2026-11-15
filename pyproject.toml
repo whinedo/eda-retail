@@ -58,3 +58,7 @@ markers = [
 [tool.ruff]
 line-length = 120
 target-version = "py312"
+
+[tool.uv]
+# Transitive dependencies must be at least two weeks old (packages uploaded on or before 2026-11-01).
+constraint-dependencies = ["sse-starlette<3.7", "google-auth<2.62.1", "google-api-core<2.44"]
