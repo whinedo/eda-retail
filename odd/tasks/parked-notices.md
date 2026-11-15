@@ -17,7 +17,7 @@ Test runners: `uv run pytest -q tests --ignore=tests/integration` (unit; integra
 | --- | --- | --- | --- | --- |
 | T1 | S1 | inline (one delegated writer for the whole feature) | done | aa39e57 |
 | T2 | S2, S3, S5 | inline | done | 0fca349 |
-| T3 | S4, S5 | inline | done | this commit (feat(web-front): parked notices warning) |
+| T3 | S4, S5 | inline | done | 9fbc22b |
 
 ## Log
 

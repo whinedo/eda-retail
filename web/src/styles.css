@@ -894,7 +894,3 @@ body.resizing {
   font-family: var(--mono);
   color: var(--muted);
 }
-
-.parked-notices code {
-  font-family: var(--mono);
-}

@@ -44,7 +44,7 @@ _EXECUTOR_SERVICE = {
 }
 _WRITER_ACTIONS = {Action.NOTIFY_CUSTOMER, Action.FILE_CLAIM}
 _AGENTS = {
-    "interpreter": ("Intérprete", "Convierte el aviso del transportista en ShipmentDelayed. Sin herramientas."),
+    "interpreter": ("Intérprete", "Convierte el aviso del transportista en ShipmentDelayed (o NoticeParked si su pedido aún no existe). Sin herramientas."),
     "planner": ("Planificador", "Propone el plan de pasos; el command handler lo valida."),
     "replanner": ("Replanificador", "Revisa el plan cuando falla un paso."),
 }

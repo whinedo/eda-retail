@@ -146,7 +146,7 @@ def test_invalid_output_escalates_with_the_generation_reason(base_settings, data
 
 
 def test_lagging_projection_parks_the_notice_and_order_registered_resumes_it(base_settings, database_url, conn):
-    """Proyección atrasada: se aparca sin evento y el OrderRegistered de P-1007 lo reanuda con sus datos"""
+    """Proyección atrasada: se aparca con NoticeParked y el OrderRegistered de P-1007 lo reanuda con sus datos"""
     order = f"P-{uuid.uuid4().hex[:8]}"
     event, incident = _notice()
     consumer = _consumer(conn, _settings(base_settings, database_url), FakeLlmClient([_interpretation([order])]))
