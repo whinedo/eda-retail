@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Ofrecer una interfaz web local para operar y observar la PoC: lanzar los comandos de `scripts/notice.sh`, ver el mapa de sistemas (agentes, servicios, integraciones y comunicaciones) y seguir los eventos que se intercambian. El front es una vista de la PoC, no parte de su lógica: no escribe en el log de eventos ni salta el command handler (cqrs-views).
+Ofrecer una interfaz web local para operar y observar la PoC: lanzar los comandos de `scripts/notice.sh`, ver el mapa de sistemas (agentes, servicios, integraciones y comunicaciones), seguir los eventos que se intercambian (auditoría) y ver el estado de los pedidos afectados (analítica de negocio). El front es una vista de la PoC, no parte de su lógica: no escribe en el log de eventos ni salta el command handler (cqrs-views).
 
 Mockups validados: `docs/front/1-vista-general.png`, `2-ejecutando-send-loss.png`, `3-detalle-nodo-filtro.png`.
 
@@ -203,6 +203,43 @@ El panel SHALL mostrar los eventos más recientes primero, con las columnas emis
 - **THEN** no aparece
 - **AND** aparece, con su partición y su offset, en cuanto `event_log` lo guarda
 
+### Requirement: Vista de analítica de pedidos
+
+Además de la vista principal, que es de auditoría (mapa y eventos), el front SHALL tener una vista de negocio con el estado de los pedidos afectados por incidencias, accesible desde la principal con un enlace «Analítica» en la cabecera, siempre visible, y con un enlace de vuelta. Comparte la cabecera con el estado de la infraestructura.
+
+La vista SHALL mostrar:
+
+- un contador por estado de la vista `order_status` (spec `cqrs-views`, «Estado de los pedidos»): Envío retrasado (`ShipmentDelayed`), En proceso de solución (`PlanCreated`/`PlanRevised`), Solucionada (`IncidentResolved` `resolved`), Reembolsada (`IncidentResolved` `refunded`) y Escalada (`IncidentEscalated`); pulsar un contador filtra la tabla por ese estado;
+- una tabla de pedidos, los cambiados más recientemente primero, con las columnas pedido, estado, incidencia, último evento, timestamp y `seq`.
+
+La vista SHALL seguir las consideraciones de UX de la vista principal: la tabla MUST ser más ancha que su panel cuando no quepa, con desplazamiento horizontal a la derecha sin mover el resto de la pantalla y la cabecera fija en el desplazamiento vertical; SHALL actualizarse en vivo (un cambio aparece en menos de 2 segundos) con un control «Pausar»/«Reanudar»; y SHALL poder filtrarse por incidencia, como el panel de eventos. Solo lee la vista `order_status` (CQRS): no consulta el log ni las tablas de ningún componente.
+
+#### Scenario: Acceso desde la vista principal
+
+- **GIVEN** el front abierto en la vista principal
+- **WHEN** el usuario pulsa «Analítica» en la cabecera
+- **THEN** ve los contadores por estado y la tabla de pedidos
+- **AND** vuelve a la vista principal con el enlace de vuelta, sin perder el filtro ni la altura del panel de eventos
+
+#### Scenario: Pedido reembolsado en vivo
+
+- **GIVEN** la vista de analítica en vivo con P-1001 en «En proceso de solución»
+- **WHEN** se proyecta el `IncidentResolved` de su incidencia con `outcome` `refunded`
+- **THEN** en menos de 2 segundos P-1001 aparece como «Reembolsada» y los contadores cambian
+
+#### Scenario: Filtro por estado
+
+- **GIVEN** pedidos en varios estados
+- **WHEN** el usuario pulsa el contador «Envío retrasado»
+- **THEN** la tabla solo muestra los pedidos en `delayed`
+
+#### Scenario: Desplazamiento lateral en la analítica
+
+- **GIVEN** la tabla de pedidos más ancha que su panel
+- **WHEN** el usuario se desplaza a la derecha
+- **THEN** ve las columnas restantes sin que se mueva el resto de la pantalla
+- **AND** la cabecera de la tabla sigue visible al desplazarse en vertical
+
 ### Requirement: Origen de emisor y destino
 
 El emisor de un evento SHALL ser su campo `producer`. El destino SHALL derivarse de los tipos de evento que declara cada componente (design.md §3): los agentes en `eda_retail.agents.cli.AGENTS` (salvo los que ya solo atienden comandos REST, como `planner`) y el orquestador en `eda_retail.orchestrator.consumer.EVENT_TYPES`. Los proyectores leen todos los eventos y SHALL figurar siempre como último consumidor. El destino principal es el primer consumidor de esa lista y el resto se muestra en el detalle; un evento que solo leen los proyectores tiene `projectors` como destino.
@@ -350,6 +387,7 @@ La cabecera SHALL ofrecer un enlace a la interfaz web de Jaeger, que se abre en 
 | `GET /api/topology` | Nodos y aristas del mapa |
 | `GET /api/nodes/{id}` | Detalle y métricas de un nodo |
 | `GET /api/health` | Kafka, PostgreSQL, Ollama y procesos |
+| `GET /api/analytics/orders?status=&incident_id=` | Contadores por estado y pedidos de `order_status`, con `applied` |
 | `GET /api/config` | Configuración para el front (`jaeger_ui_url`, `free_text_enabled`, `interactive_enabled`) |
 | `POST /api/commands` | Ejecuta un comando de la lista blanca; devuelve `run_id` |
 | `GET /api/commands/{run_id}/stream` | SSE con la salida y, al final, el código de salida |
