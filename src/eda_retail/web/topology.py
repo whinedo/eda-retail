@@ -55,11 +55,16 @@ _PROCESSES = {"interpreter": "eda-interpreter", "planner": "eda-planner", "repla
 _EXECUTOR_PROCESSES = {Action.RESERVE_STOCK: "eda-inventory", Action.RELEASE_STOCK: "eda-inventory"}
 
 NODES: tuple[Node, ...] = (
-    Node("intake", "eda-notice", "code", "CLI de avisos (scripts/notice.sh): registra CarrierNoticeReceived."),
+    Node("intake", "Recepción (intake)", "code",
+         "Registra los avisos que envía eda-notice (RegisterCarrierNotice) y publica CarrierNoticeReceived.", "eda-intake"),
     Node("postgres", "PostgreSQL", "data", "Un esquema por componente: estado, outbox, inbox, el log event_log.events y las vistas views.*."),
-    Node("relay", "Relay", "code", "Publica en Kafka las filas pendientes de outbox, en orden de seq.", "eda-relay"),
+    Node("relay", "Relay", "code",
+         "Cada componente publica en Kafka su outbox con su propio relay (un hilo de su proceso)."),
     Node("kafka", "Kafka (eda.events)", "data", "Topic único con todos los eventos."),
     Node("dlq", "eda.dlq", "data", "Mensajes que un consumidor no pudo procesar (dead letters)."),
+    Node("event_log", "Log de eventos", "code",
+         "Guarda cada evento consumido de Kafka en event_log.events, ordenado; alimenta el panel de eventos.",
+         "eda-event-log"),
     Node("projectors", "Proyector", "code", "Mantiene las vistas views.view_* consumiendo Kafka, con su offset por partición.", "eda-projector"),
     *(Node(agent, label, "llm", desc, _PROCESSES.get(agent, f"eda-agent {agent}"), agent)
       for agent, (label, desc) in _AGENTS.items()),
@@ -91,6 +96,8 @@ EDGES: tuple[tuple[str, str], ...] = (
     ("relay", "kafka"),
     ("relay", "dlq"),
     ("kafka", "projectors"),
+    ("kafka", "event_log"),
+    ("event_log", "postgres"),
     ("projectors", "postgres"),
     *(("kafka", c) for c in _CONSUMERS),
     *((c, "postgres") for c in _CONSUMERS),  # escriben a través del command handler
