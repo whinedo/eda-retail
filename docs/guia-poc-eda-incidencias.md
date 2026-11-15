@@ -629,7 +629,6 @@ Una conclusión del tipo «EDA es más fiable» exige cautela: la versión sínc
 | --- | --- |
 | `docs/README.md` | Resumen: contexto, catálogos, decisiones y experimentos |
 | `docs/guia-poc-eda-incidencias.md` | Esta guía |
-| `docs/diagrama-*.pdf` | Diagramas de agentes, saga y CQRS en vector |
 | `design.md` | Diseño técnico: componentes, flujos, configuración de Kafka |
 | `specs/<capacidad>/spec.md` | Requisitos SHALL/MUST con escenarios GIVEN/WHEN/THEN |
 | `db/init/001_schema.sql` | Esquema de PostgreSQL |
