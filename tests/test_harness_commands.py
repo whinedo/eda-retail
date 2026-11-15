@@ -119,3 +119,47 @@ def test_seed_payload_empties_the_chosen_warehouses():
     emptied = [s for s in payload["stock"] if s["warehouse"] == data.stock[0].warehouse]
     assert emptied and all(s["available"] == 0 for s in emptied)
     assert set(payload["orders"][0]) == {"order_id", "customer_ref", "sku", "quantity", "amount", "carrier"}
+
+
+# --- Servidor de correo MCP en el arnés (POC_VERSION=2) ---------------------------------------
+
+
+def test_version_one_runs_without_a_mail_server():
+    """POC_VERSION=1: el arnés no monta el servidor MCP; notify_customer usa el servicio simulado"""
+    assert harness.mail_server_for(harness.Services(), 1) is None
+
+
+@pytest.mark.parametrize(("idempotent", "repeated"), [(True, 0), (False, 1)])
+def test_version_two_mail_goes_through_the_in_process_mcp_server(idempotent, repeated):
+    """POC_VERSION=2 sin proceso aparte: el correo pasa por un servidor MCP en proceso respaldado por el
+    servicio simulado, así E1 sigue contando los envíos repetidos cuando la idempotencia está desactivada"""
+    from eda_retail.executor_notify_customer.mail_client import McpMailClient, SendEmailInput
+
+    services = harness.Services()
+    services.mail.idempotent = idempotent
+    client = McpMailClient(harness.mail_server_for(services, 2))
+    request = SendEmailInput(customer_ref="CUST-0042", subject="Su pedido", body="Llega tarde.", idempotency_key="K1")
+    first, again = client.send_email(request), client.send_email(request)
+    assert first.message_id.startswith("M-")
+    assert (first.message_id == again.message_id) is idempotent
+    assert harness.service_duplicates(services)["notify_customer"] == repeated
+
+
+# --- Agente del transportista A2A en el arnés (POC_VERSION=2) ----------------------------------
+
+
+def test_the_harness_planner_does_not_consult_the_carrier_by_default(monkeypatch):
+    """E5 y E6 sin agente del transportista: el harness no consulta por A2A aunque POC_VERSION=2"""
+    from eda_retail.config import Settings
+    from eda_retail.experiments.harness import Harness, RunConfig
+    from eda_retail.llm.fake import FakeLlmClient
+
+    monkeypatch.setenv("POC_VERSION", "2")
+    harness = Harness(Settings(), RunConfig(seed=1, incidents=1), llm=FakeLlmClient([]))
+    harness.settings = Settings()
+    assert harness._targets()["planner"].specs["CreatePlan"].prepare._carrier is None
+
+    injected = object()
+    harness = Harness(Settings(), RunConfig(seed=1, incidents=1), llm=FakeLlmClient([]), carrier=injected)
+    harness.settings = Settings()
+    assert harness._targets()["planner"].specs["CreatePlan"].prepare._carrier is injected

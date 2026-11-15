@@ -16,7 +16,7 @@ EXPECTED_TYPES = {
     "CarrierNoticeReceived", "ShipmentDelayed", "PlanCreated", "PlanRevised", "StepRequested",
     "StepCompleted", "StepFailed", "CustomerNotified", "ClaimFiled", "StockReserved",
     "StockReleased", "ShipmentReissued", "RefundIssued", "IncidentResolved", "IncidentEscalated",
-    "LlmCallRecorded", "StepCancelled", "OrderRegistered", "NoticeParked",
+    "LlmCallRecorded", "StepCancelled", "OrderRegistered", "NoticeParked", "CarrierConsulted",
 }
 VERSION_2 = {"StepCompleted", "StepFailed"}
 
@@ -214,3 +214,17 @@ def test_projector_upcasters_reject_shadowing_shared_converter():
     own.register("StepCompleted", 1)(lambda p: p)
     with pytest.raises(ValueError, match="StepCompleted"):
         Projector("test", {}, upcasters=own)
+
+
+def test_carrier_consulted_carries_the_outcome_without_notes():
+    """CarrierConsulted v1 (spec a2a-carrier): incident_id, outcome, rounds y latency_ms; ni notes ni datos personales"""
+    payload = {"incident_id": "I-1", "outcome": "answered", "rounds": 1, "latency_ms": 40}
+    ev = build_event("CarrierConsulted", payload, correlation_id="I-1", causation_id=None, producer="planner")
+    assert (ev.event_version, ev.payload) == (1, payload)
+    for outcome in ("timeout", "failed", "rejected_by_guardrail"):
+        build_event("CarrierConsulted", {**payload, "outcome": outcome}, correlation_id="I-1", causation_id=None,
+                    producer="planner")
+    for bad in ({"outcome": "maybe"}, {"rounds": -1}, {"notes": "texto libre"}):
+        with pytest.raises(PayloadError):
+            build_event("CarrierConsulted", {**payload, **bad}, correlation_id="I-1", causation_id=None,
+                        producer="planner")

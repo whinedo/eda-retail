@@ -1,15 +1,22 @@
-"""Ejecutor de `notify_customer` (T9): el aviso al cliente, redactado por el LLM, en `customer_messages`."""
+"""Ejecutor de `notify_customer` (T9): el aviso al cliente, redactado por el LLM, en `customer_messages`.
+
+El correo lo envía su `Mailer`: el servicio simulado en proceso (versión 1) o el servidor de correo MCP
+(versión 2, spec mcp-mail). `CustomerNotified` lleva el `message_id` del envío y ningún dato personal.
+"""
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 import psycopg
 
+from eda_retail.executor_notify_customer.mailer import Mailer
 from eda_retail.infra.commands import CommandEnvelope
-from eda_retail.llm.generation import LlmCall
+from eda_retail.llm.generation import Budget, LlmCall
+from eda_retail.llm.prompts.writer import Writer
 from eda_retail.step_executors.drafted import Drafted
-from eda_retail.step_executors.runtime import ExecuteStep, Prepared
+from eda_retail.step_executors.runtime import ExecuteStep, Preparation, Prepared
 
 SCHEMA = "executor_notify_customer"
 
@@ -19,6 +26,19 @@ class NotifyCustomer(Drafted):
     kind = "customer_notice"
     schema = SCHEMA
     effect_event = "CustomerNotified"
+
+    def __init__(self, writer: Writer, mailer: Mailer, *, order_known: Callable[[str], bool],
+                 budget: Callable[[str], Budget]) -> None:
+        super().__init__(writer, None, order_known=order_known, budget=budget)
+        self.mailer = mailer
+
+    def prepare(self, step: ExecuteStep) -> Preparation:
+        if (error := self.mailer.check(step)) is not None:  # sin redactar: no se pagará el LLM
+            return Preparation(error=error)
+        return super().prepare(step)
+
+    def call(self, step: ExecuteStep, preparation: Preparation) -> str:
+        return self.mailer.send(step, str(preparation.text))
 
     def record(self, conn: psycopg.Connection, step: ExecuteStep,
                prepared: Prepared) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -32,6 +52,13 @@ class NotifyCustomer(Drafted):
 
     def record_calls(self, conn: psycopg.Connection, command: CommandEnvelope, calls: list[LlmCall]) -> None:
         record_llm_calls(conn, command, calls)
+
+
+def sent_count(conn: psycopg.Connection, incident_id: str) -> int:
+    """Correos ya enviados a la incidencia (límite `MCP_MAX_EMAILS_PER_INCIDENT`), en su propio esquema."""
+    row = conn.execute("SELECT count(*) AS n FROM executor_notify_customer.customer_messages WHERE incident_id = %s",
+                       (incident_id,)).fetchone()
+    return int(row["n"])
 
 
 def record_llm_calls(conn: psycopg.Connection, command: CommandEnvelope, calls: list[LlmCall]) -> None:

@@ -48,6 +48,8 @@ COMPONENTS: dict[str, Component] = {
     # Lado de lectura: consumen Kafka y no publican; sus tablas llegan con T3.
     "event_log": Component(publishes=False),
     "views": Component(publishes=False),
+    # Segunda versión: el servidor de correo MCP no publica eventos; sus tablas, migración 0021.
+    "mail_server": Component(publishes=False),
 }
 
 

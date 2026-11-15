@@ -38,7 +38,7 @@ function useAnalyticsRoute(): [boolean, (open: boolean) => void] {
 export default function App({ client, openStream = openEventSource }: { client?: ApiClient; openStream?: OpenStream }) {
   const api = useMemo(() => client ?? createApiClient(), [client]);
   const health = useHealth(api);
-  const { jaegerUrl, freeText, interactive } = useConfig(api);
+  const { jaegerUrl, freeText, interactive, pocVersion } = useConfig(api);
   const events = useLiveEvents(api, openStream);
   const [selectedNode, setSelectedNode] = useState<string | null>(null);
   const [commandRunning, setCommandRunning] = useState(false);
@@ -66,6 +66,7 @@ export default function App({ client, openStream = openEventSource }: { client?:
       <Header
         health={health}
         jaegerUrl={jaegerUrl}
+        pocVersion={pocVersion}
         onReset={resetView}
         resetDisabled={commandRunning}
         analyticsOpen={analyticsOpen}

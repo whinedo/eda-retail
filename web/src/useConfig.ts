@@ -10,6 +10,14 @@ export interface Config {
   freeText: boolean;
   // `interactive` solo si el backend lo admite (WEB_INTERACTIVE); mientras carga, deshabilitado.
   interactive: boolean;
+  // Versión de la PoC del backend (POC_VERSION); null mientras carga o si /api/config no la trae.
+  pocVersion: PocVersion | null;
+}
+
+export type PocVersion = 1 | 2;
+
+function pocVersion(raw: unknown): PocVersion | null {
+  return raw === 1 || raw === 2 ? raw : null;
 }
 
 // Contenedor: lee /api/config una vez al montar.
@@ -18,6 +26,7 @@ export function useConfig(client: ApiClient): Config {
     jaegerUrl: DEFAULT_JAEGER_UI_URL,
     freeText: false,
     interactive: false,
+    pocVersion: null,
   });
 
   useEffect(() => {
@@ -29,6 +38,7 @@ export function useConfig(client: ApiClient): Config {
           jaegerUrl: c.jaeger_ui_url,
           freeText: c.free_text_enabled === true,
           interactive: c.interactive_enabled === true,
+          pocVersion: pocVersion(c.poc_version),
         }),
       () => undefined,
     );

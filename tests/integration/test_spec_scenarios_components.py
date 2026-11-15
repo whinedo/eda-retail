@@ -288,7 +288,7 @@ def test_previous_version_event_is_converted_when_read(conn):
 
 def _executor(database_url, action, *, llm=None, service=None):
     settings = replace(Settings(), database_url=database_url, step_max_attempts=2,
-                       step_backoff_base_seconds=0.0, step_backoff_max_seconds=0.0)
+                       step_backoff_base_seconds=0.0, step_backoff_max_seconds=0.0, poc_version=1)
     return client(database_url, f"executor_{action}",
                   executor_specs(settings, action, llm or FakeLlmClient([]), RULES, service=service))
 

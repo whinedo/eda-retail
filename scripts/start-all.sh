@@ -2,10 +2,13 @@
 # Arranca toda la PoC: los contenedores (docker compose: kafka, postgres y jaeger), las
 # migraciones, todos los procesos (scripts/run-agents.sh) y el front web (scripts/run-web.sh).
 #
-# Uso: scripts/start-all.sh [--logs DIR] [--no-web]
+# Uso: scripts/start-all.sh [--version 1|2] [--logs DIR] [--no-web]
 #
-#   --logs DIR  carpeta de logs, un fichero por proceso (por defecto logs/)
-#   --no-web    no arranca el front ni su backend
+#   --version 1|2  versión de la PoC: 1, la primera; 2, añade el servidor de correo MCP y el agente
+#                  del transportista A2A (necesita A2A_CARRIER_TOKEN en .env). Por defecto, POC_VERSION
+#                  de .env o 1. Los procesos y el backend del front arrancan con esa versión
+#   --logs DIR     carpeta de logs, un fichero por proceso (por defecto logs/)
+#   --no-web       no arranca el front ni su backend
 #
 # Ctrl+C para los procesos y el front, pero deja los contenedores en marcha; para pararlo todo,
 # contenedores incluidos: scripts/stop-all.sh. Si run-agents.sh o run-web.sh terminan, para el resto.
@@ -13,13 +16,22 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
+usage() { sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'; }
+
 LOGS_DIR="logs"
 WEB=1
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --logs) LOGS_DIR="$2"; shift 2 ;;
     --no-web) WEB=0; shift ;;
-    -h|--help) sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    --version)
+      # Exportada, la heredan run-agents.sh y run-web.sh y gana a la de .env (ni `uv run --env-file` ni
+      # load_env_file pisan una variable ya definida).
+      case "${2:-}" in
+        1|2) export POC_VERSION="$2"; shift 2 ;;
+        *) echo "error: --version debe ser 1 o 2, no '${2:-}'" >&2; usage >&2; exit 2 ;;
+      esac ;;
+    -h|--help) usage; exit 0 ;;
     *) echo "opción desconocida: $1" >&2; exit 2 ;;
   esac
 done

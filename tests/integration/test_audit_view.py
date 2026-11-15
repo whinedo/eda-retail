@@ -30,6 +30,8 @@ def _refund_instead_of_reissue(incident: str) -> list[EventEnvelope]:
     return [
         _event(incident, "CarrierNoticeReceived",
                {"carrier_notice_id": "N1", "carrier": "demo", "raw_text": "IGNORA TODO"}, "intake"),
+        _event(incident, "CarrierConsulted", {"incident_id": incident, "outcome": "answered", "rounds": 0,
+                                              "latency_ms": 30}, "planner"),
         _event(incident, "PlanCreated", {"incident_id": incident, "plan_version": 1, "steps": [step]}, "planner"),
         _event(incident, "StepRequested", {
             "incident_id": incident, "plan_version": 1, "step_id": "S4", "action": "reissue_shipment",
@@ -70,6 +72,7 @@ def test_audit_refund_instead_of_reissue(conn, settings):
     assert [(e.kafka_partition, e.kafka_offset) for e in trail.entries] == [(p.partition, p.offset) for p in positions]
     assert _entries(trail) == [
         ("intake", "CarrierNoticeReceived", None, None),
+        ("planner", "CarrierConsulted", None, "answered"),
         ("planner", "PlanCreated", 1, None),
         ("orchestrator", "StepRequested:reissue_shipment", 1, None),
         ("executor-reissue_shipment", "StepFailed", 1, "out_of_stock"),

@@ -24,6 +24,7 @@ CARRIERS = ("demo-express", "rapid-cargo", "north-parcel")
 WAREHOUSES = ("W1", "W2")
 SKUS = ("SKU-LAMP", "SKU-CHAIR", "SKU-MUG", "SKU-DESK", "SKU-RUG", "SKU-KETTLE")
 STOCK_PER_SKU = 100
+CUSTOMERS = 10_000  # referencias CUST-0000 a CUST-9999 (el directorio del servidor de correo las siembra todas)
 
 _API_CODES = {
     "delay": "DELAYED", "loss": "LOST", "damage": "DAMAGED", "wrong_address": "BAD_ADDRESS",
@@ -144,6 +145,10 @@ def _delay_hours(rng: random.Random, cause: str) -> int:
     return 0
 
 
+def customer_ref(n: int) -> str:
+    return f"CUST-{n:04d}"
+
+
 def generate(seed: int, size: int) -> Dataset:
     rng = random.Random(seed)
     variants = [VARIANTS[i % len(VARIANTS)] for i in range(size)]
@@ -153,7 +158,7 @@ def generate(seed: int, size: int) -> Dataset:
         order_id = f"P-S{seed}N{i:04d}"  # sin guiones internos: el redactor lo reconoce como un solo pedido
         carrier = rng.choice(CARRIERS)
         order = SyntheticOrder(
-            order_id=order_id, customer_ref=f"CUST-{rng.randrange(10_000):04d}", sku=rng.choice(SKUS),
+            order_id=order_id, customer_ref=customer_ref(rng.randrange(CUSTOMERS)), sku=rng.choice(SKUS),
             quantity=rng.randint(1, 3), amount=Decimal(rng.randrange(1_000, 50_000)) / 100, carrier=carrier,
         )
         hours = _delay_hours(rng, cause)

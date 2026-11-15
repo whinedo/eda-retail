@@ -99,6 +99,19 @@ def test_parked_notices_view_migration_reverts(scratch_db):
     assert "deadline_at" in _columns(scratch_db, "view_parked_notices", "views")
 
 
+def test_mail_server_migration_reverts(scratch_db):
+    """0021 crea el esquema mail_server con su directorio y su buzón, y su downgrade lo borra"""
+    upgrade(scratch_db)
+    assert _columns(scratch_db, "customers", "mail_server") == {"customer_ref", "email"}
+    assert {"message_id", "idempotency_key", "customer_ref", "to_address", "subject", "body",
+            "accepted_at"} == _columns(scratch_db, "mailbox", "mail_server")
+    downgrade(scratch_db, "0020")
+    assert _columns(scratch_db, "mailbox", "mail_server") == set()
+    assert "deadline_at" in _columns(scratch_db, "view_parked_notices", "views")
+    upgrade(scratch_db)
+    assert "to_address" in _columns(scratch_db, "mailbox", "mail_server")
+
+
 def test_command_jobs_migration_reverts(scratch_db):
     """0019 crea command_jobs en los componentes con trabajo largo y su downgrade la borra"""
     from eda_retail.infra.schemas import JOB_COMPONENTS

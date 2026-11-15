@@ -7,12 +7,13 @@ definidas: cualquier `uv run eda-*` usa el `.env` del proyecto aunque no se pase
 from __future__ import annotations
 
 import os
-from collections.abc import MutableMapping
+from collections.abc import Mapping, MutableMapping
 from dataclasses import dataclass, field
 from decimal import Decimal
 from pathlib import Path
 
 ENV_FILE = ".env"
+POC_VERSIONS = (1, 2)  # 1: la primera versión; 2: añade el servidor de correo MCP y el agente A2A (design.md §15)
 
 
 def _env_bool(name: str, default: bool) -> bool:
@@ -39,8 +40,20 @@ def _database_url() -> str:
     return f"postgresql://{user}:{password}@{host}:{port}/{db}"
 
 
+def poc_version_from_env(environ: Mapping[str, str] = os.environ) -> int:
+    """`POC_VERSION` (1 si no está definida): la versión de la PoC, 1 o 2; cualquier otro valor, también uno
+    vacío, es un error de configuración."""
+    raw = environ.get("POC_VERSION", "1").strip()
+    if raw not in {str(v) for v in POC_VERSIONS}:
+        raise ValueError(f"POC_VERSION debe ser 1 o 2, no {raw!r}")
+    return int(raw)
+
+
 @dataclass(frozen=True)
 class Settings:
+    # Versión de la PoC (POC_VERSION): 1 (la primera, por defecto) o 2 (con MCP y A2A, design.md §15). Se valida
+    # al construir: con cualquier otro valor, Settings() lanza ValueError.
+    poc_version: int = field(default_factory=poc_version_from_env)
     database_url: str = field(default_factory=_database_url)
     kafka_bootstrap_servers: str = field(
         default_factory=lambda: os.environ.get("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
@@ -107,6 +120,14 @@ class Settings:
     pending_notice_timeout_s: float = field(
         default_factory=lambda: float(os.environ.get("PENDING_NOTICE_TIMEOUT_S", "300"))
     )
+    # Segunda versión (spec mcp-mail): el servidor de correo MCP y el límite de correos por incidencia.
+    mail_server_url: str = field(
+        default_factory=lambda: os.environ.get("MAIL_SERVER_URL", "http://127.0.0.1:8120/mcp")
+    )
+    mail_server_port: int = field(default_factory=lambda: int(os.environ.get("MAIL_SERVER_PORT", "8120")))
+    mcp_max_emails_per_incident: int = field(
+        default_factory=lambda: int(os.environ.get("MCP_MAX_EMAILS_PER_INCIDENT", "3"))
+    )
     tracing_enabled: bool = field(default_factory=lambda: _env_bool("TRACING_ENABLED", True))
     otlp_endpoint: str = field(
         default_factory=lambda: os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4318")
@@ -117,6 +138,18 @@ class Settings:
     llm_price_out_per_1k: Decimal = field(default_factory=lambda: _env_decimal("LLM_PRICE_OUT_PER_1K"))
     effect_cost_claim: Decimal = field(default_factory=lambda: _env_decimal("EFFECT_COST_CLAIM"))
     effect_cost_reissue: Decimal = field(default_factory=lambda: _env_decimal("EFFECT_COST_REISSUE"))
+    # Agente del transportista (A2A, spec a2a-carrier); solo se usa con POC_VERSION=2. CARRIER_AGENT_URL es
+    # la URL que publica su Agent Card y que consulta el planificador; CARRIER_AGENT_PORT, donde escucha en
+    # 127.0.0.1. A2A_TIMEOUT_S es el plazo total de una consulta y A2A_MAX_ROUNDS el máximo de rondas
+    # input-required; CARRIER_AGENT_SEED, la semilla de sus reglas deterministas.
+    carrier_agent_url: str = field(
+        default_factory=lambda: os.environ.get("CARRIER_AGENT_URL", "http://127.0.0.1:8130")
+    )
+    carrier_agent_port: int = field(default_factory=lambda: int(os.environ.get("CARRIER_AGENT_PORT", "8130")))
+    a2a_carrier_token: str = field(default_factory=lambda: os.environ.get("A2A_CARRIER_TOKEN", ""))
+    a2a_timeout_s: float = field(default_factory=lambda: float(os.environ.get("A2A_TIMEOUT_S", "5")))
+    a2a_max_rounds: int = field(default_factory=lambda: int(os.environ.get("A2A_MAX_ROUNDS", "2")))
+    carrier_agent_seed: int = field(default_factory=lambda: int(os.environ.get("CARRIER_AGENT_SEED", "42")))
 
 
 def load_env_file(path: Path, environ: MutableMapping[str, str] = os.environ) -> list[str]:
@@ -142,5 +175,6 @@ def load_env_file(path: Path, environ: MutableMapping[str, str] = os.environ) ->
 
 
 def load_settings() -> Settings:
+    """Carga `.env` y construye `Settings`; un POC_VERSION no válido para el proceso con un ValueError claro."""
     load_env_file(Path.cwd() / ENV_FILE)
     return Settings()
