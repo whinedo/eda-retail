@@ -75,3 +75,13 @@ def test_shared_model_migrations_still_revert_before_0017(scratch_db):
     upgrade(scratch_db)
     with pytest.raises(NotImplementedError):
         downgrade(scratch_db, "0016")
+
+
+def test_order_status_view_migration_reverts(scratch_db):
+    """0018 crea views.view_order_status y su downgrade la borra"""
+    upgrade(scratch_db)
+    assert {"order_id", "incident_id", "status", "kafka_offset"} <= _columns(scratch_db, "view_order_status", "views")
+    downgrade(scratch_db, "0017")
+    assert _columns(scratch_db, "view_order_status", "views") == set()
+    upgrade(scratch_db)
+    assert "status" in _columns(scratch_db, "view_order_status", "views")

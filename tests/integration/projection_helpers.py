@@ -120,6 +120,9 @@ class History:
     def escalated(self, reason: str, producer: str = "orchestrator") -> EventEnvelope:
         return self._add("IncidentEscalated", {"incident_id": self.incident, "reason": reason}, producer)
 
+    def resolved(self, outcome: str = "resolved") -> EventEnvelope:
+        return self._add("IncidentResolved", {"incident_id": self.incident, "outcome": outcome}, "orchestrator")
+
 
 
 

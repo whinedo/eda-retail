@@ -10,7 +10,7 @@ from eda_retail.projectors.registry import PROJECTORS, build_all
 
 def test_runs_the_five_projectors_each_with_its_position():
     """eda-projector sin argumentos ejecuta los cinco proyectores (vistas mínimas), cada uno con su posición"""
-    assert sorted(PROJECTORS) == ["audit_trail", "carrier_dashboard", "cost_per_incident", "incident_status", "orders"]
+    assert sorted(PROJECTORS) == ["audit_trail", "carrier_dashboard", "cost_per_incident", "incident_status", "order_status", "orders"]
     assert sorted(p.name for p in build_all()) == sorted(PROJECTORS)
     args = parse_args([])
     assert args.command is None and args.idle_seconds == 0.2

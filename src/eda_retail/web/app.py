@@ -10,6 +10,7 @@ import os
 import re
 from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager
+from dataclasses import asdict
 from pathlib import Path
 from typing import Annotated
 
@@ -21,6 +22,8 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 
 from eda_retail.config import load_settings
 from eda_retail.llm.ollama_client import DEFAULT_HOST as DEFAULT_OLLAMA_HOST
+from eda_retail.projectors.order_status import OrderStatus
+from eda_retail.queries.order_status import get_order_status
 from eda_retail.web.commands import (
     NOTICE_SCRIPT,
     RUN_MAX_SECONDS,
@@ -168,6 +171,16 @@ def create_app(
         node: str | None = None,
     ) -> dict:
         return list_events(conn, limit=limit, before_seq=before_seq, incident_id=incident_id, node=node)
+
+    @app.get("/api/analytics/orders")
+    def analytics_orders(
+        conn: Conn,
+        status: OrderStatus | None = None,
+        incident_id: str | None = None,
+    ) -> dict:
+        """Vista de analítica de pedidos (spec web-front): solo lee `order_status` (CQRS)."""
+        view = get_order_status(conn, status=status, incident_id=incident_id or None, topic=settings.events_topic)
+        return {"counts": view.counts, "orders": [asdict(o) for o in view.orders], "applied": view.applied}
 
     @app.get("/api/events/stream")
     def events_stream(
