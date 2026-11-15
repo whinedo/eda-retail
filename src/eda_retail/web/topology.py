@@ -3,12 +3,18 @@
 Los ids coinciden con el emisor y el destino de los eventos (`web.routing`), para que el front
 pueda resaltar la arista de cada evento. `process` es el patrón de `pgrep -f` de
 `scripts/run-agents.sh`; los nodos sin proceso propio no se vigilan.
+
+La topología depende de la versión de la PoC (`POC_VERSION`, que `eda-web` lee de `.env`): con la versión 2,
+el nodo `mail` es el servidor de correo MCP (`eda-mail-server`, un proceso vigilado con su esquema en
+PostgreSQL) en lugar del servicio simulado en proceso. `NODES`, `MONITORED` y `EDGES` son los de la versión
+activa; `nodes`, `monitored` y `edges` dan los de cualquier versión.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 
+from eda_retail.config import poc_version_from_env
 from eda_retail.events.catalog import Action
 
 KINDS = ("llm", "code", "data", "external", "simulated")
@@ -54,7 +60,7 @@ _PROCESSES = {"interpreter": "eda-interpreter", "planner": "eda-planner", "repla
 # reserve_stock y release_stock los ejecuta inventory (T4); el resto, `eda-step-executor <acción>` (T9).
 _EXECUTOR_PROCESSES = {Action.RESERVE_STOCK: "eda-inventory", Action.RELEASE_STOCK: "eda-inventory"}
 
-NODES: tuple[Node, ...] = (
+_NODES_V1: tuple[Node, ...] = (
     Node("intake", "Recepción (intake)", "code",
          "Registra los avisos que envía eda-notice (RegisterCarrierNotice) y publica CarrierNoticeReceived.", "eda-intake"),
     Node("postgres", "PostgreSQL", "data", "Un esquema por componente: estado, outbox, inbox, el log event_log.events y las vistas views.*."),
@@ -86,11 +92,23 @@ NODES: tuple[Node, ...] = (
     Node("jaeger", "Jaeger", "external", "Trazas de OpenTelemetry de todos los procesos."),
 )
 
-_BY_ID = {n.id: n for n in NODES}
-MONITORED: tuple[Node, ...] = tuple(n for n in NODES if n.process)
+# Versión 2 (spec mcp-mail): el correo lo envía el servidor MCP, un proceso aparte con su esquema `mail_server`.
+MAIL_SERVER = Node("mail", "Servidor de correo (MCP)", "simulated",
+                   "Servidor MCP de correo simulado (herramienta send_email) que usa notify_customer; su "
+                   "directorio y su buzón viven en el esquema mail_server.", "eda-mail-server")
+
+
+def nodes(version: int = 1) -> tuple[Node, ...]:
+    if version != 2:
+        return _NODES_V1
+    return tuple(MAIL_SERVER if n.id == MAIL_SERVER.id else n for n in _NODES_V1)
+
+
+def monitored(version: int = 1) -> tuple[Node, ...]:
+    return tuple(n for n in nodes(version) if n.process)
 
 _CONSUMERS = ["interpreter", "planner", "replanner", "orchestrator", *(f"executor-{a.value}" for a in Action)]
-EDGES: tuple[tuple[str, str], ...] = (
+_EDGES_V1: tuple[tuple[str, str], ...] = (
     ("intake", "postgres"),
     ("postgres", "relay"),
     ("relay", "kafka"),
@@ -105,6 +123,19 @@ EDGES: tuple[tuple[str, str], ...] = (
     *((f"executor-{a.value}", "ollama") for a in Action if a in _WRITER_ACTIONS),
     *((f"executor-{a.value}", service) for a, service in _EXECUTOR_SERVICE.items()),
 )
+
+
+
+
+def edges(version: int = 1) -> tuple[tuple[str, str], ...]:
+    return _EDGES_V1 + ((("mail", "postgres"),) if version == 2 else ())
+
+
+ACTIVE_VERSION = poc_version_from_env()
+NODES = nodes(ACTIVE_VERSION)
+MONITORED = monitored(ACTIVE_VERSION)
+EDGES = edges(ACTIVE_VERSION)
+_BY_ID = {n.id: n for n in NODES}
 
 
 def node(node_id: str) -> Node:

@@ -21,7 +21,7 @@ Branch: `feat/v2-specs` (from `feat/eda-components`). Delivery: specs PR first, 
 | ID | Specs | Task | Route | Status | Commit |
 | --- | --- | --- | --- | --- | --- |
 | T1 | S1–S4 | Specs and design links for review | inline | written | |
-| T2 | S1, S3 | MCP mail server and MCP client in the notify_customer executor | pending review of T1 | pending | |
+| T2 | S1, S3 | MCP mail server and MCP client in the notify_customer executor, gated by `POC_VERSION=2` | delegated (parallel units: T2 and T3 written together in separate worktrees) | done on `feat/v2-mcp-mail`, unit GREEN, integration written not run | see Log L7 |
 | T3 | S2, S3 | Carrier agent and A2A client in the planner, `CarrierConsulted` | pending review of T1 | pending | |
 
 ## Log
@@ -31,3 +31,5 @@ Branch: `feat/v2-specs` (from `feat/eda-components`). Delivery: specs PR first, 
 - L3 (2026-11-15) User: "para A2A y MCP indica que se pondrán guardrails"
 - L4 (2026-11-15) User: "sí, empieza por las specs de la v2". The specs start from design.md §15 (PR #56). The planner's A2A call moves into the `CreatePlan` job worker (PR #58).
 - L5 (2026-11-15) User, on A1 (deterministic rules or its own LLM): "Reglas deterministas".
+- L6 (2026-11-15) User, via the coordinator: "el front (y los scripts) deben estar adaptados para activar la versión 1 o la versión 2". Decision: one shared setting `POC_VERSION` (1 by default, 1 or 2), v1 behaves exactly as today; the user also asked to document the version parameters in docs/README.md.
+- L7 (2026-11-15) T2 built on `feat/v2-mcp-mail` with the official SDK `mcp` 2.3.0 (`MCPServer`, unified `Client`; in-process client for tests and the harness). Commits: mail server, migration 0021 and `POC_VERSION`; MCP client with guardrails in the notify_customer executor and the harness; scripts, topology and docs. RED: `tests/test_mail_server.py` (ImportError, no `mail_server` package), `tests/test_mail_client.py` (ImportError, no `mail_client`), the two harness tests (no `mail_server_for`). GREEN: every scenario of `specs/mcp-mail/spec.md` has a unit test with its name; full unit suite green. Integration tests (`tests/integration/test_mail_server.py`, the 0021 test in `test_migrations.py`, the v2 tests in `test_step_executors.py`) are written but not run (only in CI). Pending: `scripts/stop-all.sh` does not list `eda-mail-server` (outside T2's surfaces).

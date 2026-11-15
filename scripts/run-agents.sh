@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Arranca todos los procesos de la PoC (componentes, proyector y log de eventos); cada uno publica su outbox.
+# Con POC_VERSION=2 (en el entorno o en .env) arranca también el servidor de correo MCP (eda-mail-server).
 #
 # Uso: scripts/run-agents.sh [--logs DIR] [--no-migrate]
 #
@@ -16,7 +17,7 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --logs) LOGS_DIR="$2"; shift 2 ;;
     --no-migrate) MIGRATE=0; shift ;;
-    -h|--help) sed -n '2,8p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,9p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "opción desconocida: $1" >&2; exit 2 ;;
   esac
 done
@@ -49,6 +50,13 @@ if [[ -f .env ]]; then
   UV_ARGS=(--env-file .env)
 fi
 uvrun() { uv run ${UV_ARGS[@]+"${UV_ARGS[@]}"} "$@"; }
+
+# Versión de la PoC (POC_VERSION, entorno + .env; 1 por defecto). La 2 arranca además el servidor de correo MCP.
+POC_VERSION=$(uvrun python -c 'from eda_retail.config import poc_version_from_env; print(poc_version_from_env())')
+if [[ "$POC_VERSION" == "2" ]]; then
+  PROCESSES=("mail-server|eda-mail-server" "${PROCESSES[@]}")
+fi
+echo "PoC: versión $POC_VERSION"
 
 # OLLAMA_HOST y LLM_MODEL tal como los verán los procesos (entorno + .env).
 read -r OLLAMA MODEL < <(uvrun python -c \

@@ -255,3 +255,12 @@ def test_run_agents_starts_the_four_executors():
     script = (ROOT / "scripts" / "run-agents.sh").read_text()
     for action in EXECUTOR_ACTIONS:
         assert f"eda-step-executor {action}" in script
+
+
+def test_run_agents_starts_the_mail_server_only_in_version_two():
+    """scripts/run-agents.sh arranca eda-mail-server solo con POC_VERSION=2 (leído del entorno y de .env)"""
+    script = (ROOT / "scripts" / "run-agents.sh").read_text()
+    gate = script.index('if [[ "$POC_VERSION" == "2" ]]; then')
+    assert script.index('"mail-server|eda-mail-server"') > gate
+    assert "poc_version_from_env" in script
+    assert "eda-mail-server" not in script.split("PROCESSES=(", 1)[1].split(")", 1)[0]  # no en la lista fija

@@ -15,6 +15,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from eda_retail.events.catalog import CATALOG, Action
+from eda_retail.web import topology
 from eda_retail.web.app import create_app
 from eda_retail.web.health import HealthChecker, check_kafka, check_ollama, check_postgres
 from eda_retail.web.routing import receivers
@@ -171,3 +172,30 @@ def test_ollama_check_uses_api_tags():
 def test_checks_report_down_when_nothing_listens(check):
     """Sin servicio escuchando, cada comprobación devuelve False en vez de lanzar"""
     assert check(_free_port()) is False
+
+
+# --- Versión de la PoC ---------------------------------------------------------------------------
+
+
+def test_version_one_map_is_unchanged():
+    """POC_VERSION=1 (por defecto): el mapa no tiene el servidor de correo MCP y vigila 13 procesos"""
+    assert topology.nodes(1) == NODES and topology.edges(1) == EDGES and topology.monitored(1) == MONITORED
+    assert node("mail").process is None and node("mail").label == "Correo"
+
+
+def test_version_two_shows_the_mail_server():
+    """POC_VERSION=2: el nodo del correo es el servidor MCP, un proceso vigilado (eda-mail-server)"""
+    mail = next(n for n in topology.nodes(2) if n.id == "mail")
+    assert mail.process == "eda-mail-server" and "MCP" in mail.label
+    assert {n.id for n in topology.nodes(2)} == SPEC_NODES
+    assert len(topology.monitored(2)) == 14
+    assert ("executor-notify_customer", "mail") in topology.edges(2)
+    assert ("mail", "postgres") in topology.edges(2) and ("mail", "postgres") not in topology.edges(1)
+
+
+def test_version_two_health_counts_the_mail_server():
+    """POC_VERSION=2: la salud vigila también eda-mail-server"""
+    checker = HealthChecker({}, pgrep=lambda pattern: pattern == "eda-mail-server", monitored=topology.monitored(2))
+    body = checker.report()
+    assert body["processes"]["mail"] is True
+    assert (body["processes_up"], body["processes_total"]) == (1, 14)

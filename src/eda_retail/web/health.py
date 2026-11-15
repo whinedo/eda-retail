@@ -64,8 +64,11 @@ class HealthChecker:
         *,
         pgrep: Callable[[str], bool] = pgrep,
         timeout: float = CHECK_TIMEOUT,
+        monitored: tuple[Node, ...] = MONITORED,
     ) -> None:
+        """`monitored`: los procesos vigilados, por defecto los de la versión activa de la PoC."""
         self._checks = checks
+        self._monitored = monitored
         self._pgrep = pgrep
         self._timeout = timeout
         self._pool = ThreadPoolExecutor(max_workers=8, thread_name_prefix="health")
@@ -75,15 +78,15 @@ class HealthChecker:
 
     def report(self) -> dict:
         jobs = {f"infra:{name}": check for name, check in self._checks.items()}
-        jobs |= {f"proc:{n.id}": (lambda n=n: self._pgrep(n.process)) for n in MONITORED}
+        jobs |= {f"proc:{n.id}": (lambda n=n: self._pgrep(n.process)) for n in self._monitored}
         futures = {key: self._pool.submit(job) for key, job in jobs.items()}
         results = {key: self._result(future) for key, future in futures.items()}
-        processes = {n.id: results[f"proc:{n.id}"] for n in MONITORED}
+        processes = {n.id: results[f"proc:{n.id}"] for n in self._monitored}
         return {
             "infra": {name: "healthy" if results[f"infra:{name}"] else "down" for name in self._checks},
             "processes": processes,
             "processes_up": sum(processes.values()),
-            "processes_total": len(MONITORED),
+            "processes_total": len(self._monitored),
         }
 
     def _safe(self, job: Callable[[], bool]) -> bool:
