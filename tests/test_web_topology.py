@@ -53,7 +53,8 @@ def test_twelve_processes_are_monitored():
     assert node("interpreter").process == "eda-interpreter"
     assert node("planner").process == "eda-planner"
     assert node("replanner").process == "eda-replanner"
-    assert node("executor-issue_refund").process == "eda-executor issue_refund"
+    assert node("executor-issue_refund").process == "eda-step-executor issue_refund"
+    assert node("executor-notify_customer").process == "eda-step-executor notify_customer"
     assert node("executor-reserve_stock").process == "eda-inventory"
     assert node("executor-release_stock").process == "eda-inventory"
 
