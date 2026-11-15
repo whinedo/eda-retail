@@ -336,3 +336,20 @@ La base síncrona de referencia (`baseline_sync/runner.py`) atiende cada aviso d
 E5 y E6 repiten 3 veces con Ollama. Cada repetición usa su propia semilla (`--seed` + número de repetición) y temperatura 0,7 (`--temperature`): con temperatura 0 y la misma semilla las repeticiones salen idénticas y no muestran ninguna variación. El sistema sigue con temperatura 0 por defecto (`LLM_TEMPERATURE`).
 
 La latencia de E6 se lee con cuidado: el arnés atiende los consumidores por turnos en un solo proceso, con esperas cortas en cada consumidor, así que la latencia de la versión de eventos incluye ese reparto de turnos y no es la de un despliegue con un proceso por componente. Con el oráculo la diferencia la marca el arnés; con Ollama la domina el LLM.
+
+## Segunda versión (fuera de alcance)
+
+No se desarrolla por el momento. La segunda versión de la PoC añadiría los dos modos de comunicación que faltan, MCP y A2A, para cubrir todos los de un sistema distribuido con agentes y mostrar cuándo conviene cada uno:
+
+| Modo | Cuándo usarlo | En la PoC |
+| --- | --- | --- |
+| Evento (Kafka) | Un hecho ya ocurrido que interesa a varios, sin esperar respuesta | `ShipmentDelayed`, `StepCompleted`… (versión actual) |
+| Comando REST | Una orden a un sistema dueño de su estado, que la acepta o la rechaza al momento; idempotente (`command_id`) | `CreatePlan`, `ExecuteStep`… (versión actual) |
+| MCP | Usar una herramienta o un recurso: la herramienta no razona, solo expone operaciones | Servidor de correo simulado para las notificaciones al cliente |
+| A2A | Hablar con otro agente autónomo, a menudo de otra organización y opaco por dentro, en una tarea larga que se negocia | Agente del transportista, consultado por el planificador |
+
+- **Servidor de correo simulado (MCP).** Un servidor MCP expone la herramienta de envío de correo; el ejecutor de `notify_customer` se conecta como cliente MCP y la invoca con el texto que redactó el agente redactor. El cliente MCP es el ejecutor (código), no el agente: el LLM sigue sin herramientas con efectos (regla 1). El servidor resuelve el destinatario a partir de `customer_ref`, así que ni el log ni el plan llevan correos (regla 10).
+- **Agente del transportista (A2A).** Un agente externo, de la empresa de transporte, con su propio LLM y sus propias reglas. Antes de proponer el plan, el planificador le pide por A2A las opciones que ofrece: nueva fecha de entrega, si puede reenviar y si aceptaría una reclamación. La tarea A2A puede pasar por `input-required`, por ejemplo si el transportista pide el número de seguimiento. La consulta no tiene efectos y su respuesta es contenido no confiable, como el texto de los avisos (regla 11): el planificador solo la usa como contexto y el plan se valida igual que hoy. La reclamación real la sigue presentando el ejecutor de `file_claim` con un comando REST. Así se ve el contraste con el mismo interlocutor: con su agente se negocia por A2A y los efectos van por comandos.
+- **Guardrails en MCP y A2A.** Los dos se usarían con guardrails, porque abren el sistema a un servidor de herramientas y a un agente que no controlamos:
+  - MCP: lista blanca de herramientas (solo la de envío), validación con esquema de la entrada y la salida, límite de envíos por incidencia y ningún dato personal en lo que el servidor devuelve.
+  - A2A: autenticación del agente remoto y comprobación de su Agent Card, validación con esquema de la respuesta, plazo y número máximo de rondas (`input-required`), solo referencias en lo que se le envía (`order_id`, nunca nombres, correos ni direcciones) y su respuesta tratada como posible prompt injection.
