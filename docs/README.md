@@ -354,3 +354,106 @@ No se desarrolla por el momento. La segunda versión de la PoC añadiría los do
 - **Guardrails en MCP y A2A.** Los dos se usarían con guardrails, porque abren el sistema a un servidor de herramientas y a un agente que no controlamos:
   - MCP: lista blanca de herramientas (solo la de envío), validación con esquema de la entrada y la salida, límite de envíos por incidencia y ningún dato personal en lo que el servidor devuelve.
   - A2A: autenticación del agente remoto y comprobación de su Agent Card, validación con esquema de la respuesta, plazo y número máximo de rondas (`input-required`), solo referencias en lo que se le envía (`order_id`, nunca nombres, correos ni direcciones) y su respuesta tratada como posible prompt injection.
+
+## Versión 2
+
+La versión 2 añade a la PoC los dos modos de comunicación que faltaban: **MCP**, con un servidor de correo simulado, y **A2A**, con un agente del transportista simulado. Se elige al arrancar: con `POC_VERSION=1` (por defecto) la PoC se comporta como la primera versión; con `POC_VERSION=2` arrancan `eda-mail-server` y `eda-carrier-agent`, el ejecutor de `notify_customer` envía el correo por MCP y el planificador consulta al transportista por A2A. Los requisitos están en `specs/mcp-mail/spec.md` y `specs/a2a-carrier/spec.md`, y cuándo conviene cada modo, en «Segunda versión (fuera de alcance)».
+
+### Diagrama de agentes (versión 2)
+
+```mermaid
+flowchart LR
+  IN["Aviso del transportista<br/>eda-notice o front"]
+  INK["intake<br/>(agregado)"]
+  BUS[("Kafka eda.events<br/>solo eventos")]
+  INT["Intérprete<br/>(LLM)"]
+  ORQ["Saga<br/>orquestador"]
+  PLN["Planificador<br/>(LLM)"]
+  RPL["Replanificador<br/>(LLM)"]
+  EXE["Ejecutores e inventory<br/>(agregados)"]
+  RED["Agente redactor<br/>aviso y reclamación"]
+  IDS[("effect_keys<br/>de cada ejecutor")]
+  PRJ["Proyectores<br/>(consulta CQRS)"]
+  VW[("Proyecciones<br/>view_orders, cost_per_incident…")]
+  ELOG["event_log<br/>(consulta CQRS)"]
+  WEB["Front web"]
+  CAR["Agente del transportista<br/>(A2A, simulado:<br/>reglas deterministas)"]
+  MCPS["Servidor de correo<br/>(MCP, simulado)"]
+  MBX[("Directorio de clientes<br/>y buzón simulado")]
+
+  IN == "(1) RegisterCarrierNotice" ==> INK
+  INK -- "(2) CarrierNoticeReceived" --> BUS
+  BUS -- "(2)" --> INT
+  INT -- "(3) ShipmentDelayed" --> BUS
+  BUS -- "eventos (3) (5) (8) (10)" --> ORQ
+  ORQ == "(4) CreatePlan" ==> PLN
+  PLN -- "(5) CarrierConsulted y PlanCreated" --> BUS
+  ORQ == "(6) ExecuteStep" ==> EXE
+  EXE <-- "(7) borrador validado" --> RED
+  EXE <-- "clave" --> IDS
+  EXE -- "(8) StepCompleted o StepFailed<br/>y el evento de efecto" --> BUS
+  ORQ == "(9) RevisePlan" ==> RPL
+  RPL -- "(10) PlanRevised, vuelve a 6" --> BUS
+  ORQ -- "(11) IncidentResolved<br/>o IncidentEscalated" --> BUS
+  BUS -- "(a)" --> PRJ
+  PRJ -- "(a)" --> VW
+  INT -. "(b) consulta" .-> VW
+  PLN -. "(b) consulta" .-> VW
+  BUS -- "(c)" --> ELOG
+  WEB -. "(c) polling" .-> ELOG
+  PLN -- "(4.1) A2A: tarea delivery_options<br/>(antes del LLM)" --> CAR
+  CAR -- "(4.2) opciones<br/>(contenido no confiable)" --> PLN
+  EXE -- "(7.1) MCP: send_email<br/>(notify_customer)" --> MCPS
+  MCPS -- "customer_ref → dirección" --> MBX
+
+  classDef llm fill:#E3F0FF,stroke:#2B7DE0,color:#1d1d1f
+  classDef code fill:#E6F6EC,stroke:#2E9E5B,color:#1d1d1f
+  classDef data fill:#F1F1EE,stroke:#8A8A80,color:#1d1d1f
+  classDef ext fill:#FFF3E0,stroke:#E08A2B,color:#1d1d1f
+  classDef v2 fill:#F3E8FF,stroke:#7B3FC4,color:#1d1d1f
+  class INT,PLN,RED,RPL llm
+  class INK,ORQ,EXE,PRJ,ELOG code
+  class BUS,IDS,VW,MBX data
+  class IN,WEB ext
+  class CAR,MCPS v2
+  linkStyle 20,21 stroke:#7B3FC4,stroke-width:2px
+  linkStyle 22,23 stroke:#E08A2B,stroke-width:2px
+```
+
+Las mismas convenciones que el diagrama de la primera versión, y en morado los dos sistemas nuevos, que no controla la PoC. Flecha morada: conversación A2A entre el planificador y el agente del transportista; no tiene efectos y su respuesta es contenido no confiable. Flecha naranja: llamada MCP del ejecutor de `notify_customer` a la herramienta `send_email`; el cliente MCP es el ejecutor (código), nunca un agente con LLM. La dirección de correo solo existe dentro del servidor de correo. Con `POC_VERSION=1` no existen (4.1), (4.2) ni (7.1), y el correo lo envía el servicio simulado en proceso.
+
+### Secuencia de la versión 2
+
+```mermaid
+sequenceDiagram
+  participant Orq as Saga<br/>(orquestador)
+  participant Pl as Planificador<br/>(worker de CreatePlan)
+  participant Tr as Agente del transportista<br/>(A2A, simulado)
+  participant LLM as LLM del planificador
+  participant Av as Ejecutor aviso<br/>(cliente MCP)
+  participant Co as Servidor de correo<br/>(MCP, simulado)
+  Orq->>Pl: (1) CreatePlan
+  Pl-->>Orq: 202
+  Note over Pl,Tr: Guardrails A2A: bearer token y Agent Card comprobada,<br/>solo referencias en la petición, plazo y máximo de rondas
+  Pl->>Tr: (2) tarea delivery_options (order_id, causa)
+  opt El transportista pide el número de seguimiento
+    Tr-->>Pl: (3) input-required: tracking_ref
+    Pl->>Tr: (4) tracking_ref
+  end
+  alt Responde a tiempo y la respuesta cumple el esquema
+    Tr-->>Pl: (5) opciones: nueva fecha, reenvío, reclamación, notas
+    Pl->>LLM: (6) prompt con las opciones como contenido no confiable
+  else Sin respuesta, error o guardrail
+    Pl->>LLM: (6) prompt sin opciones del transportista (como la versión 1)
+  end
+  LLM-->>Pl: (7) plan propuesto (validado por código igual que en la versión 1)
+  Pl-)Orq: (8) CarrierConsulted y PlanCreated
+  Orq->>Av: (9) ExecuteStep notify_customer
+  Av-->>Orq: 202
+  Note over Av,Co: Guardrails MCP: solo la herramienta send_email,<br/>entrada y salida validadas, tope de correos por incidencia
+  Av->>Co: (10) send_email (customer_ref, asunto, cuerpo, idempotency_key)
+  Co-->>Av: (11) message_id, sin la dirección
+  Av-)Orq: (12) StepCompleted (CustomerNotified con message_id)
+```
+
+El planificador consulta al transportista dentro del trabajo de `CreatePlan`, antes del LLM y fuera de la transacción; si la consulta falla, planifica como en la primera versión. Una reclamación aceptada por el transportista no se presenta por A2A: la sigue presentando el ejecutor de `file_claim` con su comando REST, así que con el mismo interlocutor se negocia por A2A y los efectos van por comandos. Un reintento del paso de aviso usa la misma `idempotency_key`, así que el servidor de correo no envía dos correos.
