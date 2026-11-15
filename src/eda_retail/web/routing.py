@@ -15,8 +15,8 @@ PROJECTORS = "projectors"
 ORCHESTRATOR = "orchestrator"
 EXECUTOR_PREFIX = "executor-"
 STEP_REQUESTED = "StepRequested"
-# Agentes que ya solo atienden comandos REST de la saga: no consumen eventos de Kafka (T6).
-COMMAND_ONLY_AGENTS = frozenset({"planner"})
+# Agentes que ya solo atienden comandos REST de la saga: no consumen eventos de Kafka (T6, T8).
+COMMAND_ONLY_AGENTS = frozenset({"planner", "replanner"})
 
 
 def receivers(event_type: str, payload: dict[str, Any]) -> list[str]:
