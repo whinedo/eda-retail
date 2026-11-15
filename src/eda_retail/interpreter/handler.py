@@ -7,8 +7,9 @@ presupuesto en `cost_per_incident` y los pedidos en `view_orders`. `handle` (en 
 - cada llamada al LLM en `interpreter.llm_calls` y como `LlmCallRecorded`;
 - con pedidos en `view_orders`, `ShipmentDelayed` con esos pedidos (spec incident-interpretation,
   "Pedidos conocidos");
-- sin ninguno, aparca el aviso en `interpreter.pending_notices` con un plazo (spec cqrs-views,
-  "Proyección atrasada"): lo reanuda el `OrderRegistered` del pedido o lo resuelve su plazo;
+- sin ninguno, aparca el aviso en `interpreter.pending_notices` con un plazo y publica `NoticeParked`
+  (spec cqrs-views, "Proyección atrasada" y «Aviso aparcado visible»): lo reanuda el `OrderRegistered`
+  del pedido o lo resuelve su plazo;
 - sin interpretación válida, `IncidentEscalated` con el motivo de la generación.
 """
 
@@ -155,11 +156,13 @@ def open_incident(settings: Settings):
         if decision.kind == "delayed":
             events.append(event(command, "ShipmentDelayed", shipment_delayed(incident_id, decision.order_ids, row)))
         elif decision.kind == "parked":
-            conn.execute(
+            parked = conn.execute(
                 "INSERT INTO interpreter.pending_notices (incident_id, order_ids, deadline_at)"
-                " VALUES (%s, %s, now() + make_interval(secs => %s))",
+                " VALUES (%s, %s, now() + make_interval(secs => %s)) RETURNING deadline_at",
                 (incident_id, decision.order_ids, settings.pending_notice_timeout_s),
-            )
+            ).fetchone()
+            events.append(event(command, "NoticeParked", {"incident_id": incident_id, "order_ids": decision.order_ids,
+                                                          "deadline_at": parked["deadline_at"]}))
         else:
             events.append(event(command, "IncidentEscalated", {"incident_id": incident_id,
                                                                "reason": decision.reason}))

@@ -230,6 +230,7 @@ Las proyecciones SHALL ser eventualmente consistentes: van por detrás de los du
 - **GIVEN** un aviso sobre el pedido P-1007 que llega al intérprete cuando `view_orders` aún no tiene P-1007
 - **WHEN** el intérprete consulta los pedidos
 - **THEN** aparca el aviso en `interpreter.pending_notices` con un plazo y confirma el offset, sin sondear la vista ni leer las tablas de `inventory`
+- **AND** publica `NoticeParked` con P-1007 y el plazo en la misma transacción
 - **AND** al consumir el `OrderRegistered` de P-1007 reanuda el aviso con los datos de ese evento
 
 #### Scenario: Plazo vencido de un aviso aparcado

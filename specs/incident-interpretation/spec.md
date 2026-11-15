@@ -46,7 +46,7 @@ El sistema MUST NOT crear más de un `incident_id` por `carrier_notice_id`. Si e
 
 ### Requirement: Pedidos conocidos
 
-El sistema MUST comprobar en la proyección `view_orders` que cada `order_id` extraído existe. Los pedidos que no están SHALL excluirse de `order_ids`. Si no queda ninguno, el intérprete aparca el aviso (spec `cqrs-views`, "Proyección atrasada"), porque la proyección puede ir con retraso, y si vence su plazo sin que aparezca ninguno publicará `IncidentEscalated` con el motivo `no_valid_orders`.
+El sistema MUST comprobar en la proyección `view_orders` que cada `order_id` extraído existe. Los pedidos que no están SHALL excluirse de `order_ids`. Si no queda ninguno, el intérprete aparca el aviso (spec `cqrs-views`, "Proyección atrasada"), porque la proyección puede ir con retraso, y publica `NoticeParked` con los pedidos que espera y su plazo (`deadline_at`) en la misma transacción, y si vence su plazo sin que aparezca ninguno publicará `IncidentEscalated` con el motivo `no_valid_orders`.
 
 #### Scenario: Pedido inexistente
 

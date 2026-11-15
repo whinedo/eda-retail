@@ -16,7 +16,7 @@ EXPECTED_TYPES = {
     "CarrierNoticeReceived", "ShipmentDelayed", "PlanCreated", "PlanRevised", "StepRequested",
     "StepCompleted", "StepFailed", "CustomerNotified", "ClaimFiled", "StockReserved",
     "StockReleased", "ShipmentReissued", "RefundIssued", "IncidentResolved", "IncidentEscalated",
-    "LlmCallRecorded", "StepCancelled", "OrderRegistered",
+    "LlmCallRecorded", "StepCancelled", "OrderRegistered", "NoticeParked",
 }
 VERSION_2 = {"StepCompleted", "StepFailed"}
 
@@ -50,6 +50,20 @@ def test_order_registered_carries_a_reference_not_personal_data():
     with pytest.raises(PersonalDataError):
         build_event("OrderRegistered", {**payload, "customer_ref": "ana@example.com"}, correlation_id="P-1002",
                     causation_id=None, producer="inventory")
+
+
+def test_notice_parked_carries_order_references_and_its_deadline():
+    """NoticeParked lleva la incidencia, los pedidos que espera y su plazo (ISO), sin datos personales"""
+    payload = {"incident_id": "I-1", "order_ids": ["P-1001"], "deadline_at": "2026-11-15T20:13:36+00:00"}
+    ev = build_event("NoticeParked", payload, correlation_id="I-1", causation_id=None, producer="interpreter")
+    assert (ev.event_version, ev.payload["order_ids"]) == (1, ["P-1001"])
+    assert ev.payload["deadline_at"].startswith("2026-11-15T20:13:36")
+    with pytest.raises(PayloadError):
+        build_event("NoticeParked", {**payload, "order_ids": []}, correlation_id="I-1", causation_id=None,
+                    producer="interpreter")
+    with pytest.raises(PayloadError):
+        build_event("NoticeParked", {**payload, "deadline_at": "mañana"}, correlation_id="I-1", causation_id=None,
+                    producer="interpreter")
 
 
 def test_build_event_validates_payload_and_sets_envelope():
