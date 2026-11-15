@@ -66,6 +66,23 @@ body {
   font-size: 13px;
 }
 
+/* Insignia de la versión de la PoC (POC_VERSION). */
+.header__version {
+  margin-left: 12px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  background: var(--data-bg);
+  color: var(--data-fg);
+}
+
+.header__version--v2 {
+  background: var(--llm-bg);
+  color: var(--llm-fg);
+}
+
 .header__status {
   display: flex;
   gap: 10px;

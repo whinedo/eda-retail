@@ -259,3 +259,11 @@ def test_version_1_app_health_monitors_the_version_1_processes(monkeypatch):
     monkeypatch.setenv("POC_VERSION", "1")
     app = create_app(database_url="postgresql://x:x@127.0.0.1:1/none")
     assert app.state.health.monitored == MONITORED
+
+
+@pytest.mark.parametrize("version", [1, 2])
+def test_config_reports_the_active_poc_version(monkeypatch, version):
+    """/api/config dice la versión activa de la PoC (POC_VERSION) para la insignia de la cabecera"""
+    monkeypatch.setenv("POC_VERSION", str(version))
+    app = create_app(database_url="postgresql://x:x@127.0.0.1:1/none")
+    assert TestClient(app, base_url="http://localhost").get("/api/config").json()["poc_version"] == version

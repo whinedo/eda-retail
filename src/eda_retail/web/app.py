@@ -219,7 +219,12 @@ def create_app(
 
     @app.get("/api/config")
     def config() -> dict:
-        return {"jaeger_ui_url": jaeger_ui_url(), "free_text_enabled": free_text, "interactive_enabled": interactive}
+        return {
+            "jaeger_ui_url": jaeger_ui_url(),
+            "free_text_enabled": free_text,
+            "interactive_enabled": interactive,
+            "poc_version": version,  # la insignia «Versión 1» o «Versión 2 (MCP + A2A)» de la cabecera
+        }
 
     @app.get("/api/health")
     def health_report() -> dict:

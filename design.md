@@ -374,13 +374,14 @@ Interfaz local para operar y observar la PoC (spec `web-front`): un backend Fast
 | Mapa | Topología estática (`web/topology.py`, con las invocaciones REST de la saga como aristas) más el estado de cada proceso (`pgrep -f`, mismos patrones que `run-agents.sh`) y de PostgreSQL, Kafka y Ollama, con 2 s como máximo por comprobación |
 | Comandos | `POST /api/commands` lanza `scripts/notice.sh` con una lista blanca de argumentos y sin shell; una ejecución a la vez, 15 minutos como máximo, salida por SSE. `interactive` corre en una pseudoterminal y recibe líneas por `POST /api/commands/{run_id}/input`. Al parar el backend se termina el grupo de procesos en curso |
 | Trazas | Enlace a Jaeger en la cabecera y por evento (`<JAEGER_UI_URL>/trace/<trace_id>`, con `trace_id` del contexto de traza que guarda `event_log`) |
+| Versión de la PoC | `eda-web` toma `settings.poc_version` después de cargar `.env` (`load_settings`) y con ella elige el mapa (`topology.nodes/edges(version)`), los procesos vigilados (`topology.monitored(version)`) y el detalle de nodo (`topology.node(id, version)`). `GET /api/config` la devuelve en `poc_version` y la cabecera muestra la insignia «Versión 1» o «Versión 2 (MCP + A2A)» (`useConfig` → `Header`) |
 
 - Configuración: `WEB_PORT` (backend; Vite reenvía `/api` al mismo puerto), `WEB_FREE_TEXT` y `WEB_INTERACTIVE` (`true` para ofrecer `send --text` e `interactive`; por defecto deshabilitados, porque la PoC es un ejemplo académico) y `JAEGER_UI_URL` (por defecto `http://localhost:16686`; si no es http(s) se usa el valor por defecto).
 - Tests: pytest para el backend (los de `tests/integration/test_web_events.py`, contra PostgreSQL) y Vitest + Testing Library para el front, con un `EventSource` falso. El hook `web` de pre-commit lanza `npm test` y `npm run typecheck`.
 
 ## 15. Segunda versión: MCP y A2A
 
-Se activa con `POC_VERSION=2` (por defecto `1`, la primera versión sin cambios). Están construidos el servidor de correo MCP (esta tabla) y el agente del transportista A2A (§15.1). El resumen y cuándo usar cada modo de comunicación están en `docs/README.md`, «Segunda versión», y los requisitos en `specs/mcp-mail/spec.md` y `specs/a2a-carrier/spec.md`. Lo que cambia en el diseño:
+Se activa con `scripts/start-all.sh --version 2` (también `run-agents.sh` y `run-web.sh`; la opción exporta `POC_VERSION`, que gana a la de `.env` porque ni `uv run --env-file` ni `load_env_file` pisan una variable ya definida) o con `POC_VERSION=2` en `.env` (por defecto `1`, la primera versión sin cambios). Un valor distinto de 1 o 2 detiene el proceso (`poc_version_from_env`, también en `Settings()`). Están construidos el servidor de correo MCP (esta tabla) y el agente del transportista A2A (§15.1). El resumen y cuándo usar cada modo de comunicación están en `docs/README.md`, «Segunda versión», y los requisitos en `specs/mcp-mail/spec.md` y `specs/a2a-carrier/spec.md`. Lo que cambia en el diseño:
 
 | Parte | Cómo |
 | --- | --- |

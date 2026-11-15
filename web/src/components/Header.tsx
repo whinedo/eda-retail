@@ -1,4 +1,7 @@
+import type { PocVersion } from "../useConfig";
 import type { HealthState } from "../useHealth";
+
+const VERSION_LABEL: Record<PocVersion, string> = { 1: "Versión 1", 2: "Versión 2 (MCP + A2A)" };
 
 function Pill({ ok, children }: { ok: boolean | null; children: string }) {
   const tone = ok === null ? "pending" : ok ? "ok" : "down";
@@ -18,9 +21,12 @@ export function Header({
   resetDisabled = false,
   analyticsOpen = false,
   onAnalytics,
+  pocVersion = null,
 }: {
   health: HealthState;
   jaegerUrl: string;
+  // Versión de la PoC con la que corre el backend; sin ella (cargando) no hay insignia.
+  pocVersion?: PocVersion | null;
   onReset?: () => void;
   resetDisabled?: boolean;
   analyticsOpen?: boolean;
@@ -32,6 +38,9 @@ export function Header({
         <strong>EDA Retail</strong>
         <span>Incidencias logísticas · PoC académica</span>
       </div>
+      {pocVersion !== null && (
+        <span className={`header__version header__version--v${pocVersion}`}>{VERSION_LABEL[pocVersion]}</span>
+      )}
       {onAnalytics && (
         <a
           className="header__link header__link--analytics"

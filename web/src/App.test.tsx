@@ -330,6 +330,36 @@ describe("Texto libre según /api/config", () => {
   });
 });
 
+describe("Versión de la PoC según /api/config", () => {
+  it("con POC_VERSION=2 la cabecera muestra «Versión 2 (MCP + A2A)»", async () => {
+    const api = client({
+      getConfig: vi.fn(async () => ({
+        jaeger_ui_url: "",
+        free_text_enabled: false,
+        interactive_enabled: false,
+        poc_version: 2,
+      })),
+    });
+    render(<App client={api} openStream={openStream} />);
+
+    expect(await screen.findByText("Versión 2 (MCP + A2A)")).toBeInTheDocument();
+  });
+
+  it("con POC_VERSION=1 la cabecera muestra «Versión 1»", async () => {
+    const api = client({
+      getConfig: vi.fn(async () => ({
+        jaeger_ui_url: "",
+        free_text_enabled: false,
+        interactive_enabled: false,
+        poc_version: 1,
+      })),
+    });
+    render(<App client={api} openStream={openStream} />);
+
+    expect(await screen.findByText("Versión 1")).toBeInTheDocument();
+  });
+});
+
 describe("Interactive según /api/config", () => {
   it("Interactive deshabilitado: sin interactive_enabled no aparece interactive", async () => {
     const api = client();
