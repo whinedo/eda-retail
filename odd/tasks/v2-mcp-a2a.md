@@ -9,8 +9,8 @@ Branch: `feat/v2-specs` (from `feat/eda-components`). Delivery: specs PR first, 
 - S2 (L1, L3) A2A carrier agent consulted by the planner: `specs/a2a-carrier/spec.md`.
 - S3 (L4) Guardrails for MCP and A2A, inside S1 and S2 («Guardrails del cliente MCP», «Guardrails de A2A»).
 - S4 design.md §15 and docs/README.md «Segunda versión» point to the specs.
-- Assumptions (to confirm with the user):
-  - A1: the carrier agent is simulated with deterministic seeded rules, not a second LLM, so experiments stay repeatable.
+- Assumptions (A1 confirmed; A2–A5 to confirm with the user):
+  - A1 (confirmed, L5): the carrier agent is simulated with deterministic seeded rules, not a second LLM, so experiments stay repeatable.
   - A2: A2A uses JSON-RPC over HTTP with a bearer token (`A2A_CARRIER_TOKEN`).
   - A3: the MCP server has its own schema `mail_server` with a synthetic customer directory and the simulated mailbox, and dedups by `idempotency_key`.
   - A4: `tracking_ref` (asked in `input-required`) is a new synthetic reference per order.
@@ -30,3 +30,4 @@ Branch: `feat/v2-specs` (from `feat/eda-components`). Delivery: specs PR first, 
 - L2 (2026-11-15) User: "me parece bien el del transportista"
 - L3 (2026-11-15) User: "para A2A y MCP indica que se pondrán guardrails"
 - L4 (2026-11-15) User: "sí, empieza por las specs de la v2". The specs start from design.md §15 (PR #56). The planner's A2A call moves into the `CreatePlan` job worker (PR #58).
+- L5 (2026-11-15) User, on A1 (deterministic rules or its own LLM): "Reglas deterministas".

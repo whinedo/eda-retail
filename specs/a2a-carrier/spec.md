@@ -8,7 +8,7 @@ Consultar al agente del transportista, un agente externo y opaco de otra organiz
 
 ### Requirement: Agente del transportista simulado
 
-El sistema SHALL incluir un agente del transportista simulado, `carrier-agent`, como proceso aparte que publica su Agent Card en `/.well-known/agent-card.json` y atiende tareas A2A (JSON-RPC sobre HTTP). Para la PoC, el agente decide con reglas deterministas a partir de una semilla y de la causa del retraso. Esto es un supuesto: así los experimentos son repetibles sin un segundo LLM. Para quien lo consulta, el agente es opaco: solo se conoce su Agent Card. Ofrece una sola habilidad (skill), `delivery_options`. Para un `order_id` y una causa, responde:
+El sistema SHALL incluir un agente del transportista simulado, `carrier-agent`, como proceso aparte que publica su Agent Card en `/.well-known/agent-card.json` y atiende tareas A2A (JSON-RPC sobre HTTP). Para la PoC, el agente decide con reglas deterministas a partir de una semilla y de la causa del retraso. Así los experimentos son repetibles sin un segundo LLM. Para quien lo consulta, el agente es opaco: solo se conoce su Agent Card. Ofrece una sola habilidad (skill), `delivery_options`. Para un `order_id` y una causa, responde:
 
 - `new_delivery_date`: la nueva fecha estimada, o nula;
 - `can_reship`: si puede reenviar;
