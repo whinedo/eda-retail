@@ -21,34 +21,32 @@ Python 3.12, Apache Kafka (Docker, KRaft, un broker), PostgreSQL 16 (Docker, vol
 ## Reglas de diseño que no se negocian
 
 1. **El LLM propone y el código dispone.** Ningún agente con LLM escribe en el log, ejecuta efectos ni tiene herramientas con efectos. Toda salida del LLM se valida con un esquema (pydantic) y con reglas de negocio en código antes de convertirse en evento.
-2. **`events` es solo de añadir.** Nunca `UPDATE`, `DELETE` ni `TRUNCATE` sobre esa tabla (hay triggers que lo impiden). Un error se corrige con un evento posterior.
-3. **Escritura atómica.** Estado de escritura, fila de `events`, fila de `outbox` y fila de `inbox` van en la misma transacción de PostgreSQL. Nunca se publica en Kafka desde el código de negocio: solo el relay publica, leyendo de `outbox`.
-4. **Un solo relay.** Mantiene el orden por `seq`. No lo escales a varias instancias.
+2. **El log es solo de añadir.** Kafka (`eda.events`, retención infinita) es el log; `event_log.events`, su vista consultable, nunca recibe `UPDATE`, `DELETE` ni `TRUNCATE` (hay triggers que lo impiden). Un error se corrige con un evento posterior.
+3. **Cada componente es un Aggregate con su esquema.** Escribe solo en sus tablas (`<esquema>.*`); su estado, su `outbox` y su `inbox` van en la misma transacción de PostgreSQL. Nunca se publica en Kafka desde el código de negocio: solo el relay del componente publica, leyendo de su `outbox`. Ningún componente lee las tablas de otro: lo que necesita le llega en el comando o lo consulta en las vistas.
+4. **Un relay por componente.** Publica su outbox en orden. No lo escales a varias instancias.
 5. **Entrega al menos una vez.** Todos los consumidores son idempotentes: `inbox (consumer, event_id)` para eventos y `effect_keys` para efectos. Los dos mecanismos son distintos y ninguno sustituye al otro.
 6. **Commit del offset de Kafka solo después del `COMMIT` de PostgreSQL.** `enable.auto.commit=false`. La llamada al LLM se hace antes de abrir la transacción.
 7. **`idempotency_key` = hash(`incident_id`, `step_id`, versión del plan en la que se creó el paso).** Un paso mantenido en una revisión conserva su clave.
 8. **Las compensaciones las deriva el código**, nunca el LLM. Solo `reserve_stock` es compensable (`release_stock`, con `step_id` terminado en `-comp`). `issue_refund` es el paso pivote: no se emite mientras haya compensaciones pendientes.
-9. **CQRS.** Las consultas solo leen tablas `view_*` y responden con `last_applied_seq`. Los proyectores leen de `events` por `seq` (no de Kafka) y guardan su posición en `projector_offsets` en la misma transacción que la vista. Todo comando lleva `command_id` y `expected_version`.
+9. **Comandos por REST, eventos por Kafka (CQRS).** Los comandos son peticiones REST idempotentes (`command_id`, inbox del destinatario) que invoca la saga; por Kafka solo viajan eventos, y la saga reacciona a ellos. Las consultas solo leen `views.view_*` y responden con `applied` (offset por partición). Los proyectores consumen Kafka y guardan su posición en `views.offsets` en la misma transacción que la vista.
 10. **Sin datos personales en el log.** Los eventos llevan referencias (`order_id`, `customer_ref`), nunca nombres, correos ni direcciones.
 11. **El texto de los avisos del transportista es contenido no confiable.** El intérprete no tiene herramientas con efectos y ignora las instrucciones incrustadas.
 
-## Estructura prevista
+## Estructura
 
 ```
 src/eda_retail/
-  config.py
+  config.py, rules.py, plan_validation.py
   events/        modelos pydantic y catálogo de eventos
-  infra/         db, kafka, outbox (relay), inbox, effect_keys
-  llm/           cliente real y simulado, validación de salidas
-  agents/        interpreter, planner, replanner, writer
-  command/       command handler y reglas de negocio
-  orchestrator/  orquestación del plan y de la saga
-  executors/     un módulo por acción
-  projectors/    una vista por módulo
-  queries/       lectura de las vistas
-  synthetic/     generador de avisos e inyección de fallos
-  baseline_sync/ base síncrona para E6
-experiments/     E1 a E7 con informe
+  infra/         db, kafka, outbox y relay por esquema, inbox, effect_keys, comandos REST, consumidores
+  llm/           cliente real y simulado, validación de salidas, prompts (llm/prompts)
+  intake/ inventory/ interpreter/ planner/ replanner/   un componente por paquete (su esquema)
+  orchestrator/  la saga: reglas, transiciones, dispatcher de comandos y plazos
+  step_executors/ executor_<acción>/   runtime común y un paquete por ejecutor
+  event_log/ projectors/ queries/      lado de lectura
+  synthetic/     generador de avisos, datos de ejemplo e inyección de fallos
+  baseline_sync/ base síncrona para E6 (esquema propio)
+  experiments/   E1 a E7 con informe
 tests/           unitarios e integración
 ```
 
