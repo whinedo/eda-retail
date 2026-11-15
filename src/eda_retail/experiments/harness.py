@@ -81,6 +81,7 @@ from eda_retail.orchestrator import consumer as orchestrator
 from eda_retail.orchestrator.dispatcher import dispatch_once, expire_once
 from eda_retail.orchestrator.saga import target_url
 from eda_retail.planner import handler as planner
+from eda_retail.planner.carrier import CarrierConsultant
 from eda_retail.projectors.base import consumer_for
 from eda_retail.projectors.registry import build_all
 from eda_retail.replanner import handler as replanner
@@ -313,8 +314,11 @@ class Harness:
     """Una ejecución aislada. Usar como contexto: crea y borra su base de datos y su topic."""
 
     def __init__(self, base: Settings, config: RunConfig, *, llm: LlmClient | None = None,
-                 data: Dataset | None = None) -> None:
+                 data: Dataset | None = None, carrier: CarrierConsultant | None = None) -> None:
+        """`carrier`: un cliente A2A en proceso para el planificador. Sin él (por defecto) el planificador no
+        consulta al transportista, como en la versión 1, aunque POC_VERSION=2: E5 y E6 siguen comparables."""
         self.config = config
+        self._carrier = carrier
         self.data = data or generate(config.seed, config.incidents)
         self._base = base
         self._llm = llm
@@ -394,7 +398,8 @@ class Harness:
         effects = replace(s, effect_keys_enabled=mode == "full")  # ejecutores e inventory
         targets = {
             "intake": Target(intake.SCHEMA, intake.specs(), mode != "none"),
-            "planner": Target(planner.SCHEMA, planner.specs(s, self.llm, self.rules), mode != "none"),
+            "planner": Target(planner.SCHEMA, planner.specs(s, self.llm, self.rules, carrier=self._carrier),
+                              mode != "none"),
             "replanner": Target(replanner.SCHEMA, replanner.specs(s, self.llm, self.rules), mode != "none"),
             "inventory": Target(inventory.SCHEMA, dict(inventory.specs(effects), ExecuteStep=failing(
                 inventory.specs(effects)["ExecuteStep"], inventory.SCHEMA, plan)), mode == "full"),

@@ -143,3 +143,23 @@ def test_version_two_mail_goes_through_the_in_process_mcp_server(idempotent, rep
     assert first.message_id.startswith("M-")
     assert (first.message_id == again.message_id) is idempotent
     assert harness.service_duplicates(services)["notify_customer"] == repeated
+
+
+# --- Agente del transportista A2A en el arnés (POC_VERSION=2) ----------------------------------
+
+
+def test_the_harness_planner_does_not_consult_the_carrier_by_default(monkeypatch):
+    """E5 y E6 sin agente del transportista: el harness no consulta por A2A aunque POC_VERSION=2"""
+    from eda_retail.config import Settings
+    from eda_retail.experiments.harness import Harness, RunConfig
+    from eda_retail.llm.fake import FakeLlmClient
+
+    monkeypatch.setenv("POC_VERSION", "2")
+    harness = Harness(Settings(), RunConfig(seed=1, incidents=1), llm=FakeLlmClient([]))
+    harness.settings = Settings()
+    assert harness._targets()["planner"].specs["CreatePlan"].prepare._carrier is None
+
+    injected = object()
+    harness = Harness(Settings(), RunConfig(seed=1, incidents=1), llm=FakeLlmClient([]), carrier=injected)
+    harness.settings = Settings()
+    assert harness._targets()["planner"].specs["CreatePlan"].prepare._carrier is injected

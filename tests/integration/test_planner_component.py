@@ -259,3 +259,53 @@ def test_a_job_left_running_by_a_crash_is_taken_again_and_its_result_written_onc
     [job] = jobs(conn, "planner", incident)
     assert (job["status"], job["attempts"]) == ("done", 2)
     assert _plan(conn, incident)["status"] == "created"
+
+
+def _carrier_client(**kwargs):
+    """Cliente A2A contra el agente del transportista en proceso (httpx.ASGITransport, sin puerto)."""
+    import httpx
+
+    from eda_retail.carrier_agent.server import create_app
+    from eda_retail.planner.carrier import CarrierClient
+
+    app = create_app(url="http://carrier.test", token="t", seed=42)
+    return CarrierClient("http://carrier.test", "t", timeout_s=5, max_rounds=2,
+                         transport=httpx.ASGITransport(app=app), **kwargs)
+
+
+def test_version_2_publishes_carrier_consulted_with_the_plan(database_url, conn):
+    """Plan con las opciones del transportista: CarrierConsulted, LlmCallRecorded y PlanCreated en su outbox"""
+    order, incident = _order(conn), _incident()
+    llm = FakeLlmClient([_loss_plan(order)])
+    settings = replace(Settings(), database_url=database_url, poc_version=2)
+    api = client(database_url, "planner", specs(settings, llm, RULES, carrier=_carrier_client()))
+
+    assert _create(api, incident, order).status_code == 202
+
+    assert _types(conn, incident) == ["CarrierConsulted", "LlmCallRecorded", "PlanCreated"]
+    consulted = outbox(conn, "planner", incident)[0]["payload"]
+    assert (consulted["outcome"], consulted["rounds"]) == ("answered", 1)  # loss: pide tracking_ref
+    assert "notes" not in consulted
+    assert "<opciones_transportista>" in llm.requests[0].prompt
+
+
+def test_version_2_with_the_agent_down_plans_as_version_1(database_url, conn):
+    """Agente sin respuesta: el plan se crea sin las opciones y CarrierConsulted lleva el fallo"""
+    import httpx
+
+    from eda_retail.planner.carrier import CarrierClient
+
+    def refuse(request):
+        raise httpx.ConnectError("refused", request=request)
+
+    order, incident = _order(conn), _incident()
+    llm = FakeLlmClient([_loss_plan(order)])
+    down = CarrierClient("http://carrier.test", "t", timeout_s=1, max_rounds=2, transport=httpx.MockTransport(refuse))
+    api = client(database_url, "planner", specs(replace(Settings(), database_url=database_url), llm, RULES,
+                                                 carrier=down))
+
+    assert _create(api, incident, order).status_code == 202
+
+    assert _types(conn, incident) == ["CarrierConsulted", "LlmCallRecorded", "PlanCreated"]
+    assert outbox(conn, "planner", incident)[0]["payload"]["outcome"] == "failed"
+    assert "<opciones_transportista>" not in llm.requests[0].prompt

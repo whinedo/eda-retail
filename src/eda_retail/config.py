@@ -41,8 +41,9 @@ def _database_url() -> str:
 
 
 def poc_version_from_env(environ: Mapping[str, str] = os.environ) -> int:
-    """`POC_VERSION` (1 por defecto). Cualquier otro valor que 1 o 2 es un error de configuración."""
-    raw = environ.get("POC_VERSION", "1").strip() or "1"
+    """`POC_VERSION` (1 si no está definida): la versión de la PoC, 1 o 2; cualquier otro valor, también uno
+    vacío, es un error de configuración."""
+    raw = environ.get("POC_VERSION", "1").strip()
     if raw not in {str(v) for v in POC_VERSIONS}:
         raise ValueError(f"POC_VERSION debe ser 1 o 2, no {raw!r}")
     return int(raw)
@@ -50,8 +51,9 @@ def poc_version_from_env(environ: Mapping[str, str] = os.environ) -> int:
 
 @dataclass(frozen=True)
 class Settings:
-    # Versión de la PoC (POC_VERSION): con 1, el sistema se comporta como la primera versión.
-    poc_version: int = field(default_factory=lambda: int(os.environ.get("POC_VERSION", "1")))
+    # Versión de la PoC (POC_VERSION): 1 (la primera, por defecto) o 2 (con MCP y A2A, design.md §15). Se valida
+    # al construir: con cualquier otro valor, Settings() lanza ValueError.
+    poc_version: int = field(default_factory=poc_version_from_env)
     database_url: str = field(default_factory=_database_url)
     kafka_bootstrap_servers: str = field(
         default_factory=lambda: os.environ.get("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
@@ -136,6 +138,18 @@ class Settings:
     llm_price_out_per_1k: Decimal = field(default_factory=lambda: _env_decimal("LLM_PRICE_OUT_PER_1K"))
     effect_cost_claim: Decimal = field(default_factory=lambda: _env_decimal("EFFECT_COST_CLAIM"))
     effect_cost_reissue: Decimal = field(default_factory=lambda: _env_decimal("EFFECT_COST_REISSUE"))
+    # Agente del transportista (A2A, spec a2a-carrier); solo se usa con POC_VERSION=2. CARRIER_AGENT_URL es
+    # la URL que publica su Agent Card y que consulta el planificador; CARRIER_AGENT_PORT, donde escucha en
+    # 127.0.0.1. A2A_TIMEOUT_S es el plazo total de una consulta y A2A_MAX_ROUNDS el máximo de rondas
+    # input-required; CARRIER_AGENT_SEED, la semilla de sus reglas deterministas.
+    carrier_agent_url: str = field(
+        default_factory=lambda: os.environ.get("CARRIER_AGENT_URL", "http://127.0.0.1:8130")
+    )
+    carrier_agent_port: int = field(default_factory=lambda: int(os.environ.get("CARRIER_AGENT_PORT", "8130")))
+    a2a_carrier_token: str = field(default_factory=lambda: os.environ.get("A2A_CARRIER_TOKEN", ""))
+    a2a_timeout_s: float = field(default_factory=lambda: float(os.environ.get("A2A_TIMEOUT_S", "5")))
+    a2a_max_rounds: int = field(default_factory=lambda: int(os.environ.get("A2A_MAX_ROUNDS", "2")))
+    carrier_agent_seed: int = field(default_factory=lambda: int(os.environ.get("CARRIER_AGENT_SEED", "42")))
 
 
 def load_env_file(path: Path, environ: MutableMapping[str, str] = os.environ) -> list[str]:
@@ -161,6 +175,6 @@ def load_env_file(path: Path, environ: MutableMapping[str, str] = os.environ) ->
 
 
 def load_settings() -> Settings:
+    """Carga `.env` y construye `Settings`; un POC_VERSION no válido para el proceso con un ValueError claro."""
     load_env_file(Path.cwd() / ENV_FILE)
-    poc_version_from_env()  # un POC_VERSION no válido para el proceso con un error claro
     return Settings()

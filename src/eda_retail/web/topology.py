@@ -4,17 +4,17 @@ Los ids coinciden con el emisor y el destino de los eventos (`web.routing`), par
 pueda resaltar la arista de cada evento. `process` es el patrón de `pgrep -f` de
 `scripts/run-agents.sh`; los nodos sin proceso propio no se vigilan.
 
-La topología depende de la versión de la PoC (`POC_VERSION`, que `eda-web` lee de `.env`): con la versión 2,
-el nodo `mail` es el servidor de correo MCP (`eda-mail-server`, un proceso vigilado con su esquema en
-PostgreSQL) en lugar del servicio simulado en proceso. `NODES`, `MONITORED` y `EDGES` son los de la versión
-activa; `nodes`, `monitored` y `edges` dan los de cualquier versión.
+La topología depende de la versión de la PoC (`settings.poc_version`, que `eda-web` lee después de cargar
+`.env`). `NODES`, `EDGES` y `MONITORED` son los de la versión 1. Con `POC_VERSION=2`, `nodes(2)`, `edges(2)`
+y `monitored(2)` cambian el nodo `mail` por el servidor de correo MCP (`eda-mail-server`, un proceso vigilado
+con su esquema en PostgreSQL, spec mcp-mail) y añaden el agente del transportista (A2A, spec a2a-carrier), un
+proceso aparte (`eda-carrier-agent`) que consulta el planificador.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 
-from eda_retail.config import poc_version_from_env
 from eda_retail.events.catalog import Action
 
 KINDS = ("llm", "code", "data", "external", "simulated")
@@ -96,16 +96,17 @@ _NODES_V1: tuple[Node, ...] = (
 MAIL_SERVER = Node("mail", "Servidor de correo (MCP)", "simulated",
                    "Servidor MCP de correo simulado (herramienta send_email) que usa notify_customer; su "
                    "directorio y su buzón viven en el esquema mail_server.", "eda-mail-server")
-
-
-def nodes(version: int = 1) -> tuple[Node, ...]:
-    if version != 2:
-        return _NODES_V1
-    return tuple(MAIL_SERVER if n.id == MAIL_SERVER.id else n for n in _NODES_V1)
-
-
-def monitored(version: int = 1) -> tuple[Node, ...]:
-    return tuple(n for n in nodes(version) if n.process)
+# Versión 2 (spec a2a-carrier): el agente del transportista, opaco y simulado, que consulta el planificador.
+CARRIER_AGENT = Node(
+    "carrier_agent", "Agente del transportista (A2A)", "simulated",
+    "Agente externo y opaco del transportista: el planificador le pide opciones de entrega (delivery_options) "
+    "por A2A antes del LLM. Reglas deterministas con semilla.",
+    "eda-carrier-agent",
+)
+_NODES_V2: tuple[Node, ...] = (
+    *(MAIL_SERVER if n.id == MAIL_SERVER.id else n for n in _NODES_V1),
+    CARRIER_AGENT,
+)
 
 _CONSUMERS = ["interpreter", "planner", "replanner", "orchestrator", *(f"executor-{a.value}" for a in Action)]
 _EDGES_V1: tuple[tuple[str, str], ...] = (
@@ -125,19 +126,32 @@ _EDGES_V1: tuple[tuple[str, str], ...] = (
 )
 
 
+# Versión 2: el servidor de correo guarda su directorio y su buzón en PostgreSQL; el planificador consulta al
+# agente del transportista.
+_EDGES_V2: tuple[tuple[str, str], ...] = (*_EDGES_V1, ("mail", "postgres"), ("planner", CARRIER_AGENT.id))
+
+
+def nodes(version: int = 1) -> tuple[Node, ...]:
+    """Los nodos del mapa de la versión `version` de la PoC (1 o 2)."""
+    return _NODES_V2 if version == 2 else _NODES_V1
 
 
 def edges(version: int = 1) -> tuple[tuple[str, str], ...]:
-    return _EDGES_V1 + ((("mail", "postgres"),) if version == 2 else ())
+    return _EDGES_V2 if version == 2 else _EDGES_V1
 
 
-ACTIVE_VERSION = poc_version_from_env()
-NODES = nodes(ACTIVE_VERSION)
-MONITORED = monitored(ACTIVE_VERSION)
-EDGES = edges(ACTIVE_VERSION)
-_BY_ID = {n.id: n for n in NODES}
+def monitored(version: int = 1) -> tuple[Node, ...]:
+    """Los nodos con proceso propio que vigila la salud, según la versión."""
+    return tuple(n for n in nodes(version) if n.process)
 
 
-def node(node_id: str) -> Node:
-    """Nodo por id; KeyError si no existe."""
-    return _BY_ID[node_id]
+# Los de la versión 1; la versión activa la decide quien llama (eda-web, con `settings.poc_version`).
+NODES = _NODES_V1
+EDGES = _EDGES_V1
+MONITORED = monitored(1)
+_BY_ID = {version: {n.id: n for n in nodes(version)} for version in (1, 2)}
+
+
+def node(node_id: str, version: int = 1) -> Node:
+    """Nodo por id en el mapa de la versión `version`; KeyError si no existe (la 1 no conoce `carrier_agent`)."""
+    return _BY_ID[2 if version == 2 else 1][node_id]

@@ -176,26 +176,86 @@ def test_checks_report_down_when_nothing_listens(check):
 
 # --- Versión de la PoC ---------------------------------------------------------------------------
 
+V2_NODES = SPEC_NODES | {"carrier_agent"}
+
 
 def test_version_one_map_is_unchanged():
-    """POC_VERSION=1 (por defecto): el mapa no tiene el servidor de correo MCP y vigila 13 procesos"""
+    """POC_VERSION=1 (por defecto): el mapa no tiene el servidor de correo MCP ni el agente del transportista
+    y vigila 13 procesos"""
     assert topology.nodes(1) == NODES and topology.edges(1) == EDGES and topology.monitored(1) == MONITORED
+    assert topology.nodes() == NODES and topology.edges() == EDGES and topology.monitored() == MONITORED
     assert node("mail").process is None and node("mail").label == "Correo"
+    assert "carrier_agent" not in {n.id for n in NODES}
 
 
 def test_version_two_shows_the_mail_server():
     """POC_VERSION=2: el nodo del correo es el servidor MCP, un proceso vigilado (eda-mail-server)"""
     mail = next(n for n in topology.nodes(2) if n.id == "mail")
     assert mail.process == "eda-mail-server" and "MCP" in mail.label
-    assert {n.id for n in topology.nodes(2)} == SPEC_NODES
-    assert len(topology.monitored(2)) == 14
+    assert node("mail", 2) == mail
     assert ("executor-notify_customer", "mail") in topology.edges(2)
     assert ("mail", "postgres") in topology.edges(2) and ("mail", "postgres") not in topology.edges(1)
 
 
-def test_version_two_health_counts_the_mail_server():
-    """POC_VERSION=2: la salud vigila también eda-mail-server"""
-    checker = HealthChecker({}, pgrep=lambda pattern: pattern == "eda-mail-server", monitored=topology.monitored(2))
-    body = checker.report()
-    assert body["processes"]["mail"] is True
-    assert (body["processes_up"], body["processes_total"]) == (1, 14)
+def test_version_2_map_shows_the_carrier_agent():
+    """POC_VERSION=2: el agente del transportista (A2A) aparece como nodo vigilado, consultado por el planificador"""
+    agent = next(n for n in topology.nodes(2) if n.id == "carrier_agent")
+    assert (agent.kind, agent.process) == ("simulated", "eda-carrier-agent")
+    assert ("planner", "carrier_agent") in topology.edges(2)
+
+
+def test_version_two_shows_both_the_mail_server_and_the_carrier_agent():
+    """POC_VERSION=2: el mapa tiene a la vez el servidor de correo MCP y el agente A2A, y vigila 15 procesos"""
+    v2 = topology.nodes(2)
+    assert {n.id for n in v2} == V2_NODES and len({n.id for n in v2}) == len(v2)
+    assert {n.process for n in topology.monitored(2)} >= {"eda-mail-server", "eda-carrier-agent"}
+    assert len(topology.monitored(2)) == 15
+    ids = {n.id for n in v2}
+    assert all(source in ids and target in ids for source, target in topology.edges(2))
+
+
+@pytest.mark.parametrize(
+    ("pattern", "node_id"), [("eda-mail-server", "mail"), ("eda-carrier-agent", "carrier_agent")]
+)
+def test_version_two_health_counts_the_new_processes(pattern, node_id):
+    """POC_VERSION=2: la salud vigila también eda-mail-server y eda-carrier-agent"""
+    checker = HealthChecker({}, pgrep=lambda p: p == pattern, monitored=topology.monitored(2))
+    report = checker.report()
+    assert report["processes"][node_id] is True
+    assert (report["processes_up"], report["processes_total"]) == (1, 15)
+
+
+def test_version_1_does_not_know_the_carrier_agent_node(monkeypatch):
+    """POC_VERSION=1: /api/nodes/carrier_agent responde 404 sin consultar la base de datos, como antes"""
+    monkeypatch.setenv("POC_VERSION", "1")
+    with pytest.raises(KeyError):
+        node("carrier_agent")
+    assert node("carrier_agent", 2).process == "eda-carrier-agent"
+    client = _client()
+    assert client.get("/api/nodes/carrier_agent").status_code == 404
+    body = client.get("/api/topology").json()
+    assert {n["id"] for n in body["nodes"]} == SPEC_NODES
+    assert len(body["edges"]) == len(EDGES)
+    mail = next(n for n in body["nodes"] if n["id"] == "mail")
+    assert (mail["label"], mail["monitored"]) == ("Correo", False)
+
+
+def test_version_2_app_shows_and_checks_the_new_nodes(monkeypatch):
+    """POC_VERSION=2: /api/topology incluye el servidor de correo MCP y el agente del transportista, y la
+    salud vigila sus procesos"""
+    monkeypatch.setenv("POC_VERSION", "2")
+    app = create_app(database_url="postgresql://x:x@127.0.0.1:1/none")
+    body = TestClient(app, base_url="http://localhost").get("/api/topology").json()
+
+    assert {n["id"] for n in body["nodes"]} == V2_NODES
+    assert {"source": "planner", "target": "carrier_agent"} in body["edges"]
+    assert {"source": "mail", "target": "postgres"} in body["edges"]
+    mail = next(n for n in body["nodes"] if n["id"] == "mail")
+    assert mail["monitored"] is True and "MCP" in mail["label"]
+    assert app.state.health.monitored == topology.monitored(2)
+
+
+def test_version_1_app_health_monitors_the_version_1_processes(monkeypatch):
+    monkeypatch.setenv("POC_VERSION", "1")
+    app = create_app(database_url="postgresql://x:x@127.0.0.1:1/none")
+    assert app.state.health.monitored == MONITORED

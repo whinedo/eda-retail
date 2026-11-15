@@ -25,6 +25,7 @@ from eda_retail.llm.ollama_client import DEFAULT_HOST as DEFAULT_OLLAMA_HOST
 from eda_retail.projectors.order_status import OrderStatus
 from eda_retail.queries.order_status import get_order_status
 from eda_retail.queries.parked_notices import get_parked_notices
+from eda_retail.web import topology as topo
 from eda_retail.web.commands import (
     NOTICE_SCRIPT,
     RUN_MAX_SECONDS,
@@ -44,7 +45,6 @@ from eda_retail.web.events import DEFAULT_LIMIT, MAX_LIMIT, events_after, last_s
 from eda_retail.web.health import HealthChecker, check_kafka, check_ollama, check_postgres
 from eda_retail.web.nodes import node_detail
 from eda_retail.web.stream import event_stream, start_seq
-from eda_retail.web.topology import EDGES, NODES, node
 from eda_retail.web.traces import jaeger_ui_url
 
 # Orígenes admitidos: http(s) en localhost, 127.0.0.1 o ::1, con cualquier puerto
@@ -143,13 +143,16 @@ def create_app(
     app.state.database_url = database_url or settings.database_url
     db_url = app.state.database_url
     ollama_host = os.environ.get("OLLAMA_HOST", DEFAULT_OLLAMA_HOST)
+    version = settings.poc_version  # el mapa y los procesos vigilados de la versión 1 o 2 de la PoC
     health = health or HealthChecker(
         {
             "postgres": lambda: check_postgres(db_url),
             "kafka": lambda: check_kafka(settings.kafka_bootstrap_servers),
             "ollama": lambda: check_ollama(ollama_host),
-        }
+        },
+        monitored=topo.monitored(version),
     )
+    app.state.health = health
     app.state.stream_max_polls = stream_max_polls
     app.add_middleware(
         CORSMiddleware,
@@ -210,8 +213,8 @@ def create_app(
     @app.get("/api/topology")
     def topology() -> dict:
         return {
-            "nodes": [n.as_dict() for n in NODES],
-            "edges": [{"source": source, "target": target} for source, target in EDGES],
+            "nodes": [n.as_dict() for n in topo.nodes(version)],
+            "edges": [{"source": source, "target": target} for source, target in topo.edges(version)],
         }
 
     @app.get("/api/config")
@@ -225,7 +228,7 @@ def create_app(
     @app.get("/api/nodes/{node_id}")
     def node_info(node_id: str) -> dict:
         try:
-            found = node(node_id)
+            found = topo.node(node_id, version)
         except KeyError:
             raise HTTPException(404, "nodo desconocido") from None
         with read_only_connect(db_url) as conn:
