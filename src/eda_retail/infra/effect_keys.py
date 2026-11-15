@@ -115,3 +115,12 @@ def complete(
         """,
         (Jsonb(result), key),
     )
+
+
+def stored_result(conn: psycopg.Connection, key: str, *, schema: str | None = None) -> dict[str, Any] | None:
+    """El resultado de una clave ya completada, o None (sin bloquear; para saltarse trabajo previo)."""
+    with conn.transaction():
+        row = conn.execute(
+            f"SELECT result FROM {_table(schema)} WHERE idempotency_key = %s AND status = 'completed'", (key,)
+        ).fetchone()
+    return (row["result"] or {}) if row is not None else None

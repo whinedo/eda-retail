@@ -51,7 +51,7 @@ _AGENTS = {
 
 # Cada agente es un componente con su propio proceso (T5, T6 y T8).
 _PROCESSES = {"interpreter": "eda-interpreter", "planner": "eda-planner", "replanner": "eda-replanner"}
-# reserve_stock y release_stock los ejecuta inventory (T4); el resto, sus ejecutores (T9).
+# reserve_stock y release_stock los ejecuta inventory (T4); el resto, `eda-step-executor <acción>` (T9).
 _EXECUTOR_PROCESSES = {Action.RESERVE_STOCK: "eda-inventory", Action.RELEASE_STOCK: "eda-inventory"}
 
 NODES: tuple[Node, ...] = (
@@ -68,7 +68,7 @@ NODES: tuple[Node, ...] = (
     *(
         Node(
             f"executor-{a.value}", a.value, "code", f"Ejecutor de {a.value}: aplica el efecto de forma idempotente.",
-            _EXECUTOR_PROCESSES.get(a, f"eda-executor {a.value}"), WRITER if a in _WRITER_ACTIONS else None,
+            _EXECUTOR_PROCESSES.get(a, f"eda-step-executor {a.value}"), WRITER if a in _WRITER_ACTIONS else None,
         )
         for a in Action
     ),

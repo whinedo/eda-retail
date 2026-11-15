@@ -32,6 +32,10 @@ PROCESSES=(
   "interpreter|eda-interpreter"
   "planner|eda-planner"
   "replanner|eda-replanner"
+  "executor-notify_customer|eda-step-executor notify_customer"
+  "executor-file_claim|eda-step-executor file_claim"
+  "executor-reissue_shipment|eda-step-executor reissue_shipment"
+  "executor-issue_refund|eda-step-executor issue_refund"
 )
 
 for service in kafka postgres; do

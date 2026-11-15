@@ -135,6 +135,13 @@ def test_independent_steps_are_invoked_together(conn, saga):
     assert _statuses(conn, incident)["S4"] == "pending"
     targets = {c["payload"]["step_id"]: c["target"] for c in _commands(conn, incident, "ExecuteStep")}
     assert targets == {"S1": "executor_notify_customer", "S2": "executor_file_claim", "S3": "inventory"}
+    payloads = {c["payload"]["step_id"]: c["payload"] for c in _commands(conn, incident, "ExecuteStep")}
+    row = _incident_row(conn, incident)
+    for drafted in ("S1", "S2"):  # el redactor necesita la causa y el retraso: llegan en el comando
+        assert (payloads[drafted]["cause"], payloads[drafted]["estimated_delay_hours"]) == (
+            row["cause"], row["estimated_delay_hours"])
+    assert "cause" not in payloads["S3"]
+    assert all("cause" not in e["payload"] for e in outbox(conn, "orchestrator", incident))
 
 
 def test_step_result_unblocks_its_dependent_in_the_same_transaction(conn, saga):
