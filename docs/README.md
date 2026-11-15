@@ -348,6 +348,8 @@ E5 y E6 repiten 3 veces con Ollama. Cada repetición usa su propia semilla (`--s
 
 La latencia de E6 se lee con cuidado: el arnés atiende los consumidores por turnos en un solo proceso, con esperas cortas en cada consumidor, así que la latencia de la versión de eventos incluye ese reparto de turnos y no es la de un despliegue con un proceso por componente. Con el oráculo la diferencia la marca el arnés; con Ollama la domina el LLM.
 
+E6 escala los plazos de la saga (`SAGA_PLAN_TIMEOUT_S`, `SAGA_STEP_TIMEOUT_S`) con el número de incidencias, 30 s por incidencia y nunca por debajo de los valores por defecto, porque la base síncrona no tiene plazos y el LLM es una sola cola compartida: un plazo empieza en el primer envío e incluye la espera del trabajo en esa cola. El informe guarda los plazos usados en `config.saga_deadlines`. Fuera de E6 los plazos no cambian.
+
 ## Segunda versión
 
 La segunda versión de la PoC añade los dos modos de comunicación que faltan, MCP y A2A, para cubrir todos los de un sistema distribuido con agentes y mostrar cuándo conviene cada uno. Sus requisitos están en `specs/mcp-mail/spec.md` y `specs/a2a-carrier/spec.md`. Están construidos los dos: el servidor de correo MCP y el agente del transportista (A2A).

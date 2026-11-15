@@ -40,9 +40,10 @@ def _command(payload: dict) -> tuple[CommandEnvelope, handler.CreatePlan]:
     return command, handler.CreatePlan.model_validate(payload)
 
 
-def _preparer(llm, *, planned=False, amounts=None, budget=None):
+def _preparer(llm, *, planned=False, amounts=None, budget=None, closed=False):
     context = handler.PlanContext(planned=planned, budget=budget or budget_from_cost(None, RULES),
-                                  amounts=amounts if amounts is not None else {"P-1": Decimal("40.00")})
+                                  amounts=amounts if amounts is not None else {"P-1": Decimal("40.00")},
+                                  closed=closed)
     return handler.PlanPreparer(llm, RULES, context=lambda incident_id, order_ids: context)
 
 
@@ -326,3 +327,27 @@ def test_specs_consult_only_with_an_injected_carrier_client():
     consultant = _answered()
     injected = handler.specs(settings, FakeLlmClient([]), RULES, carrier=consultant)["CreatePlan"].prepare
     assert injected._carrier is consultant
+
+
+@pytest.mark.parametrize("severity", ["high", "low"])
+def test_a_job_of_a_closed_incident_does_not_call_the_llm(severity):
+    """Trabajo de una incidencia ya cerrada: el CreatePlan no llama al LLM y termina rechazado sin eventos"""
+    llm = FakeLlmClient([LOSS_PLAN])
+    command, payload = _command({**LOSS, "severity": severity})
+
+    prepared = _preparer(llm, closed=True)(command, payload)
+    outcome = handler.create_plan(RULES)(None, command, payload, prepared)  # sin tocar la base de datos
+
+    assert llm.requests == [] and prepared.calls == []
+    assert outcome.reason == "incident_closed"
+
+
+def test_an_open_incident_still_gets_its_plan():
+    """Trabajo de una incidencia ya cerrada: una incidencia abierta (o sin fila en la vista) se planifica igual"""
+    llm = FakeLlmClient([LOSS_PLAN])
+    command, payload = _command(LOSS)
+
+    prepared = _preparer(llm, closed=False)(command, payload)
+
+    assert len(llm.requests) == 1 and not prepared.closed
+    assert prepared.steps[0]["action"] == "notify_customer"

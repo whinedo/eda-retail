@@ -275,6 +275,18 @@ class RunConfig:
     fmt: str = "text"  # formato de los avisos: text o api
     timeout_seconds: float = 300.0
     idle_seconds: float = 15.0  # sin ningún avance durante este tiempo, se da por terminada
+    plan_timeout_seconds: float | None = None  # plazo de CreatePlan y RevisePlan; None: el de la configuración
+    step_timeout_seconds: float | None = None  # plazo de ExecuteStep; None: el de la configuración
+
+
+def saga_deadlines(config: RunConfig) -> dict[str, float]:
+    """Los plazos de la saga que la ejecución cambia, listos para `replace` sobre `Settings`."""
+    out = {}
+    if config.plan_timeout_seconds is not None:
+        out["saga_plan_timeout_s"] = config.plan_timeout_seconds
+    if config.step_timeout_seconds is not None:
+        out["saga_step_timeout_s"] = config.step_timeout_seconds
+    return out
 
 
 @dataclass
@@ -358,7 +370,7 @@ class Harness:
         self.settings = replace(self._base, database_url=url, events_topic=topic, dlq_topic=f"{topic}.dlq",
                                 inbox_enabled=self.config.idempotency != "none",
                                 step_backoff_base_seconds=0.01, step_backoff_max_seconds=0.05,
-                                pending_notice_timeout_s=PENDING_NOTICE_TIMEOUT_S)
+                                pending_notice_timeout_s=PENDING_NOTICE_TIMEOUT_S, **saga_deadlines(self.config))
         self.conn = connect(url)
         for service in (self.services.mail, self.services.claims, self.services.carrier, self.services.payments):
             service.idempotent = self.config.idempotency == "full"

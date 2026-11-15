@@ -21,6 +21,11 @@ escribe `planner.plans` y `planner.llm_calls` y publica `LlmCallRecorded` por ll
 `PlanCreated`, o `IncidentEscalated` con el motivo cuando no hay plan válido; si hubo consulta A2A, antes
 publica un `CarrierConsulted` con su resultado (sin `notes`). Si otro `CreatePlan` de
 la misma incidencia se adelantó, el trabajo termina rechazado con `plan_exists`, sin eventos.
+
+Si al tomar el trabajo la vista `incident_status` ya da la incidencia por `resolved` o `escalated` (p. ej. la
+saga la escaló por `plan_timeout` mientras el trabajo esperaba su turno), `prepare` no llama al LLM (ni en el
+plan fijo de gravedad `low`) y el trabajo termina rechazado con `incident_closed`, sin eventos. Sin fila en la
+vista o con la incidencia abierta, se planifica como siempre (consistencia eventual).
 """
 
 from __future__ import annotations
@@ -46,6 +51,7 @@ from eda_retail.llm.schemas import PlanProposal
 from eda_retail.plan_validation import PlanRejected, validate_plan
 from eda_retail.planner.carrier import CarrierConsultant, CarrierConsultation, render_options
 from eda_retail.queries.cost_per_incident import Prices, budget_from_cost, get_incident_cost
+from eda_retail.queries.incident_status import INCIDENT_CLOSED, incident_closed
 from eda_retail.queries.orders import get_orders
 from eda_retail.rules import BusinessRules
 
@@ -71,6 +77,7 @@ class PlanContext:
     planned: bool
     budget: Budget
     amounts: dict[str, Decimal]  # importe de cada pedido en view_orders
+    closed: bool = False  # view_incident_status ya la da por resolved o escalated
 
 
 @dataclass(frozen=True)
@@ -81,6 +88,7 @@ class Prepared:
     calls: list[LlmCall] = field(default_factory=list)
     amounts: dict[str, Decimal] = field(default_factory=dict)
     carrier: CarrierConsultation | None = None  # la consulta A2A, si la hubo (POC_VERSION=2)
+    closed: bool = False  # incidencia ya cerrada: handle rechaza con incident_closed
 
 
 def check_plan(steps: list[dict[str, Any]], rules: BusinessRules,
@@ -112,6 +120,8 @@ class PlanPreparer:
         ctx = self._context(incident_id, payload.order_ids)
         if ctx.planned:
             return Prepared(planned=True)  # no se paga otra vez el LLM
+        if ctx.closed:
+            return Prepared(planned=False, closed=True)  # la saga ya la cerró: ni LLM ni eventos
         if payload.severity == Severity.LOW:
             return Prepared(False, low_severity_plan(payload.order_ids), amounts=ctx.amounts)
 
@@ -158,6 +168,8 @@ def create_plan(rules: BusinessRules):
                prepared: Prepared) -> Accepted | Rejected:
         if prepared.planned:
             return Rejected(PLAN_EXISTS)
+        if prepared.closed:
+            return Rejected(INCIDENT_CLOSED)
         incident_id = command.correlation_id
         steps, reason = None, prepared.reason
         if prepared.steps is not None:
@@ -199,7 +211,8 @@ def accept_create_plan(conn: psycopg.Connection, command: CommandEnvelope, paylo
 
 
 def read_context(settings: Settings, rules: BusinessRules) -> Callable[[str, list[str]], PlanContext]:
-    """Consultas de `prepare` con una conexión propia: su tabla `plans` y el lado de lectura."""
+    """Consultas de `prepare` con una conexión propia: su tabla `plans` y el lado de lectura
+    (`view_incident_status`, `cost_per_incident`, `view_orders`)."""
     prices = Prices.from_settings(settings)
 
     def context(incident_id: str, order_ids: list[str]) -> PlanContext:
@@ -211,9 +224,10 @@ def read_context(settings: Settings, rules: BusinessRules) -> Callable[[str, lis
             budget = budget_from_cost(get_incident_cost(conn, incident_id, prices), rules)
             found = get_orders(conn, order_ids).found  # view_orders
             amounts = {o: found[o].amount for o in order_ids if o in found}
+            closed = incident_closed(conn, incident_id)  # view_incident_status
         finally:
             conn.close()
-        return PlanContext(planned, budget, amounts)
+        return PlanContext(planned, budget, amounts, closed)
 
     return context
 

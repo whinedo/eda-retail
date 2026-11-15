@@ -16,6 +16,9 @@ import psycopg
 from eda_retail.projectors.incident_status import PROJECTOR_NAME
 from eda_retail.queries import positions
 
+INCIDENT_CLOSED = "incident_closed"  # motivo del rechazo de un trabajo cuya incidencia ya está cerrada
+CLOSED_STATUSES = frozenset({"resolved", "escalated"})
+
 
 @dataclass(frozen=True)
 class IncidentStatus:
@@ -43,6 +46,15 @@ def get_incident_status(
     if row is None:
         return None
     return IncidentStatus(**row, applied=position)
+
+
+def incident_closed(conn: psycopg.Connection, incident_id: str) -> bool:
+    """True si la vista ya da la incidencia por `resolved` o `escalated`. Sin fila (la proyección va por detrás)
+    o con la incidencia abierta, False: quien pregunta sigue como siempre (consistencia eventual)."""
+    with conn.transaction():
+        row = conn.execute("SELECT status FROM views.view_incident_status WHERE incident_id = %s",
+                           (incident_id,)).fetchone()
+    return row is not None and row["status"] in CLOSED_STATUSES
 
 
 def wait_for_incident_status(
