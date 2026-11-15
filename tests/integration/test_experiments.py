@@ -12,6 +12,7 @@ from eda_retail.experiments.e3_replan import run_e3
 from eda_retail.experiments.e4_rebuild import run_e4
 from eda_retail.experiments.e7_audit import run_e7
 from eda_retail.experiments.report import write_report
+from eda_retail.projectors.registry import PROJECTORS
 
 pytestmark = pytest.mark.slow
 
@@ -59,7 +60,7 @@ def test_e4_full_rebuild(base_settings):
     """Reconstrucción completa"""
     report = run_e4(base_settings, seed=6, incidents=6)
     views = report.metrics["views"]
-    assert set(views) == {"orders", "incident_status", "cost_per_incident", "audit_trail", "carrier_dashboard"}
+    assert set(views) == set(PROJECTORS)  # todas las vistas del registro, también las que se añadan
     for v in views.values():
         assert v["identical"] and v["events_applied"] > 0 and v["seconds"] >= 0
     assert report.hypothesis == {"H4": True}
