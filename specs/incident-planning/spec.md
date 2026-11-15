@@ -76,7 +76,7 @@ La saga SHALL invocar a la vez los comandos `ExecuteStep` de los pasos cuyas dep
 
 ### Requirement: Revisión del plan ante un fallo
 
-Cuando un paso termine en `StepFailed` sin posibilidad de reintento, la saga SHALL invocar el comando `RevisePlan` al replanner, con el plan vigente, el paso fallido y las revisiones hechas, y el replanner SHALL publicar `PlanRevised` con `plan_version` incrementada y los pasos pendientes. MUST NOT incluir de nuevo los pasos ya completados.
+Cuando un paso termine en `StepFailed` sin posibilidad de reintento, la saga SHALL invocar el comando `RevisePlan` al replanner, con el plan vigente, el paso fallido y las revisiones hechas, y el replanner SHALL publicar `PlanRevised` con `plan_version` incrementada y los pasos pendientes. MUST NOT incluir de nuevo los pasos ya completados. Mientras haya un `RevisePlan` de la versión vigente pendiente, otro `StepFailed` no reintentable de esa versión MUST NOT invocar otro `RevisePlan` ni escalar la incidencia: espera a esa revisión. Al aplicar el `PlanRevised`, si el plan nuevo mantiene un paso que falló mientras tanto, la saga SHALL tratar ese fallo con las reglas normales en la versión nueva.
 
 #### Scenario: Sin stock en el almacén
 
@@ -92,6 +92,13 @@ Cuando un paso termine en `StepFailed` sin posibilidad de reintento, la saga SHA
 - **WHEN** llega otro `RevisePlan` de la versión 1 con otro `command_id`
 - **THEN** el replanner lo rechaza con el motivo `revision_exists`
 - **AND** no llama al LLM ni publica otro `PlanRevised`
+
+#### Scenario: Segundo fallo con una revisión pendiente
+
+- **GIVEN** una incidencia con un `RevisePlan` de la versión 1 pendiente por el `out_of_stock` de `reserve_stock`
+- **WHEN** `file_claim` termina en `StepFailed` no reintentable de la versión 1
+- **THEN** la saga no invoca otro `RevisePlan` ni escala la incidencia
+- **AND** si el `PlanRevised` a la versión 2 mantiene `file_claim`, la saga invoca `RevisePlan` de la versión 2 por ese fallo
 
 ### Requirement: Estabilidad de los step_id
 
@@ -157,7 +164,14 @@ La saga SHALL avanzar solo por eventos y por el vencimiento de sus propios plazo
 
 ### Requirement: Plazos de la saga
 
-Cada comando que invoca la saga SHALL llevar un plazo durable, guardado en `orchestrator.deadlines` en la misma transacción que el comando. Si el plazo vence antes de su resultado, la saga MUST tratar un `ExecuteStep` como un `StepFailed` no reintentable con `error` `timeout` y, si el paso es compensable, pedir además su compensación; un `ExecuteStep` de `issue_refund` (pivote), un `CreatePlan` o un `RevisePlan` vencidos MUST escalar la incidencia con `step_timeout` o `plan_timeout`. Un resultado que llega después del plazo SHALL registrarse como obsoleto sin cambiar el estado. Revisar los plazos vencidos es leer la tabla del propio orquestador, nunca el estado de otro componente.
+Cada comando que invoca la saga SHALL llevar un plazo durable, guardado en `orchestrator.deadlines` en la misma transacción que el comando. El plazo SHALL empezar a contar cuando el dispatcher envía el comando por primera vez, responda o no el sistema destino, y no cuando la saga lo encola: mide el sistema destino, no la cola del dispatcher. Si el plazo vence antes de su resultado, la saga MUST tratar un `ExecuteStep` como un `StepFailed` no reintentable con `error` `timeout` y, si el paso es compensable, pedir además su compensación; un `ExecuteStep` de `issue_refund` (pivote), un `CreatePlan` o un `RevisePlan` vencidos MUST escalar la incidencia con `step_timeout` o `plan_timeout`. Un resultado que llega después del plazo SHALL registrarse como obsoleto sin cambiar el estado. Revisar los plazos vencidos es leer la tabla del propio orquestador, nunca el estado de otro componente.
+
+#### Scenario: Plazo desde el envío
+
+- **GIVEN** un `CreatePlan` encolado en `orchestrator.command_outbox` que el dispatcher aún no ha enviado
+- **WHEN** pasa más tiempo que su plazo antes del primer envío
+- **THEN** el plazo no vence
+- **AND** empieza a contar cuando el dispatcher lo envía
 
 #### Scenario: Paso sin respuesta
 

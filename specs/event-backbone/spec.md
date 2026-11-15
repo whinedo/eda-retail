@@ -94,7 +94,7 @@ El bus MUST entregar cada evento a cada consumidor al menos una vez y reentregar
 
 ### Requirement: Invocación de comandos
 
-Los comandos SHALL invocarse de forma síncrona por HTTP (REST): cada sistema expone su command handler como `POST /commands/<Comando>`. La saga MUST guardar cada comando en `orchestrator.command_outbox` en la misma transacción que su transición, y su dispatcher SHALL invocarlo y reintentarlo con backoff, siempre con el mismo `command_id`, hasta recibir una respuesta. Todo comando MUST ser idempotente: el handler registra el `command_id` en su inbox en la misma transacción que su estado y sus eventos, y un comando repetido devuelve la misma respuesta sin repetir estado, eventos ni efectos. La respuesta solo dice si el comando se acepta (202) o se rechaza (422); el resultado le llega a la saga como evento por Kafka. Un comando rechazado SHALL tratarse como un fallo no reintentable.
+Los comandos SHALL invocarse de forma síncrona por HTTP (REST): cada sistema expone su command handler como `POST /commands/<Comando>`. La saga MUST guardar cada comando en `orchestrator.command_outbox` en la misma transacción que su transición, y su dispatcher SHALL invocarlo y reintentarlo con backoff, siempre con el mismo `command_id`, hasta recibir una respuesta. Todo comando MUST ser idempotente: el handler registra el `command_id` en su inbox en la misma transacción que su estado y sus eventos, y un comando repetido devuelve la misma respuesta sin repetir estado, eventos ni efectos. La respuesta solo dice si el comando se acepta (202) o se rechaza (422); el resultado le llega a la saga como evento por Kafka. Un comando cuyo trabajo es largo (llama al LLM o a un servicio externo: `CreatePlan`, `RevisePlan` y el `ExecuteStep` de los cuatro ejecutores) MUST responder 202 o 422 al momento, sin esperar a ese trabajo: la petición comprueba los invariantes que no lo necesitan (esquema del payload, `plan_exists`, `revision_exists`, `action_not_handled`, `incident_mismatch`, `missing_context`) y guarda el trabajo en el `command_jobs` del sistema en la misma transacción que su inbox; el worker del sistema lo hace después y su resultado SHALL ser un evento. Un trabajo que queda a medias por una caída se retoma y su resultado se escribe una sola vez; un rechazo dentro del trabajo (una carrera que la aceptación no podía ver) no escribe eventos y lo trata el plazo de la saga. `ExecuteStep` de `inventory` responde con su resultado en la petición: no hace E/S externa. Un comando rechazado SHALL tratarse como un fallo no reintentable.
 
 #### Scenario: Caída antes de invocar
 
@@ -122,6 +122,19 @@ Los comandos SHALL invocarse de forma síncrona por HTTP (REST): cada sistema ex
 - **WHEN** el dispatcher recibe la respuesta
 - **THEN** el paso sigue `requested`
 - **AND** pasa a `completed` cuando la saga consume el `StepCompleted` de `inventory`
+
+#### Scenario: Comando con trabajo largo
+
+- **GIVEN** un `CreatePlan` de una incidencia de gravedad `high`, cuyo plan propone el LLM
+- **WHEN** el dispatcher lo invoca
+- **THEN** el planificador responde 202 antes de llamar al LLM
+- **AND** publica `PlanCreated` cuando su worker termina el trabajo
+
+#### Scenario: Caída con el trabajo pendiente
+
+- **GIVEN** un `CreatePlan` aceptado con 202 cuyo trabajo tomó el worker del planificador
+- **WHEN** el worker cae antes de terminarlo y vence su lease
+- **THEN** el worker lo vuelve a tomar y publica un único `PlanCreated`
 
 #### Scenario: Comando rechazado
 

@@ -26,16 +26,16 @@ Cada sistema que recibe comandos tiene su **propio command handler**, expuesto c
 | --- | --- | --- | --- |
 | `intake` (entrada de avisos: `eda-notice`, front) | `intake` | `carrier_notices`, `outbox` | — |
 | `interpreter` (agente) | `interpreter` | `interpretations`, `pending_notices`, `llm_calls`, `inbox`, `outbox` | `view_orders`, `view_cost_per_incident` (presupuesto) |
-| `planner` (agente) | `planner` | `plans`, `llm_calls`, `inbox`, `outbox` | `view_orders`, `view_cost_per_incident` |
-| `replanner` (agente) | `replanner` | `revisions`, `llm_calls`, `inbox`, `outbox` | `view_cost_per_incident` |
+| `planner` (agente) | `planner` | `plans`, `llm_calls`, `command_jobs`, `inbox`, `outbox` | `view_orders`, `view_cost_per_incident` |
+| `replanner` (agente) | `replanner` | `revisions`, `llm_calls`, `command_jobs`, `inbox`, `outbox` | `view_cost_per_incident` |
 | `orchestrator` (saga) | `orchestrator` | `incidents`, `plan_steps`, `deadlines`, `command_outbox`, `inbox`, `outbox` | — |
-| `executor-<acción>` | `executor_<acción>` | su tabla de efectos (`customer_messages`, `claims`, `shipments`, `refunds`), `effect_keys`, `llm_calls` (redactor), `inbox`, `outbox` | `view_cost_per_incident` (redactor) |
+| `executor-<acción>` | `executor_<acción>` | su tabla de efectos (`customer_messages`, `claims`, `shipments`, `refunds`), `effect_keys`, `llm_calls` (redactor), `command_jobs`, `inbox`, `outbox` | `view_cost_per_incident` (redactor) |
 | `inventory` (pedidos y stock; ejecuta `reserve_stock` y `release_stock`) | `inventory` | `orders`, `stock`, `reservations`, `effect_keys`, `inbox`, `outbox` | — |
 | `event_log` (consulta) | `event_log` | `events` (vista del log), `offsets` | — |
 | `projectors` (consulta) | `views` | `view_*`, `offsets` | — |
 | `baseline_sync` (base síncrona de E6) | `baseline` | sus tablas | — |
 
-Cada esquema tiene también su `dead_letters`. Las consultas al lado de lectura pasan por el módulo `queries` (solo lectura de `views.*`) y se hacen antes de abrir la transacción, como la llamada al LLM. Lo que un comando necesita para ejecutarse viaja en el propio comando (sección 3).
+Cada esquema tiene también su `dead_letters`; `command_jobs` guarda los trabajos de los comandos largos (sección 4.4). Las consultas al lado de lectura pasan por el módulo `queries` (solo lectura de `views.*`) y se hacen antes de abrir la transacción, como la llamada al LLM. Lo que un comando necesita para ejecutarse viaja en el propio comando (sección 3).
 
 ## 3. Componentes, comandos, eventos y grupos de consumidores
 
@@ -65,14 +65,15 @@ BEGIN
        -> message_id = event_id del evento o command_id del comando
        -> si no inserta fila: COMMIT y terminar (duplicado; un comando devuelve la respuesta guardada)
   2. el command handler del sistema valida el comando contra su estado (el LLM y las
-     consultas al lado de lectura se hacen antes de la transacción)
+     consultas al lado de lectura se hacen antes de la transacción, en el worker si el
+     comando tiene trabajo largo: sección 4.4)
   3. actualizar su estado (p. ej. inventory.reservations)
   4. INSERT INTO <componente>.outbox (event_id, envelope, trace_context, ...)
 COMMIT
 confirmar el offset en Kafka (evento) o responder a la petición REST (comando)
 ```
 
-La llamada al LLM y las consultas a las proyecciones se hacen **antes** de la transacción. Si el proceso cae entre la llamada y el `COMMIT`, el evento se reentrega y se repite la llamada: cuesta tokens, pero no duplica efectos.
+La llamada al LLM y las consultas a las proyecciones se hacen **antes** de la transacción. Si el proceso cae entre la llamada y el `COMMIT`, el evento se reentrega y se repite la llamada: cuesta tokens, pero no duplica efectos. Un comando cuyo trabajo es largo (LLM o servicio externo) no hace ese trabajo en la petición: la transacción de la petición solo registra el inbox, comprueba los invariantes que no lo necesitan y guarda el trabajo; el worker del sistema lo hace después con este mismo esquema (sección 4.4).
 
 ### 4.1 CQRS: comandos, consistencia y consultas
 
@@ -121,6 +122,7 @@ La saga es **reactiva y orquestada**: es un *process manager* dentro del orquest
 | `StepCompleted` (versión vigente) | Paso `completed`; desbloquea sus dependientes | `ExecuteStep` de los desbloqueados; `IncidentResolved` si ya no quedan pasos |
 | `StepCompleted` de una compensación | El original pasa a `compensated` | Si no quedan `compensating`, el `ExecuteStep` de `issue_refund` que estaba retenido |
 | `StepFailed` no reintentable (versión vigente) | Paso `failed` | Comando `RevisePlan` al replanificador; si ya no quedan revisiones, escalado con `max_revisions` |
+| `StepFailed` no reintentable (versión vigente) con un `RevisePlan` de esa versión pendiente | Paso `failed` | Ninguno: espera a la revisión pendiente. Al aplicar su `PlanRevised`, si el plan nuevo mantiene el paso, trata ese fallo con las reglas normales en la versión nueva (otro `RevisePlan` o escalado) |
 | `StepFailed` de una compensación | — | Escalado con `compensation_failed`; nunca emite el reembolso |
 | `PlanRevised` (versión vigente + 1) | Cancela los pendientes que el plan nuevo no mantiene y añade los nuevos pasos; para cada paso compensable completado cuyo dependiente se cancela, añade `<original>-comp` y marca el original `compensating` | `StepCancelled`, `ExecuteStep` de compensaciones y de pasos desbloqueados; `issue_refund` queda retenido mientras haya `compensating` |
 | `IncidentEscalated` (de otro componente) | Escalado | Ver «Escalado» |
@@ -131,7 +133,7 @@ La saga es **reactiva y orquestada**: es un *process manager* dentro del orquest
 
 **Escalado.** La incidencia pasa a `escalated`, la saga cancela los pasos pendientes (`StepCancelled`), pide la compensación de cada `reserve_stock` completado cuyo dependiente no se ha completado y publica `IncidentEscalated` con el motivo. Nunca emite `issue_refund`. Un escalado por `compensation_failed` no vuelve a compensar.
 
-**Plazos.** Cada comando que invoca la saga lleva un plazo, guardado en `orchestrator.deadlines` en la misma transacción. Un hilo del orquestador revisa sus propios plazos vencidos (es su tabla, como el relay con su outbox) y trata cada uno como un mensaje más. El plazo de un `ExecuteStep` cubre los reintentos del dispatcher y los del ejecutor. Configuración: `SAGA_STEP_TIMEOUT_S`, `SAGA_PLAN_TIMEOUT_S` y, para los avisos aparcados del intérprete, `PENDING_NOTICE_TIMEOUT_S`. Una compensación pedida por un plazo vencido es idempotente: si el efecto original nunca ocurrió, no hace nada.
+**Plazos.** Cada comando que invoca la saga lleva un plazo, guardado en `orchestrator.deadlines` en la misma transacción (`timeout_s`). El plazo empieza a contar cuando el dispatcher envía el comando por primera vez (`expires_at`), responda o no el sistema destino: mide el sistema destino, no la cola del dispatcher, así que un comando que espera su turno no vence por estar en cola, y un ejecutor caído sigue venciendo («Paso sin respuesta»). Un hilo del orquestador revisa sus propios plazos vencidos (es su tabla, como el relay con su outbox) y trata cada uno como un mensaje más. El plazo de un `ExecuteStep` cubre los reintentos del dispatcher y los del ejecutor. Configuración: `SAGA_STEP_TIMEOUT_S`, `SAGA_PLAN_TIMEOUT_S` y, para los avisos aparcados del intérprete, `PENDING_NOTICE_TIMEOUT_S`. Una compensación pedida por un plazo vencido es idempotente: si el efecto original nunca ocurrió, no hace nada.
 
 Los reintentos de un paso con fallo transitorio los hace el propio ejecutor (spec `resilience`); a la saga solo le llega el resultado final.
 
@@ -144,20 +146,21 @@ saga, al consumir un evento o vencer un plazo:
 BEGIN
   inbox; transición en orchestrator.plan_steps
   INSERT INTO orchestrator.command_outbox (command_id, command_type, target, payload, trace_context)
-  INSERT INTO orchestrator.deadlines (command_id, expires_at)
+  INSERT INTO orchestrator.deadlines (command_id, timeout_s)        -- expires_at al primer envío
   INSERT INTO orchestrator.outbox (eventos de la saga, si los hay)
 COMMIT
 
 dispatcher (hilo del orquestador), sobre su propia tabla:
 loop:
   leer command_outbox pendientes (FOR UPDATE SKIP LOCKED)
+  primer envío: expires_at = now() + timeout_s (empieza el plazo)
   POST <URL del target>/commands/<command_type>   (mismo command_id en cada intento)
     202       -> marcar entregado (aceptado; `Idempotent-Replayed: true` si ya lo estaba)
     422       -> marcar rechazado; la saga lo trata como fallo no reintentable
     red o 5xx -> reintentar con backoff y jitter
   si no hay filas: dormir un intervalo corto
 
-command handler del sistema:
+command handler del sistema (comando sin trabajo largo: intake, inventory):
 BEGIN
   INSERT INTO <sistema>.inbox (command_id) ON CONFLICT DO NOTHING
     -> si ya estaba: COMMIT y devolver la respuesta guardada
@@ -165,12 +168,39 @@ BEGIN
   guardar la respuesta en el inbox
 COMMIT
 responder 202 (aceptado) o 422 (rechazado)
+
+command handler con trabajo largo (CreatePlan, RevisePlan, ExecuteStep de los ejecutores):
+BEGIN
+  INSERT INTO <sistema>.inbox (command_id) ON CONFLICT DO NOTHING
+    -> si ya estaba: COMMIT y devolver la respuesta guardada
+  invariantes de aceptación, sin LLM ni servicio (plan_exists, revision_exists, action_not_handled...)
+    -> si no se cumplen: respuesta 422
+  INSERT INTO <sistema>.command_jobs (command_id, payload, trace_context)   -- status pending
+  guardar la respuesta (202) en el inbox
+COMMIT
+responder 202 o 422 al momento
+
+worker del sistema (hilo del mismo proceso), sobre su propia tabla:
+loop:
+  tomar un trabajo pending que toca, o running con el lease vencido (FOR UPDATE SKIP LOCKED):
+    status running, lease_until, attempts + 1                              -- transacción corta
+  prepare: LLM, servicio externo (fuera de toda transacción)
+  BEGIN
+    comprobar que el trabajo sigue siendo suyo (running y mismo intento)
+    validar invariantes; escribir su estado; INSERT INTO <sistema>.outbox (eventos de resultado)
+    trabajo done (o rejected con el motivo, sin eventos)
+  COMMIT
+  si falla: ROLLBACK y el trabajo vuelve a pending con espera exponencial
 ```
 
 - **Todo comando es idempotente.** El dispatcher reutiliza el `command_id` en cada reintento y el handler lo deduplica con su inbox en la misma transacción que su estado y sus eventos: un comando repetido devuelve la misma respuesta sin repetir estado, eventos ni efectos.
 - **Ni perdidos ni duplicados.** El `command_outbox` de la saga garantiza que cada comando se invoca al menos una vez aunque el orquestador caiga tras el `COMMIT`; el inbox del sistema garantiza que se aplica una sola vez. Es el mismo par outbox/inbox que en los eventos, con transporte síncrono.
-- **Un comando aceptado no cambia el estado del paso.** Lo cambia el evento de resultado (`StepCompleted`, `PlanCreated`…). Si el handler llama al LLM, lo hace antes de su transacción; una petición repetida mientras la primera está en curso puede repetir la llamada al LLM (cuesta tokens), pero el inbox impide aplicarla dos veces.
-- Configuración: la URL base de cada sistema (`<SISTEMA>_URL`, p. ej. `PLANNER_URL`) y `COMMAND_HTTP_TIMEOUT_S`.
+- **Un comando aceptado no cambia el estado del paso.** Lo cambia el evento de resultado (`StepCompleted`, `PlanCreated`…).
+- **Aceptar no es hacer el trabajo.** Un comando cuyo trabajo llama al LLM o a un servicio externo (`CreatePlan`, `RevisePlan`, `ExecuteStep` de los cuatro ejecutores) responde 202 o 422 al momento: el comportamiento de un Aggregate, que acepta o rechaza y emite al final el evento del cambio de estado. Así el dispatcher de la saga, que invoca los comandos de uno en uno, nunca espera a un LLM. El 202 es durable: el trabajo se confirma con el inbox, así que una caída tras responder no lo pierde; un `command_id` repetido devuelve el 202 guardado sin otro trabajo.
+- **Un trabajo a medias se retoma.** Si el worker cae, el trabajo queda `running` con su lease (`JOB_LEASE_SECONDS`) y se vuelve a tomar cuando vence; la comprobación de que sigue siendo suyo impide que dos workers escriban su resultado, y el `handle` protege los efectos (`effect_keys`, `ON CONFLICT`). Un trabajo que falla vuelve a `pending` con espera exponencial (`JOB_RETRY_BASE_SECONDS`, `JOB_RETRY_MAX_SECONDS`). Tras `JOB_MAX_ATTEMPTS` intentos (o si se retoma más veces porque su worker cae siempre a mitad) queda `failed` con `job_attempts_exhausted`, sin eventos, y el plazo de la saga lo trata.
+- **Rechazo tardío.** Una carrera que la aceptación no podía ver (dos `CreatePlan` de la misma incidencia con `command_id` distintos) termina con el trabajo `rejected` y su motivo en el log, sin eventos: el plazo de la saga lo trata.
+- `inventory` responde a su `ExecuteStep` con el resultado en la petición: decide dentro de su transacción y no hace E/S externa.
+- Configuración: la URL base de cada sistema (`<SISTEMA>_URL`, p. ej. `PLANNER_URL`), `COMMAND_HTTP_TIMEOUT_S` y, para el worker, `JOB_LEASE_SECONDS`, `JOB_POLL_INTERVAL_S`, `JOB_RETRY_BASE_SECONDS`, `JOB_RETRY_MAX_SECONDS` y `JOB_MAX_ATTEMPTS`.
 
 Las compensaciones se ejecutan en orden inverso a los pasos originales y usan la misma idempotencia (`effect_keys` del ejecutor) que cualquier otro paso. Si una compensación agota sus reintentos, la incidencia se escala con `compensation_failed`.
 

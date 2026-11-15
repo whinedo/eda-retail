@@ -1,4 +1,5 @@
-"""El command handler `ExecuteStep` de un ejecutor y las consultas de su `prepare`."""
+"""El command handler `ExecuteStep` de un ejecutor (con trabajo largo: 202 al aceptar) y las consultas de su
+`prepare`."""
 
 from __future__ import annotations
 
@@ -14,7 +15,7 @@ from eda_retail.queries.cost_per_incident import Prices, budget_from_cost, get_i
 from eda_retail.queries.orders import get_orders
 from eda_retail.rules import BusinessRules
 from eda_retail.step_executors.actions import build_action
-from eda_retail.step_executors.runtime import ExecuteStep, RecordingAction, StepPreparer, execute_step
+from eda_retail.step_executors.runtime import ExecuteStep, RecordingAction, StepPreparer, accept_step, execute_step
 from eda_retail.step_executors.services import FakeService
 
 
@@ -41,7 +42,8 @@ def specs(settings: Settings, action_name: str, llm: LlmClient, rules: BusinessR
     completed = _with_conn(settings, lambda conn, key: effect_keys.stored_result(conn, key, schema=action.schema))
     prepare = StepPreparer(action, completed=completed, max_attempts=settings.step_max_attempts,
                            backoff=Backoff(settings.step_backoff_base_seconds, settings.step_backoff_max_seconds))
-    return {"ExecuteStep": CommandSpec(ExecuteStep, execute_step(action, settings), prepare=prepare)}
+    return {"ExecuteStep": CommandSpec(ExecuteStep, execute_step(action, settings), prepare=prepare, deferred=True,
+                                       accept=accept_step(action))}
 
 
 def url(settings: Settings, action_name: str) -> str:

@@ -472,3 +472,60 @@ def test_burst_of_pending_steps_is_invoked_within_the_limit(conn, saga, settings
     invoked = [c["payload"]["step_id"] for c in invoke.calls if c["command_type"] == "ExecuteStep"]
     assert sorted(invoked) == sorted(s["step_id"] for s in steps)
     assert {c["status"] for c in _commands(conn, incident, "ExecuteStep")} == {"delivered"}
+
+
+def _deadline(conn, command_id) -> dict:
+    with conn.transaction():
+        return conn.execute("SELECT * FROM orchestrator.deadlines WHERE command_id = %s", (command_id,)).fetchone()
+
+
+def test_deadline_starts_when_the_command_is_first_sent(conn, saga, settings):
+    """Plazo desde el envío: el plazo de un comando encolado no corre hasta que el dispatcher lo envía"""
+    incident = _open(conn, saga)
+    [command] = _commands(conn, incident)
+    queued = _deadline(conn, command["command_id"])
+    assert queued["expires_at"] is None and queued["timeout_s"] == settings.saga_plan_timeout_s
+    expire_once(conn, settings, RULES)
+    assert _incident_row(conn, incident)["status"] == "open"  # sin enviar, no vence
+
+    _drain(conn, settings, _Invoke(command_client.CommandUnavailable("caído")), incident)
+
+    sent = _deadline(conn, command["command_id"])
+    assert sent["expires_at"] is not None
+    with conn.transaction():
+        left = conn.execute("SELECT extract(epoch FROM expires_at - now()) AS s FROM orchestrator.deadlines"
+                            " WHERE command_id = %s", (command["command_id"],)).fetchone()["s"]
+    assert 0 < left <= settings.saga_plan_timeout_s
+
+
+def test_a_second_failure_while_a_revision_is_pending_waits_for_it(conn, saga):
+    """Segundo fallo con una revisión pendiente"""
+    incident = _open(conn, saga, LOSS)
+    _failed(conn, saga, incident, "S3")  # out_of_stock: RevisePlan de la versión 1
+
+    _failed(conn, saga, incident, "S2", error="claim_rejected")
+
+    assert len(_commands(conn, incident, "RevisePlan")) == 1
+    assert _incident_row(conn, incident)["status"] == "open"
+    assert "IncidentEscalated" not in _types(conn, incident)
+    assert _statuses(conn, incident)["S2"] == "failed"
+
+
+def test_a_step_that_failed_meanwhile_and_is_kept_is_handled_on_the_new_version(conn, saga):
+    """Al aplicar la revisión pendiente, un paso que falló mientras tanto y que el plan nuevo mantiene se trata
+    con las reglas normales en la versión nueva: otra revisión, de la versión 2"""
+    incident = _open(conn, saga, LOSS)
+    _failed(conn, saga, incident, "S3")
+    _failed(conn, saga, incident, "S2", error="claim_rejected")
+
+    _deliver(conn, saga, "PlanRevised", incident, {
+        "incident_id": incident, "plan_version": 2, "reason": "sin stock",
+        "steps": [_step("S1", "notify_customer"), _step("S2", "file_claim"), _step("S5", "issue_refund", amount=10)],
+    }, producer="replanner")
+
+    revisions = _commands(conn, incident, "RevisePlan")
+    assert len(revisions) == 2
+    second = revisions[-1]["payload"]
+    assert (second["plan_version"], second["failed_step_id"], second["error"]) == (2, "S2", "claim_rejected")
+    assert _incident_row(conn, incident)["plan_version"] == 2
+    assert _statuses(conn, incident)["S2"] == "failed"

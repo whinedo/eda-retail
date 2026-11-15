@@ -14,7 +14,7 @@ from eda_retail.llm.fake import FakeLlmClient
 from eda_retail.planner.handler import specs
 from eda_retail.rules import BusinessRules
 
-from .component_helpers import body, client, outbox
+from .component_helpers import body, client, jobs, outbox, run_jobs
 
 RULES = BusinessRules()
 
@@ -113,7 +113,7 @@ def test_a_forbidden_action_never_reaches_plan_created(database_url, conn):
     response = _create(_api(database_url, llm), incident, order)
 
     assert response.status_code == 202
-    assert response.json()["outcome"] == "escalated"
+    assert jobs(conn, "planner", incident)[-1]["outcome"]["outcome"] == "escalated"
     assert _types(conn, incident) == ["LlmCallRecorded"] * RULES.max_generations + ["IncidentEscalated"]
     assert outbox(conn, "planner", incident)[-1]["payload"]["reason"] == "llm_output_invalid"
     assert _plan(conn, incident)["status"] == "escalated"
@@ -205,3 +205,57 @@ def test_planner_call_records_tokens_latency_and_validation(database_url, conn):
                             " FROM planner.llm_calls WHERE incident_id = %s ORDER BY attempt", (incident,)).fetchall()
     assert rows == [{k: e["payload"][k] for k in ("tokens_in", "tokens_out", "latency_ms", "validation_passed",
                                                    "attempt")} for e in recorded]
+
+
+def test_long_command_answers_202_before_the_llm_and_plan_created_arrives_when_the_job_ends(database_url, conn):
+    """Comando con trabajo largo"""
+    order, incident = _order(conn), _incident()
+    llm = FakeLlmClient([_loss_plan(order)])
+    settings = replace(Settings(), database_url=database_url)
+    command_specs = specs(settings, llm, RULES)
+    api = client(database_url, "planner", command_specs, run_jobs_after=False)
+
+    response = _create(api, incident, order)
+
+    assert response.status_code == 202 and response.json()["status"] == "accepted"
+    assert llm.requests == [] and _types(conn, incident) == []  # el LLM aún no se ha llamado
+    assert [j["status"] for j in jobs(conn, "planner", incident)] == ["pending"]
+
+    run_jobs(database_url, "planner", command_specs)
+
+    assert len(llm.requests) == 1
+    assert _types(conn, incident) == ["LlmCallRecorded", "PlanCreated"]
+    assert [j["status"] for j in jobs(conn, "planner", incident)] == ["done"]
+
+
+def test_a_create_plan_being_worked_on_rejects_another_one(database_url, conn):
+    """Plan en curso: otro CreatePlan de la misma incidencia se rechaza con plan_exists en la petición"""
+    order, incident = _order(conn), _incident()
+    command_specs = specs(replace(Settings(), database_url=database_url), FakeLlmClient([_loss_plan(order)]), RULES)
+    api = client(database_url, "planner", command_specs, run_jobs_after=False)
+    assert _create(api, incident, order).status_code == 202
+
+    again = _create(api, incident, order)
+
+    assert again.status_code == 422 and again.json()["reason"] == "plan_exists"
+    assert len(jobs(conn, "planner", incident)) == 1
+    run_jobs(database_url, "planner", command_specs)
+
+
+def test_a_job_left_running_by_a_crash_is_taken_again_and_its_result_written_once(database_url, conn):
+    """Caída con el trabajo pendiente"""
+    order, incident = _order(conn), _incident()
+    command_specs = specs(replace(Settings(), database_url=database_url), FakeLlmClient([_loss_plan(order)]), RULES)
+    api = client(database_url, "planner", command_specs, run_jobs_after=False)
+    assert _create(api, incident, order).status_code == 202
+    with conn.transaction():  # el worker tomó el trabajo y cayó: queda running con su lease vencido
+        conn.execute("UPDATE planner.command_jobs SET status = 'running', attempts = 1,"
+                     " lease_until = now() - interval '1 second' WHERE correlation_id = %s", (incident,))
+
+    run_jobs(database_url, "planner", command_specs)
+    run_jobs(database_url, "planner", command_specs)
+
+    assert _types(conn, incident) == ["LlmCallRecorded", "PlanCreated"]
+    [job] = jobs(conn, "planner", incident)
+    assert (job["status"], job["attempts"]) == ("done", 2)
+    assert _plan(conn, incident)["status"] == "created"

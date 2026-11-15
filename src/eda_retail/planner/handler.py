@@ -9,10 +9,14 @@ presupuesto en `cost_per_incident` y los importes en `view_orders`) y propone el
   compensaciones, dependencias, tope de reembolso y el importe del pedido); un rechazo se explica
   al LLM en la siguiente generación, dentro de los límites de llm-boundaries.
 
-`handle` (en la transacción de `execute_command`) valida el plan otra vez con las mismas reglas,
+`CreatePlan` es un comando con trabajo largo (design.md §4.4): la petición solo lo acepta (`accept`
+rechaza con `plan_exists` una incidencia que ya tiene plan o un `CreatePlan` en curso) y responde 202;
+el worker del planificador hace `prepare` (el LLM) y `handle` después.
+
+`handle` (en la transacción del trabajo) valida el plan otra vez con las mismas reglas,
 escribe `planner.plans` y `planner.llm_calls` y publica `LlmCallRecorded` por llamada y
-`PlanCreated`, o `IncidentEscalated` con el motivo cuando no hay plan válido. Una incidencia que ya
-tiene plan rechaza el comando con `plan_exists`.
+`PlanCreated`, o `IncidentEscalated` con el motivo cuando no hay plan válido. Si otro `CreatePlan` de
+la misma incidencia se adelantó, el trabajo termina rechazado con `plan_exists`, sin eventos.
 """
 
 from __future__ import annotations
@@ -169,6 +173,17 @@ def create_plan(rules: BusinessRules):
     return handle
 
 
+def accept_create_plan(conn: psycopg.Connection, command: CommandEnvelope, payload: CreatePlan) -> Rejected | None:
+    """Aceptación: la incidencia no tiene plan ni un `CreatePlan` pendiente o en curso."""
+    busy = conn.execute(
+        "SELECT 1 AS found FROM planner.plans WHERE incident_id = %s"
+        " UNION ALL SELECT 1 FROM planner.command_jobs WHERE correlation_id = %s AND command_type = 'CreatePlan'"
+        " AND status IN ('pending', 'running') LIMIT 1",
+        (command.correlation_id, command.correlation_id),
+    ).fetchone()
+    return Rejected(PLAN_EXISTS) if busy is not None else None
+
+
 def read_context(settings: Settings, rules: BusinessRules) -> Callable[[str, list[str]], PlanContext]:
     """Consultas de `prepare` con una conexión propia: su tabla `plans` y el lado de lectura."""
     prices = Prices.from_settings(settings)
@@ -191,4 +206,5 @@ def read_context(settings: Settings, rules: BusinessRules) -> Callable[[str, lis
 
 def specs(settings: Settings, llm: LlmClient, rules: BusinessRules) -> dict[str, CommandSpec]:
     prepare = PlanPreparer(llm, rules, context=read_context(settings, rules))
-    return {"CreatePlan": CommandSpec(CreatePlan, create_plan(rules), prepare=prepare)}
+    return {"CreatePlan": CommandSpec(CreatePlan, create_plan(rules), prepare=prepare, deferred=True,
+                                      accept=accept_create_plan)}

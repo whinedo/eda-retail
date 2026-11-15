@@ -15,7 +15,7 @@ from eda_retail.llm.fake import FakeLlmClient
 from eda_retail.replanner.handler import specs
 from eda_retail.rules import BusinessRules
 
-from .component_helpers import body, client, outbox
+from .component_helpers import body, client, jobs, outbox
 
 RULES = BusinessRules()
 
@@ -145,7 +145,7 @@ def test_invalid_proposals_escalate(database_url, conn):
     response = _revise(_api(database_url, llm), incident, order)
 
     assert response.status_code == 202
-    assert response.json()["outcome"] == "escalated"
+    assert jobs(conn, "replanner", incident)[-1]["outcome"]["outcome"] == "escalated"
     assert _types(conn, incident) == ["LlmCallRecorded"] * RULES.max_generations + ["IncidentEscalated"]
     assert outbox(conn, "replanner", incident)[-1]["payload"]["reason"] == "llm_output_invalid"
     assert _revision(conn, incident)["status"] == "escalated"

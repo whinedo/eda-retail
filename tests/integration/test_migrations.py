@@ -85,3 +85,36 @@ def test_order_status_view_migration_reverts(scratch_db):
     assert _columns(scratch_db, "view_order_status", "views") == set()
     upgrade(scratch_db)
     assert "status" in _columns(scratch_db, "view_order_status", "views")
+
+
+def test_command_jobs_migration_reverts(scratch_db):
+    """0019 crea command_jobs en los componentes con trabajo largo y su downgrade la borra"""
+    from eda_retail.infra.schemas import JOB_COMPONENTS
+
+    upgrade(scratch_db)
+    for schema in JOB_COMPONENTS:
+        assert {"job_id", "command_id", "status", "lease_until", "trace_context"} <= _columns(
+            scratch_db, "command_jobs", schema)
+    downgrade(scratch_db, "0018")
+    assert all(_columns(scratch_db, "command_jobs", schema) == set() for schema in JOB_COMPONENTS)
+    upgrade(scratch_db)
+    assert "outcome" in _columns(scratch_db, "command_jobs", "planner")
+
+
+def test_deadlines_start_at_the_first_send_and_the_migration_reverts(scratch_db):
+    """0019 guarda el plazo sin vencimiento hasta el primer envío; su downgrade vuelve a exigir expires_at"""
+    upgrade(scratch_db)
+    assert "timeout_s" in _columns(scratch_db, "deadlines", "orchestrator")
+    command_id = uuid.uuid4()
+    with psycopg.connect(scratch_db) as c:
+        c.execute("INSERT INTO orchestrator.command_outbox (command_id, incident_id, command_type, target, payload)"
+                  " VALUES (%s, 'I-1', 'CreatePlan', 'planner', '{}')", (command_id,))
+        c.execute("INSERT INTO orchestrator.deadlines (command_id, incident_id, kind, timeout_s)"
+                  " VALUES (%s, 'I-1', 'create_plan', 300)", (command_id,))
+    downgrade(scratch_db, "0018")
+    assert "timeout_s" not in _columns(scratch_db, "deadlines", "orchestrator")
+    with psycopg.connect(scratch_db) as c:
+        expires = c.execute("SELECT expires_at FROM orchestrator.deadlines WHERE command_id = %s",
+                            (command_id,)).fetchone()[0]
+    assert expires is not None
+    upgrade(scratch_db)

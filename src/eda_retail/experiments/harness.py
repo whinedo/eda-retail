@@ -1,15 +1,20 @@
 """Arnés de los experimentos (decisión D1 de odd/tasks/experiments.md; T11 de eda-component-ownership).
 
-Monta los componentes de `scripts/run-agents.sh` en un solo proceso, atendidos por turnos contra
-PostgreSQL y Kafka reales. Cada ejecución usa una base de datos y un topic propios, así no ve datos de
-otras.
+Monta los componentes de `scripts/run-agents.sh` en un solo proceso contra PostgreSQL y Kafka reales.
+Cada ejecución usa una base de datos y un topic propios, así no ve datos de otras.
 
 - Comandos: `intake`, `inventory`, `planner`, `replanner` y los cuatro ejecutores atienden sus comandos
   con su propio command handler (`execute_command`), sin HTTP: `InProcessCommands` sustituye a
-  `command_client.invoke` en el dispatcher de la saga.
+  `command_client.invoke` en el dispatcher de la saga. Un comando con trabajo largo (`CreatePlan`,
+  `RevisePlan`, `ExecuteStep` de los ejecutores) solo se acepta en la llamada; su trabajo lo hace el
+  worker de su componente.
+- Hilos: lo que en el despliegue es un proceso aparte y tarda (el LLM, los servicios) corre en su propio
+  hilo, con su propia conexión, como lo haría ese proceso: el worker de trabajos de cada componente
+  (`JobWorker`) y la entrega del intérprete. Así E6 mide el diseño y no un arnés de un solo hilo.
+- Turnos: el resto se atiende por turnos en el hilo principal: relays, lado de lectura, consumidor del
+  orquestador, dispatcher, plazos de la saga y el de los avisos aparcados.
 - Eventos: el intérprete y el orquestador consumen Kafka envueltos en `FaultyDelivery`; `event_log` y
   los proyectores mantienen el lado de lectura; cada componente publica su outbox con su relay.
-- Tiempo: en cada turno corren el dispatcher, los plazos de la saga y el de los avisos aparcados.
 
 Fallos (spec experiments; L55):
 - E1: cada evento llega `duplicates` veces a cada consumidor de Kafka y cada comando se entrega
@@ -32,6 +37,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import threading
 import time
 import uuid
 from collections import Counter
@@ -53,9 +59,11 @@ from eda_retail.infra.command_client import CommandReply, CommandUnavailable
 from eda_retail.infra.commands import Accepted, CommandEnvelope, CommandSpec, execute_command
 from eda_retail.infra.consumer import EventConsumer
 from eda_retail.infra.db import connect
+from eda_retail.infra.jobs import JobWorker, run_job_once
 from eda_retail.infra.kafka import make_consumer
 from eda_retail.infra.migrations import upgrade
 from eda_retail.infra.outbox import ComponentRelay
+from eda_retail.infra.schemas import qualified
 from eda_retail.intake import handler as intake
 from eda_retail.interpreter import consumer as interpreter
 from eda_retail.inventory import handler as inventory
@@ -90,6 +98,11 @@ TURN_COMMANDS = 200  # comandos que el dispatcher invoca como mucho en un turno
 PENDING_NOTICE_TIMEOUT_S = 2.0
 SERVICE_OF = {"notify_customer": "mail", "file_claim": "claims", "reissue_shipment": "carrier",
               "issue_refund": "payments"}
+JOB_POLL_S = 0.05  # sondeo de un worker de trabajos sin trabajo
+CONSUMER_POLL_S = 0.1  # sondeo de Kafka de un consumidor en su hilo
+JOIN_TIMEOUT_S = 30.0  # espera al parar un hilo (puede estar dentro de una llamada al LLM)
+IDLE_SLEEP_S = 0.01  # pausa de un turno sin avance mientras los hilos trabajan
+THREADED_CONSUMERS = frozenset({interpreter.SCHEMA})  # consumidores con su propio hilo
 PUBLISHERS = ("intake", "interpreter", "planner", "replanner", "orchestrator", "inventory",
               *(f"executor_{a}" for a in EXECUTOR_ACTIONS))
 
@@ -148,6 +161,46 @@ def failing(spec: CommandSpec, producer: str, plan: FaultPlan) -> CommandSpec:
         }, correlation_id=command.correlation_id, causation_id=command.command_id, producer=producer)])
 
     return replace(spec, prepare=prepare, handle=handle)
+
+
+class Activity:
+    """Trabajo en curso (`busy`) y hecho (`done`) en los hilos del arnés: decide si la ejecución está ociosa."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self.busy = 0
+        self.done = 0
+
+    @contextlib.contextmanager
+    def working(self) -> Iterator[None]:
+        with self._lock:
+            self.busy += 1
+        try:
+            yield
+        finally:
+            with self._lock:
+                self.busy -= 1
+
+    def progressed(self) -> None:
+        with self._lock:
+            self.done += 1
+
+
+class TrackedConsumer:
+    """Consumidor que cuenta como trabajo en curso mientras atiende un mensaje (p. ej. la llamada al LLM)."""
+
+    def __init__(self, consumer: Any, activity: Activity) -> None:
+        self._consumer = consumer
+        self._activity = activity
+
+    def handle_message(self, msg: Any) -> Any:
+        with self._activity.working():
+            outcome = self._consumer.handle_message(msg)
+        self._activity.progressed()
+        return outcome
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._consumer, name)
 
 
 @dataclass(frozen=True)
@@ -223,6 +276,7 @@ class RunResult:
     tokens_in: int
     tokens_out: int
     elapsed_seconds: float
+    escalation_reasons: dict[str, int] = field(default_factory=dict)
 
     @property
     def repeated_steps(self) -> int:
@@ -259,6 +313,16 @@ class Harness:
         self._closables: list[Any] = []
         self.consumer_crashes = 0
         self.poison_messages = 0
+        self._init_threads()
+
+    def _init_threads(self) -> None:
+        self._activity = Activity()
+        self._stop = threading.Event()
+        self._crash_lock = threading.Lock()
+        self._threads: list[threading.Thread] = []
+        self._workers: list[JobWorker] = []
+        self._threaded = set(THREADED_CONSUMERS)
+        self._seen_done = 0
 
     # -- ciclo de vida ---------------------------------------------------------------------
     def __enter__(self) -> Self:
@@ -279,10 +343,12 @@ class Harness:
         for service in (self.services.mail, self.services.claims, self.services.carrier, self.services.payments):
             service.idempotent = self.config.idempotency == "full"
         self._build()
+        self._start_threads()
         self._seed()
         return self
 
     def __exit__(self, *exc: object) -> None:
+        self._stop_threads()
         for delivery, _ in self._deliveries:
             with contextlib.suppress(Exception):
                 delivery.consumer.close()
@@ -344,9 +410,61 @@ class Harness:
             orchestrator.SCHEMA: lambda: orchestrator.build_consumer(
                 self._connect(), make_consumer(s.kafka_bootstrap_servers, orchestrator.SCHEMA), s, self.rules),
         }
-        for factory in factories.values():
+        for name, factory in factories.items():
+            if name in self._threaded:
+                factory = self._tracked_factory(factory)
             delivery = FaultyDelivery(factory(), self.config.faults, crashed=self._crashed)
             self._deliveries.append((delivery, factory))
+
+    # -- hilos -------------------------------------------------------------------------------
+    def _tracked(self, consumer: Any) -> TrackedConsumer:
+        return TrackedConsumer(consumer, self._activity)
+
+    def _tracked_factory(self, make: Callable[[], EventConsumer]) -> Callable[[], Any]:
+        return lambda: self._tracked(make())
+
+    def _tracked_job(self, *args: Any, **kwargs: Any) -> bool:
+        with self._activity.working():
+            did = run_job_once(*args, **kwargs)
+        if did:
+            self._activity.progressed()
+        return did
+
+    def _start_threads(self) -> None:
+        """Un worker de trabajos por componente con comandos largos y un hilo por consumidor de `_threaded`."""
+        s = self.settings
+        for target in self.targets.values():
+            if not any(spec.deferred for spec in target.specs.values()):
+                continue
+            worker = JobWorker(lambda: connect(s.database_url), target.schema, target.specs,
+                               lease_seconds=s.job_lease_seconds, poll_interval=JOB_POLL_S, max_attempts=s.job_max_attempts,
+                               backoff=Backoff(0.01, 0.05, seed=self.config.seed), run_once=self._tracked_job,
+                               name=f"harness-jobs-{target.schema}")
+            worker.start()
+            self._workers.append(worker)
+        for i, (delivery, _) in enumerate(self._deliveries):
+            if delivery.consumer.name in self._threaded:
+                thread = threading.Thread(target=self._consume, args=(i,), daemon=True,
+                                          name=f"harness-{delivery.consumer.name}")
+                thread.start()
+                self._threads.append(thread)
+
+    def _consume(self, i: int) -> None:
+        """Bucle de un consumidor en su hilo, con las mismas caídas y mensajes veneno que en los turnos."""
+        delivery, factory = self._deliveries[i]
+        while not self._stop.is_set():
+            try:
+                delivery.run_once(CONSUMER_POLL_S)
+            except Exception as exc:  # noqa: BLE001 — una caída de un proceso, a propósito o no
+                self._on_crash(i, delivery, factory, exc)
+
+    def _stop_threads(self) -> None:
+        self._stop.set()
+        for worker in self._workers:
+            worker.stop(JOIN_TIMEOUT_S)
+        for thread in self._threads:
+            thread.join(JOIN_TIMEOUT_S)
+        self._workers, self._threads = [], []
 
     def _command(self, target: str, command_type: str, correlation_id: str, payload: dict[str, Any]) -> None:
         """Comando de entrada (datos de ejemplo, avisos): directo a su handler, sin fallos inyectados."""
@@ -383,6 +501,8 @@ class Harness:
         progressed = sum(r.run_once() + r.publish_dead_letters() for r in self._relays)
         progressed += sum(r.run_once(timeout=0) for r in self._readers)
         for i, (delivery, factory) in enumerate(self._deliveries):
+            if delivery.consumer.name in self._threaded:
+                continue  # tiene su propio hilo
             for _ in range(20):
                 try:
                     if delivery.run_once(0.01) is None:
@@ -402,15 +522,18 @@ class Harness:
         return progressed
 
     def _on_crash(self, i: int, delivery: FaultyDelivery, factory: Callable[[], EventConsumer], exc: Exception) -> None:
-        self.consumer_crashes += 1
+        with self._crash_lock:  # los consumidores con hilo propio caen a la vez que el resto
+            self.consumer_crashes += 1
         msg = delivery.current
         key = (delivery.consumer.name, msg.partition(), msg.offset()) if msg is not None else None
         if not isinstance(exc, ConsumerCrashed):
             log.warning("%s cae: %r", delivery.consumer.name, exc)
             if key is not None:
-                self._failures[key] += 1
-                if self._failures[key] >= POISON_AFTER:
-                    self.poison_messages += 1
+                with self._crash_lock:
+                    self._failures[key] += 1
+                    poison = self._failures[key] >= POISON_AFTER
+                    self.poison_messages += poison
+                if poison:
                     delivery.consumer.commit(msg)  # se salta el mensaje para no quedar atascado
         with contextlib.suppress(Exception):
             delivery.consumer.close()  # sin confirmar el offset: Kafka lo vuelve a entregar
@@ -423,16 +546,46 @@ class Harness:
         self.conn.commit()
         return row["n"]
 
+    def _open_jobs(self) -> int:
+        """Trabajos pendientes o en curso de los componentes con comandos largos."""
+        schemas = [t.schema for t in self.targets.values() if any(s.deferred for s in t.specs.values())]
+        if not schemas:
+            return 0
+        rows = self.conn.execute(" UNION ALL ".join(
+            f"SELECT count(*) AS n FROM {qualified(schema, 'command_jobs')} WHERE status IN ('pending', 'running')"
+            for schema in schemas)).fetchall()
+        self.conn.commit()
+        return sum(r["n"] for r in rows)
+
+    def _working(self) -> bool:
+        """Algún hilo atiende un mensaje o un trabajo, o quedan trabajos por hacer."""
+        return self._activity.busy > 0 or self._open_jobs() > 0
+
+    def _advance(self) -> bool:
+        """Un turno; True si avanzó algo, en el turno o en los hilos, o si los hilos siguen trabajando."""
+        progressed = self.step()
+        done = self._activity.done
+        moved = bool(progressed) or done != self._seen_done or self._working()
+        self._seen_done = done
+        if not progressed:
+            time.sleep(IDLE_SLEEP_S)
+        return moved
+
     def run_until_closed(self) -> float:
+        """Turnos hasta cerrar todas las incidencias, o hasta `idle_seconds` sin avance (con los hilos ociosos
+        y sin trabajos pendientes) o `timeout_seconds` en total."""
         start = last = time.monotonic()
         while self.closed() < self.config.incidents:
             now = time.monotonic()
-            if self.step():
+            if now - start > self.config.timeout_seconds:
+                break
+            if self._advance():
                 last = now
-            elif now - last > self.config.idle_seconds or now - start > self.config.timeout_seconds:
+            elif now - last > self.config.idle_seconds:
                 break
         # Un último repaso para que las vistas y el log reflejen todo lo publicado.
-        while self.step():
+        end = time.monotonic() + self.config.idle_seconds
+        while (self.step() or self._working()) and time.monotonic() < end:
             pass
         return time.monotonic() - start
 
@@ -461,6 +614,10 @@ class Harness:
             "SELECT coalesce(sum(llm_calls), 0) AS calls, coalesce(sum(tokens_in), 0) AS tin, "
             "coalesce(sum(tokens_out), 0) AS tout FROM views.view_cost_per_incident"
         ).fetchone()
+        reasons = {r["reason"]: r["n"] for r in c.execute(
+            "SELECT coalesce(escalation_reason, 'unknown') AS reason, count(*) AS n FROM views.view_incident_status"
+            " WHERE status = 'escalated' GROUP BY 1 ORDER BY 1"
+        ).fetchall()}
         c.commit()
         closed = statuses["resolved"] + statuses["escalated"]
         return RunResult(
@@ -469,7 +626,7 @@ class Harness:
             duplicates=self.duplicates(), consumer_crashes=self.crashes,
             poison_messages=self.poison_messages, latencies_ms=[float(v) for v in latencies],
             llm_calls=int(cost["calls"]), tokens_in=int(cost["tin"]), tokens_out=int(cost["tout"]),
-            elapsed_seconds=elapsed,
+            elapsed_seconds=elapsed, escalation_reasons=reasons,
         )
 
 

@@ -7,7 +7,9 @@
   saga trata en la misma transacción; si el sistema no responde, espera con jitter y lo reintenta
   sin bloquear los comandos de otras incidencias.
 - `expire_once`: trata los plazos vencidos de `orchestrator.deadlines`, también los que vencieron
-  mientras el proceso estaba parado (spec resilience, "Reinicio del orquestador").
+  mientras el proceso estaba parado (spec resilience, "Reinicio del orquestador"). Un plazo empieza a
+  contar cuando el dispatcher envía su comando por primera vez; hasta entonces `expires_at` es NULL y
+  no vence.
 """
 
 from __future__ import annotations
@@ -49,12 +51,24 @@ def _deadline(conn: psycopg.Connection, command_id) -> dict[str, Any] | None:
     return conn.execute("SELECT * FROM orchestrator.deadlines WHERE command_id = %s", (command_id,)).fetchone()
 
 
+def _start_deadline(conn: psycopg.Connection, command_id) -> None:
+    """El plazo del comando empieza al primer envío, responda o no el destino (spec incident-planning, «Plazos
+    de la saga»): mide el sistema destino, no la cola del dispatcher."""
+    with conn.transaction():
+        conn.execute(
+            "UPDATE orchestrator.deadlines SET expires_at = now() + make_interval(secs => timeout_s)"
+            " WHERE command_id = %s AND expires_at IS NULL AND resolved_at IS NULL",
+            (command_id,),
+        )
+
+
 def dispatch_once(conn: psycopg.Connection, settings: Settings, rules: BusinessRules, *,
                   invoke: Invoke = command_client.invoke, backoff: Backoff | None = None) -> bool:
     """Invoca un comando pendiente. Devuelve False si no había ninguno."""
     row = _due(conn)
     if row is None:
         return False
+    _start_deadline(conn, row["command_id"])
     token = otel_context.attach(tracing.extract(row["trace_context"]))
     try:
         reply = invoke(target_url(settings, row["target"]), row["command_type"], command_id=row["command_id"],

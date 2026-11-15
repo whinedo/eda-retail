@@ -11,11 +11,12 @@ arnés) y en la base síncrona (`baseline_sync`), en dos escenarios (supuesto A1
 Por versión y escenario, el informe da la latencia por incidencia (media, mediana y p95 de
 todas las repeticiones), los tokens, las llamadas y el coste en dinero (tokens por los
 precios de la configuración), las incidencias resueltas, reembolsadas y escaladas, y los
-efectos duplicados. H6 no fija umbral: el informe describe las diferencias.
+efectos duplicados, y las escaladas por motivo. H6 no fija umbral: el informe describe las diferencias.
 """
 
 from __future__ import annotations
 
+from collections import Counter
 from collections.abc import Callable
 from decimal import Decimal
 from typing import Any
@@ -32,6 +33,16 @@ from eda_retail.synthetic.generator import Dataset, generate
 SCENARIOS = ("no_faults", "faults")
 DUPLICATES = 2
 FAILING = {"reserve_stock": 0.3}
+
+
+# Tope total de una ejecución en el harness: con el LLM real, las incidencias esperan su turno en Ollama (unos
+# 25 s cada una), así que 300 s cortaban la versión de eventos con incidencias aún abiertas.
+TIMEOUT_PER_INCIDENT_S = 120
+
+
+def run_config(scenario: str, seed: int, incidents: int) -> RunConfig:
+    timeout = max(RunConfig.timeout_seconds, incidents * TIMEOUT_PER_INCIDENT_S)
+    return RunConfig(seed=seed, incidents=incidents, faults=_faults(scenario, seed), timeout_seconds=timeout)
 
 
 def _faults(scenario: str, seed: int) -> FaultPlan:
@@ -57,6 +68,7 @@ def _row(version: str, result: Any, refunded: int, base: Settings) -> dict[str, 
         "refunded": refunded, "duplicates": sum(result.duplicates.values()), "latencies_ms": result.latencies_ms,
         "llm_calls": result.llm_calls, "tokens_in": result.tokens_in, "tokens_out": result.tokens_out,
         "cost": float(cost), "elapsed_seconds": result.elapsed_seconds,
+        "escalation_reasons": dict(result.escalation_reasons),
     }
 
 
@@ -81,6 +93,10 @@ def _aggregate(rows: list[dict[str, Any]]) -> dict[str, Any]:
                            "duplicates": sum(r["duplicates"] for r in rows)}
     for key in ("closed", "resolved", "escalated", "refunded", "llm_calls", "tokens_in", "tokens_out", "cost"):
         out[key] = _spread([r[key] for r in rows])
+    reasons = Counter[str]()
+    for r in rows:
+        reasons.update(r["escalation_reasons"])
+    out["escalation_reasons"] = dict(sorted(reasons.items()))  # total de todas las repeticiones
     return out
 
 
@@ -91,7 +107,7 @@ def run_e6(base: Settings, *, seed: int = 42, incidents: int = 50, repetitions: 
     runs, model = [], "unknown"
     for n in range(1, repetitions + 1):
         for scenario in scenarios:
-            config = RunConfig(seed=seed, incidents=incidents, faults=_faults(scenario, seed))
+            config = run_config(scenario, seed, incidents)
             for version, runner in (("events", _run_events), ("sync", _run_sync)):
                 client = factory(data, n)
                 model = getattr(client, "model", "unknown")

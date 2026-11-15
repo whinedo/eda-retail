@@ -9,10 +9,14 @@ error y las revisiones hechas, así que el replanificador no lee el estado del o
 - en otro caso el LLM, con cada propuesta comprobada por `check_revision`; un rechazo se explica al LLM
   en la siguiente generación, dentro de los límites de llm-boundaries.
 
-`handle` (en la transacción de `execute_command`) comprueba la revisión otra vez con las mismas reglas,
+`RevisePlan` es un comando con trabajo largo (design.md §4.4): la petición solo lo acepta (`accept` rechaza
+con `revision_exists` una versión del plan ya revisada o con un `RevisePlan` en curso) y responde 202; el
+worker del replanificador hace `prepare` (el LLM) y `handle` después.
+
+`handle` (en la transacción del trabajo) comprueba la revisión otra vez con las mismas reglas,
 escribe `replanner.revisions` y `replanner.llm_calls` y publica `LlmCallRecorded` por llamada y
-`PlanRevised` con `plan_version` + 1, o `IncidentEscalated` con el motivo cuando no hay plan válido. Una
-versión del plan que ya se revisó rechaza otro `RevisePlan` con `revision_exists`.
+`PlanRevised` con `plan_version` + 1, o `IncidentEscalated` con el motivo cuando no hay plan válido. Si otro
+`RevisePlan` de la misma versión se adelantó, el trabajo termina rechazado con `revision_exists`, sin eventos.
 """
 
 from __future__ import annotations
@@ -206,6 +210,17 @@ def revise_plan(rules: BusinessRules):
     return handle
 
 
+def accept_revise_plan(conn: psycopg.Connection, command: CommandEnvelope, payload: RevisePlan) -> Rejected | None:
+    """Aceptación: esa versión del plan no se revisó ni tiene un `RevisePlan` pendiente o en curso."""
+    busy = conn.execute(
+        "SELECT 1 AS found FROM replanner.revisions WHERE incident_id = %s AND base_plan_version = %s"
+        " UNION ALL SELECT 1 FROM replanner.command_jobs WHERE correlation_id = %s AND command_type = 'RevisePlan'"
+        " AND (payload->>'plan_version')::int = %s AND status IN ('pending', 'running') LIMIT 1",
+        (command.correlation_id, payload.plan_version, command.correlation_id, payload.plan_version),
+    ).fetchone()
+    return Rejected(REVISION_EXISTS) if busy is not None else None
+
+
 def read_context(settings: Settings, rules: BusinessRules) -> Callable[[str, int, list[str]], RevisionContext]:
     """Consultas de `prepare` con una conexión propia: su tabla `revisions` y el lado de lectura."""
     prices = Prices.from_settings(settings)
@@ -230,4 +245,5 @@ def read_context(settings: Settings, rules: BusinessRules) -> Callable[[str, int
 
 def specs(settings: Settings, llm: LlmClient, rules: BusinessRules) -> dict[str, CommandSpec]:
     prepare = RevisionPreparer(llm, rules, context=read_context(settings, rules))
-    return {"RevisePlan": CommandSpec(RevisePlan, revise_plan(rules), prepare=prepare)}
+    return {"RevisePlan": CommandSpec(RevisePlan, revise_plan(rules), prepare=prepare, deferred=True,
+                                      accept=accept_revise_plan)}
