@@ -26,3 +26,15 @@ def test_any_other_poc_version_is_a_clear_error(monkeypatch, tmp_path, raw):
     monkeypatch.setenv("POC_VERSION", raw)
     with pytest.raises(ValueError, match="POC_VERSION debe ser 1 o 2"):
         load_settings()
+
+
+def test_poc_version_from_env(monkeypatch):
+    from eda_retail.config import poc_version_from_env
+
+    monkeypatch.delenv("POC_VERSION", raising=False)
+    assert poc_version_from_env() == 1
+    monkeypatch.setenv("POC_VERSION", "2")
+    assert poc_version_from_env() == 2
+    monkeypatch.setenv("POC_VERSION", "7")
+    with pytest.raises(ValueError, match="POC_VERSION debe ser 1 o 2"):
+        poc_version_from_env()

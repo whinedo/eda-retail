@@ -155,12 +155,15 @@ def load_env_file(path: Path, environ: MutableMapping[str, str] = os.environ) ->
     return loaded
 
 
-POC_VERSIONS = ("1", "2")
+def poc_version_from_env() -> int:
+    """`POC_VERSION` (por defecto 1): la versión de la PoC, 1 o 2; cualquier otro valor es un error."""
+    raw = os.environ.get("POC_VERSION", "1").strip()
+    if raw not in ("1", "2"):
+        raise ValueError(f"POC_VERSION debe ser 1 o 2, no {raw!r}")
+    return int(raw)
 
 
 def load_settings() -> Settings:
     load_env_file(Path.cwd() / ENV_FILE)
-    raw = os.environ.get("POC_VERSION", "1").strip()
-    if raw not in POC_VERSIONS:
-        raise ValueError(f"POC_VERSION debe ser 1 o 2, no {raw!r}")
+    poc_version_from_env()
     return Settings()
