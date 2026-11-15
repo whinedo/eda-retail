@@ -1,10 +1,13 @@
 """Command handler del replanificador: `RevisePlan`, que invoca la saga por REST (design.md §3).
 
 El comando lleva el plan vigente (cada paso con su estado y su versión de origen), el paso fallido, su
-error y las revisiones hechas, así que el replanificador no lee el estado del orquestador ni la vista
-`incident_status`. `prepare` (fuera de la transacción) consulta el lado de lectura (el presupuesto en
-`cost_per_incident` y los importes de los pedidos del plan en `view_orders`) y propone la revisión:
+error y las revisiones hechas, así que el replanificador no lee el estado del orquestador. `prepare` (fuera
+de la transacción) consulta el lado de lectura (si la incidencia sigue abierta en `view_incident_status`, el
+presupuesto en `cost_per_incident` y los importes de los pedidos del plan en `view_orders`) y propone la revisión:
 
+- incidencia ya `resolved` o `escalated` en la vista (p. ej. la saga la escaló por `plan_timeout` mientras el
+  trabajo esperaba su turno): sin LLM, el trabajo termina rechazado con `incident_closed`, sin eventos; sin fila
+  o con la incidencia abierta, se sigue como siempre (consistencia eventual);
 - revisiones agotadas (`MAX_PLAN_REVISIONS`): escalado con `max_revisions`, sin LLM;
 - en otro caso el LLM, con cada propuesta comprobada por `check_revision`; un rechazo se explica al LLM
   en la siguiente generación, dentro de los límites de llm-boundaries.
@@ -41,6 +44,7 @@ from eda_retail.llm.prompts.replanner import MAX_REVISIONS, REPLACEABLE, SYSTEM,
 from eda_retail.llm.schemas import PlanProposal, strict_schema
 from eda_retail.plan_validation import PlanRejected, validate_plan
 from eda_retail.queries.cost_per_incident import Prices, budget_from_cost, get_incident_cost
+from eda_retail.queries.incident_status import INCIDENT_CLOSED, incident_closed
 from eda_retail.queries.orders import get_orders
 from eda_retail.rules import BusinessRules
 
@@ -86,6 +90,7 @@ class RevisionContext:
     revised: bool
     budget: Budget
     amounts: dict[str, Decimal]  # importe de cada pedido del plan en view_orders
+    closed: bool = False  # view_incident_status ya la da por resolved o escalated
 
 
 @dataclass(frozen=True)
@@ -95,6 +100,7 @@ class Prepared:
     reason: str | None = None
     calls: list[LlmCall] = field(default_factory=list)
     amounts: dict[str, Decimal] = field(default_factory=dict)
+    closed: bool = False  # incidencia ya cerrada: handle rechaza con incident_closed
 
 
 def check_revision(current: list[dict[str, Any]], proposed: list[dict[str, Any]], rules: BusinessRules,
@@ -137,6 +143,8 @@ class RevisionPreparer:
         ctx = self._context(incident_id, payload.plan_version, payload.order_ids())
         if ctx.revised:
             return Prepared(revised=True)  # no se paga otra vez el LLM
+        if ctx.closed:
+            return Prepared(revised=False, closed=True)  # la saga ya la cerró: ni LLM ni eventos
         if payload.revisions >= self._rules.max_plan_revisions:
             return Prepared(False, reason=MAX_REVISIONS, amounts=ctx.amounts)
         current = payload.current()
@@ -182,6 +190,8 @@ def revise_plan(rules: BusinessRules):
                prepared: Prepared) -> Accepted | Rejected:
         if prepared.revised:
             return Rejected(REVISION_EXISTS)
+        if prepared.closed:
+            return Rejected(INCIDENT_CLOSED)
         incident_id = command.correlation_id
         steps, reason = None, prepared.reason
         if prepared.steps is not None:
@@ -222,7 +232,8 @@ def accept_revise_plan(conn: psycopg.Connection, command: CommandEnvelope, paylo
 
 
 def read_context(settings: Settings, rules: BusinessRules) -> Callable[[str, int, list[str]], RevisionContext]:
-    """Consultas de `prepare` con una conexión propia: su tabla `revisions` y el lado de lectura."""
+    """Consultas de `prepare` con una conexión propia: su tabla `revisions` y el lado de lectura
+    (`view_incident_status`, `cost_per_incident`, `view_orders`)."""
     prices = Prices.from_settings(settings)
 
     def context(incident_id: str, base_version: int, order_ids: list[str]) -> RevisionContext:
@@ -236,9 +247,10 @@ def read_context(settings: Settings, rules: BusinessRules) -> Callable[[str, int
             budget = budget_from_cost(get_incident_cost(conn, incident_id, prices), rules)
             found = get_orders(conn, order_ids).found  # view_orders
             amounts = {o: found[o].amount for o in order_ids if o in found}
+            closed = incident_closed(conn, incident_id)  # view_incident_status
         finally:
             conn.close()
-        return RevisionContext(revised, budget, amounts)
+        return RevisionContext(revised, budget, amounts, closed)
 
     return context
 

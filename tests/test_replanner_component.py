@@ -48,9 +48,9 @@ def _command(payload: dict) -> tuple[CommandEnvelope, handler.RevisePlan]:
     return command, handler.RevisePlan.model_validate(payload)
 
 
-def _preparer(llm, *, revised=False, budget=None, amounts=None):
+def _preparer(llm, *, revised=False, budget=None, amounts=None, closed=False):
     context = handler.RevisionContext(revised=revised, budget=budget or budget_from_cost(None, RULES),
-                                      amounts=AMOUNTS if amounts is None else amounts)
+                                      amounts=AMOUNTS if amounts is None else amounts, closed=closed)
     seen = []
 
     def read(incident_id, base_version, order_ids):
@@ -204,11 +204,12 @@ def test_replanner_is_a_checked_component():
 
 
 def test_replanner_does_not_read_the_orchestrator_tables():
-    """Decisión del replanificador: no lee las tablas del orquestador ni la vista incident_status"""
+    """Decisión del replanificador: no lee las tablas del orquestador; de incident_status solo pregunta, por la
+    consulta del lado de lectura, si la incidencia ya está cerrada"""
     package = pathlib.Path(handler.__file__).parent
     sources = "\n".join(p.read_text() for p in package.glob("*.py"))
     assert "orchestrator." not in sources
-    assert "queries.incident_status" not in sources and "view_incident_status" not in sources
+    assert "from eda_retail.queries.incident_status import INCIDENT_CLOSED, incident_closed" in sources
     assert "view_orders" in sources
 
 
@@ -216,3 +217,36 @@ def test_run_agents_starts_the_replanner_component():
     script = (pathlib.Path(__file__).parents[1] / "scripts" / "run-agents.sh").read_text()
     assert "replanner|eda-replanner" in script
     assert "eda-agent replanner" not in script
+
+
+def test_a_revise_plan_of_an_escalated_incident_does_not_call_the_llm():
+    """Trabajo de una incidencia ya cerrada: un RevisePlan de una incidencia que la saga escaló con
+    plan_timeout no llama al LLM y no publica eventos"""
+    llm = FakeLlmClient([REFUND_PLAN])
+    command, payload = _command(_payload())
+
+    prepared = _preparer(llm, closed=True)(command, payload)
+    outcome = handler.revise_plan(RULES)(None, command, payload, prepared)  # sin tocar la base de datos
+
+    assert llm.requests == [] and prepared.calls == []
+    assert outcome.reason == "incident_closed"
+
+
+def test_a_closed_incident_with_exhausted_revisions_does_not_escalate_again():
+    """Trabajo de una incidencia ya cerrada: sin revisiones restantes tampoco publica otro IncidentEscalated"""
+    command, payload = _command(_payload(revisions=RULES.max_plan_revisions))
+
+    prepared = _preparer(FakeLlmClient([]), closed=True)(command, payload)
+
+    assert handler.revise_plan(RULES)(None, command, payload, prepared).reason == "incident_closed"
+
+
+def test_an_open_incident_is_still_revised():
+    """Trabajo de una incidencia ya cerrada: una incidencia abierta (o sin fila en la vista) se revisa igual"""
+    llm = FakeLlmClient([REFUND_PLAN])
+    command, payload = _command(_payload())
+
+    prepared = _preparer(llm, closed=False)(command, payload)
+
+    assert len(llm.requests) == 1 and not prepared.closed
+    assert [s["action"] for s in prepared.steps] == ["file_claim", "issue_refund"]

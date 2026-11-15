@@ -204,6 +204,17 @@ Cada comando que invoca la saga SHALL llevar un plazo durable, guardado en `orch
 - **WHEN** se reinicia
 - **THEN** trata ese plazo vencido sin perderlo
 
+### Requirement: Trabajo de una incidencia ya cerrada
+
+Antes de llamar al LLM, el trabajo de un `CreatePlan` o de un `RevisePlan` SHALL consultar la vista `view_incident_status` (lado de lectura, nunca las tablas del orquestador). Si la vista ya da la incidencia por `resolved` o `escalated`, el trabajo MUST NOT llamar al LLM ni publicar eventos, y SHALL terminar rechazado con el motivo `incident_closed`; esto vale también para el plan fijo de gravedad `low` y para las revisiones agotadas. Si la vista aún no tiene la incidencia o la da por abierta (consistencia eventual), el trabajo SHALL seguir como siempre, con todas sus comprobaciones.
+
+#### Scenario: Trabajo de una incidencia ya cerrada
+
+- **GIVEN** un `RevisePlan` aceptado para una incidencia que la saga escala después con `plan_timeout`
+- **WHEN** su trabajo se ejecuta
+- **THEN** no llama al LLM
+- **AND** no publica eventos
+
 ### Requirement: Escalado de la incidencia
 
 Cuando la saga escale una incidencia (revisiones agotadas, plazo vencido, fallo de una compensación o `IncidentEscalated` de otro componente), SHALL marcarla `escalated`, cancelar los pasos pendientes con `StepCancelled`, pedir la compensación de cada `reserve_stock` completado cuyo dependiente no se haya completado y publicar `IncidentEscalated` con el motivo, si no lo publicó otro componente. MUST NOT invocar `issue_refund`. Un escalado por `compensation_failed` MUST NOT volver a pedir compensaciones.

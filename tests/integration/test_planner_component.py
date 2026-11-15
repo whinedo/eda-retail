@@ -309,3 +309,24 @@ def test_version_2_with_the_agent_down_plans_as_version_1(database_url, conn):
     assert _types(conn, incident) == ["CarrierConsulted", "LlmCallRecorded", "PlanCreated"]
     assert outbox(conn, "planner", incident)[0]["payload"]["outcome"] == "failed"
     assert "<opciones_transportista>" not in llm.requests[0].prompt
+
+
+def _closed(conn, incident: str, status: str = "escalated", reason: str | None = "plan_timeout") -> None:
+    with conn.transaction():
+        conn.execute("INSERT INTO views.view_incident_status (incident_id, status, escalation_reason)"
+                     " VALUES (%s, %s, %s)", (incident, status, reason))
+
+
+def test_a_job_of_a_closed_incident_is_rejected_without_llm(database_url, conn):
+    """Trabajo de una incidencia ya cerrada: el CreatePlan de una incidencia escalada no llama al LLM ni
+    publica eventos"""
+    order, incident = _order(conn), _incident()
+    _closed(conn, incident)
+    llm = FakeLlmClient([_loss_plan(order)])
+
+    response = _create(_api(database_url, llm), incident, order)
+
+    assert response.status_code == 202
+    job = jobs(conn, "planner", incident)[-1]
+    assert (job["status"], job["outcome"]) == ("rejected", {"reason": "incident_closed"})
+    assert llm.requests == [] and _types(conn, incident) == [] and _plan(conn, incident) is None

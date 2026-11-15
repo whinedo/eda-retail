@@ -189,3 +189,21 @@ def test_a_version_already_revised_rejects_another_revise_plan(database_url, con
     assert response.json()["reason"] == "revision_exists"
     assert len(llm.requests) == 1
     assert _types(conn, incident).count("PlanRevised") == 1
+
+
+def test_a_revise_plan_of_an_escalated_incident_is_rejected_without_llm(database_url, conn):
+    """Trabajo de una incidencia ya cerrada: un RevisePlan de una incidencia que la saga escaló con
+    plan_timeout no llama al LLM y no publica eventos"""
+    order, incident = _order(conn), _incident()
+    with conn.transaction():
+        conn.execute("INSERT INTO views.view_incident_status (incident_id, status, escalation_reason)"
+                     " VALUES (%s, 'escalated', 'plan_timeout')", (incident,))
+    llm = FakeLlmClient([_refund_plan(order)])
+
+    response = _revise(_api(database_url, llm), incident, order)
+
+    assert response.status_code == 202
+    job = jobs(conn, "replanner", incident)[-1]
+    assert (job["status"], job["outcome"]) == ("rejected", {"reason": "incident_closed"})
+    assert llm.requests == [] and _types(conn, incident) == [] and _revision(conn, incident) is None
+    assert _llm_calls(conn, incident) == 0
