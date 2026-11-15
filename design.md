@@ -122,6 +122,7 @@ La saga es **reactiva y orquestada**: es un *process manager* dentro del orquest
 | `StepCompleted` (versión vigente) | Paso `completed`; desbloquea sus dependientes | `ExecuteStep` de los desbloqueados; `IncidentResolved` si ya no quedan pasos |
 | `StepCompleted` de una compensación | El original pasa a `compensated` | Si no quedan `compensating`, el `ExecuteStep` de `issue_refund` que estaba retenido |
 | `StepFailed` no reintentable (versión vigente) | Paso `failed` | Comando `RevisePlan` al replanificador; si ya no quedan revisiones, escalado con `max_revisions` |
+| `StepFailed` no reintentable (versión vigente) con un `RevisePlan` de esa versión pendiente | Paso `failed` | Ninguno: espera a la revisión pendiente. Al aplicar su `PlanRevised`, si el plan nuevo mantiene el paso, trata ese fallo con las reglas normales en la versión nueva (otro `RevisePlan` o escalado) |
 | `StepFailed` de una compensación | — | Escalado con `compensation_failed`; nunca emite el reembolso |
 | `PlanRevised` (versión vigente + 1) | Cancela los pendientes que el plan nuevo no mantiene y añade los nuevos pasos; para cada paso compensable completado cuyo dependiente se cancela, añade `<original>-comp` y marca el original `compensating` | `StepCancelled`, `ExecuteStep` de compensaciones y de pasos desbloqueados; `issue_refund` queda retenido mientras haya `compensating` |
 | `IncidentEscalated` (de otro componente) | Escalado | Ver «Escalado» |
@@ -132,7 +133,7 @@ La saga es **reactiva y orquestada**: es un *process manager* dentro del orquest
 
 **Escalado.** La incidencia pasa a `escalated`, la saga cancela los pasos pendientes (`StepCancelled`), pide la compensación de cada `reserve_stock` completado cuyo dependiente no se ha completado y publica `IncidentEscalated` con el motivo. Nunca emite `issue_refund`. Un escalado por `compensation_failed` no vuelve a compensar.
 
-**Plazos.** Cada comando que invoca la saga lleva un plazo, guardado en `orchestrator.deadlines` en la misma transacción. Un hilo del orquestador revisa sus propios plazos vencidos (es su tabla, como el relay con su outbox) y trata cada uno como un mensaje más. El plazo de un `ExecuteStep` cubre los reintentos del dispatcher y los del ejecutor. Configuración: `SAGA_STEP_TIMEOUT_S`, `SAGA_PLAN_TIMEOUT_S` y, para los avisos aparcados del intérprete, `PENDING_NOTICE_TIMEOUT_S`. Una compensación pedida por un plazo vencido es idempotente: si el efecto original nunca ocurrió, no hace nada.
+**Plazos.** Cada comando que invoca la saga lleva un plazo, guardado en `orchestrator.deadlines` en la misma transacción (`timeout_s`). El plazo empieza a contar cuando el dispatcher envía el comando por primera vez (`expires_at`), responda o no el sistema destino: mide el sistema destino, no la cola del dispatcher, así que un comando que espera su turno no vence por estar en cola, y un ejecutor caído sigue venciendo («Paso sin respuesta»). Un hilo del orquestador revisa sus propios plazos vencidos (es su tabla, como el relay con su outbox) y trata cada uno como un mensaje más. El plazo de un `ExecuteStep` cubre los reintentos del dispatcher y los del ejecutor. Configuración: `SAGA_STEP_TIMEOUT_S`, `SAGA_PLAN_TIMEOUT_S` y, para los avisos aparcados del intérprete, `PENDING_NOTICE_TIMEOUT_S`. Una compensación pedida por un plazo vencido es idempotente: si el efecto original nunca ocurrió, no hace nada.
 
 Los reintentos de un paso con fallo transitorio los hace el propio ejecutor (spec `resilience`); a la saga solo le llega el resultado final.
 
@@ -145,13 +146,14 @@ saga, al consumir un evento o vencer un plazo:
 BEGIN
   inbox; transición en orchestrator.plan_steps
   INSERT INTO orchestrator.command_outbox (command_id, command_type, target, payload, trace_context)
-  INSERT INTO orchestrator.deadlines (command_id, expires_at)
+  INSERT INTO orchestrator.deadlines (command_id, timeout_s)        -- expires_at al primer envío
   INSERT INTO orchestrator.outbox (eventos de la saga, si los hay)
 COMMIT
 
 dispatcher (hilo del orquestador), sobre su propia tabla:
 loop:
   leer command_outbox pendientes (FOR UPDATE SKIP LOCKED)
+  primer envío: expires_at = now() + timeout_s (empieza el plazo)
   POST <URL del target>/commands/<command_type>   (mismo command_id en cada intento)
     202       -> marcar entregado (aceptado; `Idempotent-Replayed: true` si ya lo estaba)
     422       -> marcar rechazado; la saga lo trata como fallo no reintentable

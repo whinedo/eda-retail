@@ -109,7 +109,7 @@ class Transition:
 
     def enqueue(self, command_type: str, target: str, payload: dict[str, Any], *, kind: str, timeout_s: float,
                 step_id: str | None = None) -> uuid.UUID:
-        """Deja el comando en `command_outbox` con su plazo durable."""
+        """Deja el comando en `command_outbox` con su plazo durable (sin empezar a contar)."""
         command_id = uuid.uuid4()
         trace_context = tracing.inject_current()
         self.conn.execute(
@@ -118,9 +118,11 @@ class Transition:
             (command_id, self.incident_id, command_type, target, self.cause, Jsonb(payload),
              Jsonb(trace_context) if trace_context else None),
         )
+        # El plazo empieza a contar cuando el dispatcher envía el comando por primera vez (`expires_at`):
+        # mide el sistema destino, no la cola del dispatcher.
         self.conn.execute(
-            "INSERT INTO orchestrator.deadlines (command_id, incident_id, kind, step_id, expires_at)"
-            " VALUES (%s, %s, %s, %s, now() + make_interval(secs => %s))",
+            "INSERT INTO orchestrator.deadlines (command_id, incident_id, kind, step_id, timeout_s)"
+            " VALUES (%s, %s, %s, %s, %s)",
             (command_id, self.incident_id, kind, step_id, timeout_s),
         )
         return command_id
@@ -138,6 +140,23 @@ class Transition:
                 " AND status = 'pending'",
                 ([r["command_id"] for r in rows],),
             )
+
+    def pending_revision(self) -> dict[str, Any] | None:
+        """El payload del `RevisePlan` cuyo plazo sigue abierto (el replanificador aún no respondió)."""
+        row = self.conn.execute(
+            "SELECT c.payload FROM orchestrator.deadlines d JOIN orchestrator.command_outbox c USING (command_id)"
+            " WHERE d.incident_id = %s AND d.kind = 'revise_plan' AND d.resolved_at IS NULL LIMIT 1",
+            (self.incident_id,),
+        ).fetchone()
+        return row["payload"] if row is not None else None
+
+    def failures(self) -> dict[str, dict[str, Any]]:
+        """Error e intentos de los pasos `failed`."""
+        rows = self.conn.execute(
+            "SELECT step_id, error, attempts FROM orchestrator.plan_steps WHERE incident_id = %s AND status = 'failed'",
+            (self.incident_id,),
+        ).fetchall()
+        return {r["step_id"]: r for r in rows}
 
     # --- decisiones -------------------------------------------------------------------------
 
@@ -183,7 +202,8 @@ class Transition:
         self.advance()
 
     def fail(self, step: dict[str, Any], *, error: str, retryable: bool, attempts: int = 1) -> None:
-        """Un paso `requested` que falla: revisión del plan o escalado (spec incident-planning)."""
+        """Un paso `requested` que falla: revisión del plan o escalado (spec incident-planning). Con un
+        `RevisePlan` pendiente no pide otro: espera a esa revisión."""
         self.set_step(step["step_id"], "failed", error=error, attempts=attempts)
         self.close_deadlines("execute_step", step["step_id"])
         if self.incident["status"] != "open":
@@ -194,9 +214,13 @@ class Transition:
         if step["action"] in rules.COMPENSATIONS and error == TIMEOUT:
             self.insert_steps(rules.compensations([step], plan_version=self.incident["plan_version"]))
         decision, reason = rules.on_failure(step, retryable=retryable, revisions=self.incident["revisions"],
-                                            max_revisions=self.rules.max_plan_revisions)
+                                            max_revisions=self.rules.max_plan_revisions,
+                                            revision_pending=self.pending_revision() is not None)
         if decision == "escalate":
             self.escalate(reason, publish=True)
+            return
+        if decision == "wait":  # la revisión pendiente decide; al aplicarla se trata este fallo si sigue
+            self.advance()
             return
         self.enqueue("RevisePlan", "replanner", {
             "plan_version": self.incident["plan_version"], "revisions": self.incident["revisions"],
@@ -274,6 +298,10 @@ class Saga:
             return
         before = {s["step_id"]: s for s in t.steps()}
         revision = rules.revise(list(before.values()), event.payload["steps"], new_version=new_version)
+        pending = t.pending_revision()
+        meanwhile = rules.failed_meanwhile(list(before.values()), event.payload["steps"],
+                                           trigger=pending["failed_step_id"] if pending else None)
+        failures = t.failures()
         t.close_deadlines("revise_plan")
         t.set_incident(plan_version=new_version, revisions=t.incident["revisions"] + 1)
         for s in revision.steps:
@@ -287,6 +315,11 @@ class Saga:
         for step_id in revision.cancelled:
             t.emit("StepCancelled", {"incident_id": t.incident_id, "plan_version": new_version, "step_id": step_id})
         t.insert_steps(revision.compensations)
+        for step_id in meanwhile:  # falló mientras se revisaba y el plan nuevo lo mantiene: fallo de la versión nueva
+            step = t.step(step_id)
+            if step is not None and step["status"] == "pending" and t.incident["status"] == "open":
+                t.fail(step, error=failures[step_id]["error"], retryable=False,
+                       attempts=failures[step_id]["attempts"])
         t.advance()
         t.flush()
 

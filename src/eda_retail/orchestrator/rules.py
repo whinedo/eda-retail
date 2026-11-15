@@ -111,15 +111,33 @@ def execute_step_command(request: dict[str, Any], incident: dict[str, Any]) -> d
     return {**request, "cause": incident["cause"], "estimated_delay_hours": incident["estimated_delay_hours"]}
 
 
-def on_failure(step: Step, *, retryable: bool, revisions: int, max_revisions: int) -> tuple[str, str | None]:
-    """Qué hace la saga con un paso fallido: ("escalate", motivo) o ("revise", None)."""
+def on_failure(step: Step, *, retryable: bool, revisions: int, max_revisions: int,
+               revision_pending: bool = False) -> tuple[str, str | None]:
+    """Qué hace la saga con un paso fallido: ("escalate", motivo), ("revise", None) o ("wait", None).
+
+    Con un `RevisePlan` de la versión vigente pendiente, un fallo que pediría otra revisión espera a esa
+    (spec incident-planning, «Segundo fallo con una revisión pendiente»): al aplicarla, si el plan nuevo
+    mantiene el paso, se trata con estas mismas reglas (`failed_meanwhile`)."""
     if step["compensates"]:
         return ("escalate", COMPENSATION_FAILED)
     if retryable:  # el ejecutor ya agotó sus reintentos
         return ("escalate", RETRIES_EXHAUSTED)
+    if revision_pending:
+        return ("wait", None)
     if revisions >= max_revisions:
         return ("escalate", MAX_REVISIONS)
     return ("revise", None)
+
+
+def failed_meanwhile(before: list[Step], revised: list[dict[str, Any]], *, trigger: str | None) -> list[str]:
+    """Pasos que fallaron mientras se revisaba el plan (no el que pidió la revisión, `trigger`) y que la
+    revisión mantiene: la saga los trata como fallos de la versión nueva. Sin revisión conocida, ninguno."""
+    if trigger is None:
+        return []
+    kept = {r["step_id"] for r in revised}
+    return sorted((s["step_id"] for s in before
+                   if s["status"] == "failed" and not s["compensates"] and s["step_id"] != trigger
+                   and s["step_id"] in kept), key=_natural)
 
 
 def _reservations_to_compensate(steps: list[Step], cancelled: set[str], alive: set[str]) -> list[Step]:

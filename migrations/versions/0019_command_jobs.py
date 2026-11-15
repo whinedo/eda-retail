@@ -11,6 +11,10 @@ misma transacción que su inbox; el worker del componente lo hace después (`inf
 
 La lista de componentes está congelada aquí, como en la 0008: añadir uno exige otra migración.
 
+También cambia `orchestrator.deadlines` (T3): el plazo empieza a contar cuando el dispatcher envía el comando
+por primera vez, no cuando la saga lo encola. La saga guarda `timeout_s` y deja `expires_at` en NULL hasta el
+primer envío; un plazo sin `expires_at` no vence. El downgrade da a esos plazos su vencimiento desde ahora.
+
 Revision ID: 0019
 Revises: 0018
 """
@@ -57,11 +61,21 @@ STATEMENTS = tuple(
 )
 
 
+DEADLINES = (
+    "ALTER TABLE orchestrator.deadlines ADD COLUMN timeout_s DOUBLE PRECISION",
+    "ALTER TABLE orchestrator.deadlines ALTER COLUMN expires_at DROP NOT NULL",
+)
+
+
 def upgrade() -> None:
-    for statement in STATEMENTS:
+    for statement in (*STATEMENTS, *DEADLINES):
         op.execute(statement)
 
 
 def downgrade() -> None:
+    op.execute("UPDATE orchestrator.deadlines SET expires_at = now() + make_interval(secs => coalesce(timeout_s, 0))"
+               " WHERE expires_at IS NULL")
+    op.execute("ALTER TABLE orchestrator.deadlines ALTER COLUMN expires_at SET NOT NULL")
+    op.execute("ALTER TABLE orchestrator.deadlines DROP COLUMN timeout_s")
     for schema in reversed(COMPONENTS):
         op.execute(f"DROP TABLE {schema}.command_jobs")
