@@ -15,9 +15,10 @@ pytestmark = pytest.mark.slow
 def _events_inputs(base_settings, config):
     with started(base_settings, config) as h:
         received = [r["id"] for r in h.conn.execute(
-            "SELECT payload->>'carrier_notice_id' AS id FROM events WHERE event_type = 'CarrierNoticeReceived'")]
+            "SELECT payload->>'carrier_notice_id' AS id FROM event_log.events"
+            " WHERE event_type = 'CarrierNoticeReceived'")]
         failed = {(r["correlation_id"], r["step_id"]) for r in h.conn.execute(
-            "SELECT correlation_id, payload->>'step_id' AS step_id FROM events "
+            "SELECT correlation_id, payload->>'step_id' AS step_id FROM event_log.events "
             "WHERE event_type = 'StepFailed' AND payload->>'error' = 'injected_failure'")}
         h.conn.commit()
     return sorted(received), failed
@@ -47,8 +48,8 @@ def test_sync_baseline_compensates_before_refund(base_settings):
     config = RunConfig(seed=5, incidents=3, faults=FaultPlan(seed=5, fail_probability={"reissue_shipment": 1.0}))
     with sync_started(base_settings, config, data=data) as run:
         result = run.result()
-        stock = run.conn.execute("SELECT sum(available) AS n FROM stock").fetchone()["n"]
-        statuses = {r["status"] for r in run.conn.execute("SELECT status FROM reservations")}
+        stock = run.conn.execute("SELECT sum(available) AS n FROM baseline_sync.stock").fetchone()["n"]
+        statuses = {r["status"] for r in run.conn.execute("SELECT status FROM baseline_sync.reservations")}
         run.conn.commit()
     assert result.closed == 3 and result.refunded == 3
     assert stock == sum(s.available for s in data.stock)

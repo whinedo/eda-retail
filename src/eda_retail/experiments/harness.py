@@ -85,6 +85,9 @@ log = logging.getLogger(__name__)
 IDEMPOTENCY_MODES = ("full", "no_effect_keys", "none")
 POISON_AFTER = 3  # caídas con el mismo mensaje antes de saltarlo
 TURN_COMMANDS = 200  # comandos que el dispatcher invoca como mucho en un turno
+# Un aviso cuyo pedido aún no está en view_orders se aparca (design.md §4.3); en el arnés el plazo es corto
+# para que una carrera entre particiones no deje la incidencia abierta hasta el plazo del despliegue.
+PENDING_NOTICE_TIMEOUT_S = 2.0
 SERVICE_OF = {"notify_customer": "mail", "file_claim": "claims", "reissue_shipment": "carrier",
               "issue_refund": "payments"}
 PUBLISHERS = ("intake", "interpreter", "planner", "replanner", "orchestrator", "inventory",
@@ -270,7 +273,8 @@ class Harness:
             fut.result(timeout=30)
         self.settings = replace(self._base, database_url=url, events_topic=topic, dlq_topic=f"{topic}.dlq",
                                 inbox_enabled=self.config.idempotency != "none",
-                                step_backoff_base_seconds=0.01, step_backoff_max_seconds=0.05)
+                                step_backoff_base_seconds=0.01, step_backoff_max_seconds=0.05,
+                                pending_notice_timeout_s=PENDING_NOTICE_TIMEOUT_S)
         self.conn = connect(url)
         for service in (self.services.mail, self.services.claims, self.services.carrier, self.services.payments):
             service.idempotent = self.config.idempotency == "full"
@@ -354,8 +358,18 @@ class Harness:
             raise RuntimeError(f"{command_type} rechazado: {response.body}")
 
     def _seed(self) -> None:
+        """Siembra pedidos y existencias y espera a que `view_orders` los tenga (como un despliegue ya en marcha)."""
         self._command("inventory", "SeedSampleData", inventory.SAMPLE_DATA_CORRELATION,
                       seed_payload(self.data, tuple(self.config.faults.empty_warehouses)))
+        deadline = time.monotonic() + self.config.idle_seconds
+        while self._projected_orders() < len(self.data.orders) and time.monotonic() < deadline:
+            self.step()
+
+    def _projected_orders(self) -> int:
+        row = self.conn.execute("SELECT count(*) AS n FROM views.view_orders WHERE order_id = ANY(%s)",
+                                ([o.order_id for o in self.data.orders],)).fetchone()
+        self.conn.commit()
+        return row["n"]
 
     # -- ejecución ---------------------------------------------------------------------------
     def send_notices(self) -> None:

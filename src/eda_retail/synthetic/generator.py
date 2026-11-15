@@ -19,8 +19,6 @@ from dataclasses import asdict, dataclass
 from decimal import Decimal
 from typing import Any
 
-import psycopg
-
 VARIANTS = ("delay", "loss", "damage", "wrong_address", "strike", "unknown")
 CARRIERS = ("demo-express", "rapid-cargo", "north-parcel")
 WAREHOUSES = ("W1", "W2")
@@ -172,24 +170,3 @@ def generate(seed: int, size: int) -> Dataset:
         ))
     stock = tuple(SyntheticStock(w, sku, STOCK_PER_SKU) for w in WAREHOUSES for sku in SKUS)
     return Dataset(seed, tuple(orders), stock, tuple(notices))
-
-
-def load(conn: psycopg.Connection, data: Dataset) -> tuple[int, int]:
-    """Carga pedidos y existencias simulados; repetirlo no duplica nada. Devuelve (pedidos, stock) nuevos."""
-    with conn.transaction():
-        orders = sum(
-            conn.execute(
-                "INSERT INTO orders (order_id, customer_ref, sku, quantity, amount, carrier) "
-                "VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING",
-                (o.order_id, o.customer_ref, o.sku, o.quantity, o.amount, o.carrier),
-            ).rowcount
-            for o in data.orders
-        )
-        stock = sum(
-            conn.execute(
-                "INSERT INTO stock (warehouse, sku, available) VALUES (%s, %s, %s) ON CONFLICT DO NOTHING",
-                (s.warehouse, s.sku, s.available),
-            ).rowcount
-            for s in data.stock
-        )
-    return orders, stock

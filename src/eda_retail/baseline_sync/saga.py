@@ -1,5 +1,5 @@
-"""Reglas de la saga de la base síncrona (supuesto A8): las mismas que `command/saga.py` y
-`command/steps.py` aplican con SQL sobre `plan_steps`, aquí sobre los pasos en memoria.
+"""Reglas de la saga de la base síncrona (supuesto A8): las mismas que la saga del orquestador
+(`orchestrator/rules.py`) aplica sobre `orchestrator.plan_steps`, aquí sobre los pasos en memoria.
 
 - Un paso está listo cuando está `pending` y todas sus dependencias están completadas; los
   listos se ejecutan en orden (versión de origen, `step_id`).
@@ -15,8 +15,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from eda_retail.command import handler  # noqa: F401 — carga command.steps sin import circular
-from eda_retail.command.steps import COMPENSATIONS
+from eda_retail.orchestrator.rules import COMPENSATIONS
 
 FINAL = ("completed", "cancelled", "compensated")
 _CANCELLABLE = ("pending", "requested", "failed")
