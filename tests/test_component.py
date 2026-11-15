@@ -53,3 +53,46 @@ def test_app_runs_the_relay_while_the_process_lives():
         response = client.post("/commands/Unknown", json={})
         assert response.status_code == 404
     assert relays[0].stopped
+
+
+def _capture_uvicorn(monkeypatch) -> dict:
+    """Arranque de un componente sin servidor real: guarda lo que se le pasaría a uvicorn."""
+    import uvicorn
+
+    import eda_retail.infra.outbox as outbox
+    import eda_retail.infra.tracing as tracing
+
+    calls: dict = {}
+    monkeypatch.setenv("EXECUTOR_MAX_CONCURRENCY", "3")
+    monkeypatch.setattr(uvicorn, "run", lambda app, **kwargs: calls.update(kwargs))
+    monkeypatch.setattr(tracing, "setup_tracing", lambda name, settings: None)
+    monkeypatch.setattr(outbox, "start_relay", lambda settings, schema: _Relay())
+    return calls
+
+
+@pytest.mark.parametrize("action", ["notify_customer", "file_claim", "reissue_shipment", "issue_refund"])
+def test_executor_limits_its_concurrent_operations(monkeypatch, action):
+    """Pico de incidencias: cada ejecutor limita sus operaciones simultáneas a EXECUTOR_MAX_CONCURRENCY"""
+    from eda_retail.step_executors import cli
+
+    calls = _capture_uvicorn(monkeypatch)
+    cli.main([action])
+    assert calls["limit_concurrency"] == 3
+
+
+def test_inventory_limits_its_concurrent_operations(monkeypatch):
+    """inventory ejecuta reserve_stock y release_stock: también limita sus operaciones simultáneas"""
+    from eda_retail.inventory import cli
+
+    calls = _capture_uvicorn(monkeypatch)
+    cli.main([])
+    assert calls["limit_concurrency"] == 3
+
+
+def test_systems_that_are_not_executors_keep_no_limit(monkeypatch):
+    """intake no ejecuta pasos: arranca sin límite de operaciones simultáneas, como antes"""
+    from eda_retail.intake import cli
+
+    calls = _capture_uvicorn(monkeypatch)
+    cli.main([])
+    assert calls.get("limit_concurrency") is None

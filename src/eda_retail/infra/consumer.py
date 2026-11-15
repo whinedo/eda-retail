@@ -1,7 +1,7 @@
 """Consumidor genérico de `eda.events` (design.md §6).
 
 Cada mensaje se procesa en una transacción de PostgreSQL que incluye el registro en el
-inbox y lo que escriba el handler (estado, `events`, `outbox`). El offset de Kafka se
+inbox y lo que escriba el handler (su estado y su `outbox`, en el esquema del componente). El offset de Kafka se
 confirma solo después del `COMMIT` (`enable.auto.commit=false`).
 
 Un mensaje que no cumple su esquema (o no es JSON) va a la dead letter queue en una

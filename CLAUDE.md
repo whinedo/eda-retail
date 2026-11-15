@@ -52,12 +52,13 @@ tests/           unitarios e integración
 
 ## Orden de trabajo sugerido
 
-1. `infra/`: conexión, `events` + `outbox` + relay, `inbox`, `effect_keys`, con tests de integración contra PostgreSQL y Kafka reales. Es donde más se juega la PoC.
-2. `events/` y `command/`: esquemas, command handler, concurrencia optimista.
-3. `llm/` (con cliente simulado determinista) y `agents/`.
-4. `orchestrator/` y `executors/`: plan, paso en paralelo, saga y compensaciones.
-5. `projectors/` y `queries/`.
-6. `synthetic/`, `baseline_sync/` y `experiments/` (E1 a E7).
+Para un componente nuevo o un cambio en uno existente:
+
+1. Spec y catálogo: escenarios en `specs/`, eventos en `events/catalog.py` y comandos en el catálogo de comandos.
+2. Esquema propio: una migración nueva con sus tablas, su `outbox`, `inbox` y `dead_letters` (y `effect_keys` si ejecuta efectos).
+3. Command handler (`infra/commands.py`) o consumidor (`infra/consumer.py`) con la lógica del Aggregate, con tests de integración contra PostgreSQL y Kafka reales. Los componentes con LLM se prueban con el cliente simulado.
+4. Lo que lo usa: transiciones de la saga (`orchestrator/`), proyecciones (`projectors/`, `queries/`) y front.
+5. `experiments/` si cambia algo que miden E1 a E7.
 
 ## Convenciones
 

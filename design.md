@@ -229,7 +229,9 @@ BEGIN
 COMMIT
 ```
 
-Restricciones de unicidad que refuerzan la idempotencia incluso sin `effect_keys`, cada una en la tabla de su ejecutor: `claims (incident_id, order_id)`, `refunds (incident_id, step_id)`, `customer_messages (incident_id, step_id)`. Para la variante «sin idempotencia» del experimento E1 se desactivan `INBOX_ENABLED` y `EFFECT_KEYS_ENABLED` y, en la base de pruebas, se eliminan también estas restricciones.
+Restricciones de unicidad que refuerzan la idempotencia incluso sin `effect_keys`, cada una en la tabla de su ejecutor: `claims (incident_id, order_id)`, `refunds (incident_id, step_id)`, `customer_messages (incident_id, step_id)`. Cada ejecutor (y `inventory`, que ejecuta `reserve_stock` y `release_stock`) atiende como mucho `EXECUTOR_MAX_CONCURRENCY` peticiones a la vez (uvicorn `limit_concurrency`, por defecto 5): por encima responde 503 y el dispatcher de la saga reintenta el mismo comando, con el mismo `command_id`, tras una espera (§4.4).
+
+Para la variante «sin idempotencia» del experimento E1 se desactivan `INBOX_ENABLED` y `EFFECT_KEYS_ENABLED` y, en la base de pruebas, se eliminan también estas restricciones.
 
 ## 8. Lado de consultas: vista del log y proyectores
 
@@ -337,7 +339,7 @@ Interfaz local para operar y observar la PoC (spec `web-front`): un backend Fast
 | Acceso | `eda-web` escucha solo en `127.0.0.1`; `LocalOriginGuard` rechaza Host y Origin que no sean de localhost (DNS rebinding). Lee PostgreSQL con `default_transaction_read_only=on` y solo el log de `event_log` y las vistas: nunca escribe ni lee las tablas de otros componentes. Los comandos los envía por `intake` (`scripts/notice.sh`) |
 | Eventos | `GET /api/events` pagina `event_log.events` por `seq`, con el contexto de traza y la partición y el offset de Kafka que `event_log` guarda al consumir cada mensaje. `GET /api/events/stream` es SSE: sondea cada 0,5 s tras el último `seq` enviado y reanuda con `Last-Event-ID` |
 | Analítica de pedidos | Enlace «Analítica» en la cabecera (`#/analytics`). `GET /api/analytics/orders?status=&incident_id=` lee solo `views.view_order_status` (proyector `order_status`): contadores por estado (con el filtro de incidencia, no el de estado) y los pedidos cambiados más recientemente primero, con `applied`. El front la consulta cada segundo mientras está abierta y no en pausa; la vista principal sigue montada para conservar sus filtros |
-| Emisor y destino | Emisor = `producer`. Destino = los componentes que declaran ese tipo de evento (`agents.cli.AGENTS`, `orchestrator.runner.EVENT_TYPES`), con los proyectores siempre al final |
+| Emisor y destino | Emisor = `producer`. Destino = los componentes que declaran ese tipo de evento (`interpreter.consumer.EVENT_TYPES`, `orchestrator.consumer.EVENT_TYPES`; `web/routing.py`), con los proyectores siempre al final |
 | Mapa | Topología estática (`web/topology.py`, con las invocaciones REST de la saga como aristas) más el estado de cada proceso (`pgrep -f`, mismos patrones que `run-agents.sh`) y de PostgreSQL, Kafka y Ollama, con 2 s como máximo por comprobación |
 | Comandos | `POST /api/commands` lanza `scripts/notice.sh` con una lista blanca de argumentos y sin shell; una ejecución a la vez, 15 minutos como máximo, salida por SSE. `interactive` corre en una pseudoterminal y recibe líneas por `POST /api/commands/{run_id}/input`. Al parar el backend se termina el grupo de procesos en curso |
 | Trazas | Enlace a Jaeger en la cabecera y por evento (`<JAEGER_UI_URL>/trace/<trace_id>`, con `trace_id` del contexto de traza que guarda `event_log`) |

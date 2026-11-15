@@ -12,7 +12,8 @@ from eda_retail.inventory.handler import SCHEMA, specs
 def main(argv: list[str] | None = None) -> None:
     argparse.ArgumentParser(description="Pedidos, stock y reservas (inventory)").parse_args(argv)
     settings = load_settings()
-    serve("inventory", SCHEMA, specs(settings), settings.inventory_url)
+    serve("inventory", SCHEMA, specs(settings), settings.inventory_url,
+          limit_concurrency=settings.executor_max_concurrency)  # ejecuta reserve_stock y release_stock
 
 
 if __name__ == "__main__":

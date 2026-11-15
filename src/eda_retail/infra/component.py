@@ -51,8 +51,13 @@ def build_app(
     return app
 
 
-def serve(name: str, schema: str, specs: Mapping[str, CommandSpec], url: str) -> None:
-    """Arranca el proceso del componente: trazas, relay de su outbox y su API de comandos."""
+def serve(name: str, schema: str, specs: Mapping[str, CommandSpec], url: str, *,
+          limit_concurrency: int | None = None) -> None:
+    """Arranca el proceso del componente: trazas, relay de su outbox y su API de comandos.
+
+    `limit_concurrency`: peticiones simultáneas como máximo (los ejecutores, `EXECUTOR_MAX_CONCURRENCY`;
+    spec resilience, «Pico de incidencias»). Por encima, uvicorn responde 503 y la saga reintenta el
+    comando con el mismo `command_id` (design.md §4.4)."""
     import uvicorn
 
     from eda_retail.config import load_settings
@@ -68,7 +73,7 @@ def serve(name: str, schema: str, specs: Mapping[str, CommandSpec], url: str) ->
     app = build_app(schema, specs, lambda: connect(settings.database_url),
                     start_relay=lambda: start_relay(settings, schema))
     try:
-        uvicorn.run(app, host=host, port=port, log_level="info")
+        uvicorn.run(app, host=host, port=port, log_level="info", limit_concurrency=limit_concurrency)
     finally:
         if provider is not None:
             provider.shutdown()
