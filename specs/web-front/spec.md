@@ -240,6 +240,17 @@ La vista SHALL seguir las consideraciones de UX de la vista principal: la tabla 
 - **THEN** ve las columnas restantes sin que se mueva el resto de la pantalla
 - **AND** la cabecera de la tabla sigue visible al desplazarse en vertical
 
+### Requirement: Aviso de avisos aparcados
+
+Mientras haya al menos un aviso aparcado en la vista `parked_notices` (spec `cqrs-views`, «Avisos aparcados»), el front SHALL mostrar bajo la cabecera, en la vista principal y en la de analítica, un aviso con el número de avisos aparcados y, por cada uno, sus pedidos, su incidencia (abreviada) y la hora local a la que vence su plazo, y la sugerencia de usar «seed» si no se han sembrado los pedidos. Por ejemplo: «⚠ 2 avisos aparcados esperan pedidos que aún no existen: P-1001 (I-3f2a9c1b, vence 20:13:36), P-1004 (I-77aa00bb, vence 20:14:02). Si no has sembrado los pedidos, usa «seed».» Sin avisos aparcados no se muestra. SHALL actualizarse en vivo (un cambio aparece en menos de 2 segundos) y solo lee la vista `parked_notices` (CQRS).
+
+#### Scenario: Aviso de avisos aparcados
+
+- **GIVEN** un aviso sobre P-1001 que el intérprete aparcó porque `view_orders` aún no tiene P-1001
+- **WHEN** el usuario mira la vista principal o la de analítica
+- **THEN** ve el aviso con P-1001, su incidencia y la hora a la que vence
+- **AND** en menos de 2 segundos desde que el aviso se reanuda o vence, el aviso desaparece
+
 ### Requirement: Origen de emisor y destino
 
 El emisor de un evento SHALL ser su campo `producer`. El destino SHALL derivarse de los tipos de evento que declara cada componente (design.md §3): los agentes en `eda_retail.agents.cli.AGENTS` (salvo los que ya solo atienden comandos REST, como `planner`) y el orquestador en `eda_retail.orchestrator.consumer.EVENT_TYPES`. Los proyectores leen todos los eventos y SHALL figurar siempre como último consumidor. El destino principal es el primer consumidor de esa lista y el resto se muestra en el detalle; un evento que solo leen los proyectores tiene `projectors` como destino.

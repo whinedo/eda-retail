@@ -41,6 +41,14 @@ describe("API client", () => {
     expect(fetchFn.mock.calls[1][0]).toBe("/api/analytics/orders");
   });
 
+  it("reads the parked notices", async () => {
+    const body = { notices: [], applied: {} };
+    const fetchFn = fakeFetch(200, body);
+
+    expect(await createApiClient(fetchFn).getParkedNotices()).toEqual(body);
+    expect(fetchFn).toHaveBeenCalledWith("/api/parked-notices", expect.objectContaining({ method: "GET" }));
+  });
+
   it("encodes the node id", async () => {
     const fetchFn = fakeFetch(200, {});
 

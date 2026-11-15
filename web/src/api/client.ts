@@ -94,6 +94,22 @@ export interface OrderAnalyticsQuery {
   incidentId?: string;
 }
 
+// Aviso de avisos aparcados (spec web-front): GET /api/parked-notices, solo lee parked_notices.
+export interface ParkedNotice {
+  incident_id: string;
+  order_ids: string[];
+  deadline_at: string;
+  parked_at: string;
+  last_event_id: string;
+  kafka_partition: number;
+  kafka_offset: number;
+}
+
+export interface ParkedNotices {
+  notices: ParkedNotice[];
+  applied: Record<string, number>;
+}
+
 export type CommandRequest =
   | { command: "seed" }
   | { command: "send"; example?: string; text?: string }
@@ -127,6 +143,7 @@ export interface ApiClient {
   getEvents(query?: EventsQuery): Promise<EventsPage>;
   getNode(id: string): Promise<NodeDetail>;
   getOrderAnalytics(query?: OrderAnalyticsQuery): Promise<OrderAnalytics>;
+  getParkedNotices(): Promise<ParkedNotices>;
   runCommand(request: CommandRequest): Promise<CommandRun>;
   sendInput(runId: string, line: string): Promise<void>;
 }
@@ -156,6 +173,7 @@ export function createApiClient(fetchFn: FetchFn = (input, init) => fetch(input,
     getEvents: (query = {}) => call("GET", `/api/events${eventsQueryString(query)}`),
     getNode: (id) => call("GET", `/api/nodes/${encodeURIComponent(id)}`),
     getOrderAnalytics: (query = {}) => call("GET", `/api/analytics/orders${analyticsQueryString(query)}`),
+    getParkedNotices: () => call("GET", "/api/parked-notices"),
     runCommand: (request) => call("POST", "/api/commands", request),
     sendInput: async (runId, line) => {
       await call("POST", `/api/commands/${encodeURIComponent(runId)}/input`, { line });

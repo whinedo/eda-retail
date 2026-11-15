@@ -6,6 +6,7 @@ import { Header } from "./components/Header";
 import { NodeDetailPanel } from "./components/NodeDetail";
 import { OrderAnalytics } from "./components/OrderAnalytics";
 import { PanelResizer } from "./components/PanelResizer";
+import { ParkedNoticesBanner } from "./components/ParkedNoticesBanner";
 import type { Highlight } from "./components/SystemMap";
 import { SystemMapPanel } from "./components/SystemMapPanel";
 import { type OpenStream, openEventSource } from "./useCommandRun";
@@ -14,6 +15,7 @@ import { useHealth } from "./useHealth";
 import { useLiveEvents } from "./useLiveEvents";
 import { useOrderAnalytics } from "./useOrderAnalytics";
 import { usePanelHeight } from "./usePanelHeight";
+import { useParkedNotices } from "./useParkedNotices";
 
 const ANALYTICS_HASH = "#/analytics";
 
@@ -43,6 +45,7 @@ export default function App({ client, openStream = openEventSource }: { client?:
   const panel = usePanelHeight();
   const [analyticsOpen, setAnalyticsOpen] = useAnalyticsRoute();
   const analytics = useOrderAnalytics(api, analyticsOpen);
+  const parkedNotices = useParkedNotices(api);
   const [resetKey, setResetKey] = useState(0);
   const { reset: resetEvents } = events;
   // Reinicio de la vista: solo estado del front; no se escribe nada en el backend.
@@ -68,6 +71,8 @@ export default function App({ client, openStream = openEventSource }: { client?:
         analyticsOpen={analyticsOpen}
         onAnalytics={() => setAnalyticsOpen(true)}
       />
+      {/* Visible en las dos vistas mientras el intérprete tenga avisos aparcados. */}
+      <ParkedNoticesBanner notices={parkedNotices} />
       {analyticsOpen && (
         <OrderAnalytics
           data={analytics.data}

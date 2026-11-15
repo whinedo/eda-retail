@@ -15,10 +15,13 @@ Test runners: `uv run pytest -q tests --ignore=tests/integration` (unit; integra
 
 | ID | Specs | Route | Status | Commit |
 | --- | --- | --- | --- | --- |
-| T1 | S1, S5 | inline (delegated writer of the whole feature) | pending | |
-| T2 | S2, S3, S5 | inline | pending | |
-| T3 | S4, S5 | inline | pending | |
+| T1 | S1 | inline (one delegated writer for the whole feature) | done | aa39e57 |
+| T2 | S2, S3, S5 | inline | done | 0fca349 |
+| T3 | S4, S5 | inline | done | this commit (feat(web-front): parked notices warning) |
 
 ## Log
 
 - L1 (2026-11-15) "añade el aviso de avisos aparcados en el front". Context: a `delay` notice sent from the front while `inventory.orders` was empty was parked in `interpreter.pending_notices` and, after `PENDING_NOTICE_TIMEOUT_S`, escalated with `no_valid_orders`; nothing in the front showed it.
+- L2 (2026-11-15) T1 RED: `test_catalog_has_every_event_of_readme`, `test_notice_parked_carries_order_references_and_its_deadline` and `test_parked_notice_publishes_notice_parked_with_its_orders_and_deadline` failed (3 failed). GREEN: catalog `NoticeParked` v1; the handler inserts `pending_notices ... RETURNING deadline_at` and appends `NoticeParked` to the same `Accepted` events (same transaction/outbox). Integration interpreter tests updated: parking/resume/expiry outboxes now include `NoticeParked` (not run locally).
+- L3 (2026-11-15) T2 RED: `test_rebuild_fingerprint` KeyError on `parked_notices`, `test_projector_cli` list, `tests/test_parked_notices.py` import error. GREEN: migration 0020, projector, registry, `get_parked_notices`, `GET /api/parked-notices`. Integration: `tests/integration/test_parked_notices_view.py` (scenarios «Aviso aparcado visible/reanudado/vencido», duplicate, endpoint order) and `test_parked_notices_view_migration_reverts` (CI only).
+- L4 (2026-11-15) T3 RED: vitest 3 files failed (client `getParkedNotices`, `ParkedNoticesBanner` missing, App scenario). GREEN: `useParkedNotices` (1 s polling, both views) + `ParkedNoticesBanner`, grid row `notice` under the header. Unit 433 passed, vitest 99 passed, tsc ok, ruff ok, pre-commit (SKIP=pytest) ok.

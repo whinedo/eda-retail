@@ -2,7 +2,16 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import App from "./App";
-import type { ApiClient, EventRow, Health, NodeDetail, OrderAnalytics, OrderStatus, OrderStatusRow } from "./api/client";
+import type {
+  ApiClient,
+  EventRow,
+  Health,
+  NodeDetail,
+  OrderAnalytics,
+  OrderStatus,
+  OrderStatusRow,
+  ParkedNotice,
+} from "./api/client";
 import type { StreamLike } from "./useCommandRun";
 
 const HEALTH: Health = {
@@ -41,6 +50,7 @@ function client(overrides: Partial<ApiClient> = {}): ApiClient {
     getEvents: vi.fn(async () => ({ events: [], next_before_seq: null })),
     getNode: vi.fn(async () => Promise.reject(new Error("sin detalle en este test"))),
     getOrderAnalytics: vi.fn(async () => ({ counts: EMPTY_COUNTS, orders: [], applied: {} })),
+    getParkedNotices: vi.fn(async () => ({ notices: [], applied: {} })),
     runCommand: vi.fn(),
     sendInput: vi.fn(),
     ...overrides,
@@ -411,5 +421,50 @@ describe("Vista de analítica de pedidos en la pantalla", () => {
     render(<App client={api} openStream={openStream} />);
     await screen.findByText("Kafka: healthy");
     expect(api.getOrderAnalytics).not.toHaveBeenCalled();
+  });
+});
+
+describe("Aviso de avisos aparcados en la pantalla", () => {
+  beforeEach(() => {
+    window.location.hash = "#/";
+  });
+
+  const parked = (incident_id: string, order_ids: string[], deadline_at: string): ParkedNotice => ({
+    incident_id,
+    order_ids,
+    deadline_at,
+    parked_at: "2026-11-15T20:08:36+00:00",
+    last_event_id: "d282ef26-1a2b-4c3d-9e8f-001122334455",
+    kafka_partition: 0,
+    kafka_offset: 3,
+  });
+
+  it("Aviso de avisos aparcados: visible en la vista principal y en la analítica mientras haya alguno", async () => {
+    let notices = [parked("I-3f2a9c1b-0000-5000-8000-000000000000", ["P-1001"], "2026-11-15T20:13:36+00:00")];
+    const api = client({ getParkedNotices: vi.fn(async () => ({ notices, applied: { "0": 3 } })) });
+    const user = userEvent.setup();
+    render(<App client={api} openStream={openStream} />);
+
+    const banner = await screen.findByRole("status", { name: "Avisos aparcados" });
+    expect(banner).toHaveTextContent("1 aviso aparcado espera pedidos que aún no existen");
+    expect(banner).toHaveTextContent("P-1001");
+    expect(banner).toHaveTextContent("I-3f2a9c1b");
+    expect(banner).toHaveTextContent("usa «seed»");
+
+    await user.click(screen.getByRole("link", { name: "Analítica" }));
+    expect(screen.getByRole("region", { name: "Estado de los pedidos" })).toBeInTheDocument();
+    expect(screen.getByRole("status", { name: "Avisos aparcados" })).toHaveTextContent("P-1001");
+
+    notices = [];
+    await waitFor(() => expect(screen.queryByRole("status", { name: "Avisos aparcados" })).not.toBeInTheDocument(), {
+      timeout: 2000,
+    });
+  });
+
+  it("sin avisos aparcados no se muestra el aviso", async () => {
+    const api = client();
+    render(<App client={api} openStream={openStream} />);
+    await waitFor(() => expect(api.getParkedNotices).toHaveBeenCalled());
+    expect(screen.queryByRole("status", { name: "Avisos aparcados" })).not.toBeInTheDocument();
   });
 });
