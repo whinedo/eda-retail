@@ -117,6 +117,20 @@ class Settings:
     llm_price_out_per_1k: Decimal = field(default_factory=lambda: _env_decimal("LLM_PRICE_OUT_PER_1K"))
     effect_cost_claim: Decimal = field(default_factory=lambda: _env_decimal("EFFECT_COST_CLAIM"))
     effect_cost_reissue: Decimal = field(default_factory=lambda: _env_decimal("EFFECT_COST_REISSUE"))
+    # Versión de la PoC: 1 (la primera) o 2 (con MCP y A2A, design.md §15). `load_settings` la valida.
+    poc_version: int = field(default_factory=lambda: int(os.environ.get("POC_VERSION", "1")))
+    # Agente del transportista (A2A, spec a2a-carrier); solo se usa con POC_VERSION=2. CARRIER_AGENT_URL es
+    # la URL que publica su Agent Card y que consulta el planificador; CARRIER_AGENT_PORT, donde escucha en
+    # 127.0.0.1. A2A_TIMEOUT_S es el plazo total de una consulta y A2A_MAX_ROUNDS el máximo de rondas
+    # input-required; CARRIER_AGENT_SEED, la semilla de sus reglas deterministas.
+    carrier_agent_url: str = field(
+        default_factory=lambda: os.environ.get("CARRIER_AGENT_URL", "http://127.0.0.1:8130")
+    )
+    carrier_agent_port: int = field(default_factory=lambda: int(os.environ.get("CARRIER_AGENT_PORT", "8130")))
+    a2a_carrier_token: str = field(default_factory=lambda: os.environ.get("A2A_CARRIER_TOKEN", ""))
+    a2a_timeout_s: float = field(default_factory=lambda: float(os.environ.get("A2A_TIMEOUT_S", "5")))
+    a2a_max_rounds: int = field(default_factory=lambda: int(os.environ.get("A2A_MAX_ROUNDS", "2")))
+    carrier_agent_seed: int = field(default_factory=lambda: int(os.environ.get("CARRIER_AGENT_SEED", "42")))
 
 
 def load_env_file(path: Path, environ: MutableMapping[str, str] = os.environ) -> list[str]:
@@ -141,6 +155,12 @@ def load_env_file(path: Path, environ: MutableMapping[str, str] = os.environ) ->
     return loaded
 
 
+POC_VERSIONS = ("1", "2")
+
+
 def load_settings() -> Settings:
     load_env_file(Path.cwd() / ENV_FILE)
+    raw = os.environ.get("POC_VERSION", "1").strip()
+    if raw not in POC_VERSIONS:
+        raise ValueError(f"POC_VERSION debe ser 1 o 2, no {raw!r}")
     return Settings()
