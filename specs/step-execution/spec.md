@@ -71,3 +71,10 @@ El texto del aviso al cliente y de la reclamación, redactado por el agente reda
 - **WHEN** la validación lo revisa
 - **THEN** el ejecutor no lo envía
 - **AND** publica `StepFailed` con `error` `invalid_draft` y `retryable` verdadero
+
+#### Scenario: Causa del aviso en el comando
+
+- **GIVEN** un `ExecuteStep` de `notify_customer` que invoca la saga
+- **WHEN** el ejecutor pide el borrador al redactor
+- **THEN** usa la causa y el retraso que trae el comando y el pedido de `view_orders`
+- **AND** no lee las tablas del orquestador ni de `inventory`

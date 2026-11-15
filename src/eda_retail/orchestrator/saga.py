@@ -146,8 +146,8 @@ class Transition:
         if step["compensates"]:
             self.set_step(step["compensates"], "compensating")
         payload = rules.step_request(self.incident_id, self.incident["plan_version"], step)
-        self.enqueue("ExecuteStep", step_target(step["action"]), payload, kind="execute_step",
-                     timeout_s=self.settings.saga_step_timeout_s, step_id=step["step_id"])
+        self.enqueue("ExecuteStep", step_target(step["action"]), rules.execute_step_command(payload, self.incident),
+                     kind="execute_step", timeout_s=self.settings.saga_step_timeout_s, step_id=step["step_id"])
         self.emit("StepRequested", payload)
 
     def advance(self) -> None:

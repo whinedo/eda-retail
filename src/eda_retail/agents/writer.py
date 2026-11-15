@@ -51,8 +51,8 @@ class DraftRequest:
     kind: DraftKind
     incident_id: str
     order_id: str
-    sku: str
-    quantity: int
+    sku: str | None  # None cuando el ejecutor solo conoce view_orders (sin SKU ni cantidad)
+    quantity: int | None
     cause: str
     estimated_delay_hours: int
     authorized_amounts: tuple[Decimal, ...] = ()
@@ -102,7 +102,8 @@ def _prompt(r: DraftRequest) -> str:
     what = ("un aviso al cliente sobre su pedido" if r.kind == "customer_notice"
             else "una reclamación al transportista")
     amounts = ", ".join(f"{a} EUR" for a in r.authorized_amounts) or "ninguno"
-    return (f"Redacta {what}.\nPedido: {r.order_id} ({r.quantity} x {r.sku}).\n"
+    item = f" ({r.quantity} x {r.sku})" if r.sku is not None else ""
+    return (f"Redacta {what}.\nPedido: {r.order_id}{item}.\n"
             f"Causa: {r.cause}. Retraso estimado: {r.estimated_delay_hours} h.\n"
             f"Importes que puedes mencionar: {amounts}.")
 

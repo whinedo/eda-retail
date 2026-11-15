@@ -1,0 +1,44 @@
+"""Ejecutor de `notify_customer` (T9): el aviso al cliente, redactado por el LLM, en `customer_messages`."""
+
+from __future__ import annotations
+
+from typing import Any
+
+import psycopg
+
+from eda_retail.infra.commands import CommandEnvelope
+from eda_retail.llm.generation import LlmCall
+from eda_retail.step_executors.drafted import Drafted
+from eda_retail.step_executors.runtime import ExecuteStep, Prepared
+
+SCHEMA = "executor_notify_customer"
+
+
+class NotifyCustomer(Drafted):
+    action = "notify_customer"
+    kind = "customer_notice"
+    schema = SCHEMA
+    effect_event = "CustomerNotified"
+
+    def record(self, conn: psycopg.Connection, step: ExecuteStep,
+               prepared: Prepared) -> tuple[dict[str, Any], dict[str, Any]]:
+        order_id, message_id = step.params["order_id"], prepared.external_id
+        conn.execute(
+            "INSERT INTO executor_notify_customer.customer_messages (message_id, incident_id, order_id, step_id, text)"
+            " VALUES (%s, %s, %s, %s, %s)",
+            (message_id, step.incident_id, order_id, step.step_id, prepared.text),
+        )
+        return {"message_id": message_id}, {"order_id": order_id, "message_id": message_id}
+
+    def record_calls(self, conn: psycopg.Connection, command: CommandEnvelope, calls: list[LlmCall]) -> None:
+        record_llm_calls(conn, command, calls)
+
+
+def record_llm_calls(conn: psycopg.Connection, command: CommandEnvelope, calls: list[LlmCall]) -> None:
+    for call in calls:
+        conn.execute(
+            "INSERT INTO executor_notify_customer.llm_calls (incident_id, command_id, model, tokens_in, tokens_out,"
+            " latency_ms, validation_passed, attempt) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+            (command.correlation_id, command.command_id, call.model, call.tokens_in, call.tokens_out,
+             call.latency_ms, call.validation_passed, call.attempt),
+        )

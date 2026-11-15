@@ -53,7 +53,7 @@ Por Kafka **solo viajan eventos**: el topic `eda.events`, con clave `incident_id
 | `event_log` (consulta) | — | todos | — (mantiene la vista del log para el front) | Código |
 | `projectors` (consulta) | — | los que necesita cada proyección | — (mantienen sus proyecciones) | Código |
 
-Cada comando lleva lo que su destinatario necesita para ejecutarlo: `CreatePlan`, la incidencia (pedidos, causa, gravedad); `RevisePlan`, el plan vigente, el paso fallido y las revisiones hechas; `ExecuteStep`, la acción, el pedido, el importe y la `idempotency_key`. Así nadie consulta el estado del orquestador.
+Cada comando lleva lo que su destinatario necesita para ejecutarlo: `CreatePlan`, la incidencia (pedidos, causa, gravedad); `RevisePlan`, el plan vigente, el paso fallido y las revisiones hechas; `ExecuteStep`, la acción, el pedido, el importe y la `idempotency_key` y, para `notify_customer` y `file_claim`, la causa y el retraso que necesita el redactor. Así nadie consulta el estado del orquestador.
 
 ## 4. Flujo de escritura: un command handler por componente
 

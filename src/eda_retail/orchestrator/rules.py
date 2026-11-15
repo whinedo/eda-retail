@@ -99,6 +99,18 @@ def step_request(incident_id: str, plan_version: int, step: Step) -> dict[str, A
     }
 
 
+# Acciones cuyo texto redacta el LLM: su ejecutor necesita la causa y el retraso de la incidencia.
+DRAFTED_ACTIONS = frozenset({"notify_customer", "file_claim"})
+
+
+def execute_step_command(request: dict[str, Any], incident: dict[str, Any]) -> dict[str, Any]:
+    """Payload del comando `ExecuteStep`: el de `StepRequested` y, para las acciones redactadas, la causa y
+    el retraso de la incidencia, para que el ejecutor no lea el estado del orquestador (design.md §3)."""
+    if request["action"] not in DRAFTED_ACTIONS:
+        return request
+    return {**request, "cause": incident["cause"], "estimated_delay_hours": incident["estimated_delay_hours"]}
+
+
 def on_failure(step: Step, *, retryable: bool, revisions: int, max_revisions: int) -> tuple[str, str | None]:
     """Qué hace la saga con un paso fallido: ("escalate", motivo) o ("revise", None)."""
     if step["compensates"]:
