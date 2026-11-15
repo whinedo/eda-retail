@@ -12,6 +12,9 @@ from dataclasses import replace
 
 from eda_retail.config import Settings
 from eda_retail.llm.fake import FakeLlmClient
+from eda_retail.mail_server.directory import address_for
+from eda_retail.mail_server.server import build_server
+from eda_retail.mail_server.store import MemoryMailStore
 from eda_retail.rules import BusinessRules
 from eda_retail.step_executors.component import specs
 from eda_retail.step_executors.services import FakeService
@@ -31,11 +34,11 @@ def _order(conn, amount: str = "40.00") -> str:
     return order
 
 
-def _api(database_url, action, *, llm=None, service=None, attempts=3):
+def _api(database_url, action, *, llm=None, service=None, attempts=3, version=1, mail_server=None):
     settings = replace(Settings(), database_url=database_url, step_max_attempts=attempts,
-                       step_backoff_base_seconds=0.0, step_backoff_max_seconds=0.0)
+                       step_backoff_base_seconds=0.0, step_backoff_max_seconds=0.0, poc_version=version)
     return client(database_url, f"executor_{action}",
-                  specs(settings, action, llm or FakeLlmClient([]), RULES, service=service))
+                  specs(settings, action, llm or FakeLlmClient([]), RULES, service=service, mail_server=mail_server))
 
 
 def _step(action, order, incident, *, key=None, amount=None, context=True, step_id="S1") -> dict:
@@ -247,3 +250,44 @@ def test_executor_restarted_mid_plan_runs_only_the_pending_steps(database_url, c
     completed = [e["payload"]["step_id"] for e in _events(conn, "reissue_shipment", incident)
                  if e["event_type"] == "StepCompleted"]
     assert completed == ["S1", "S2", "S3", "S4"]
+
+
+# --- Segunda versión: el correo por el servidor MCP (spec mcp-mail) -----------------------------
+
+
+def _mail_store() -> MemoryMailStore:
+    return MemoryMailStore({"CUST-1": address_for("CUST-1")})  # el cliente de los pedidos de _order
+
+
+def test_v2_notification_step_completed(database_url, conn):
+    """Paso de notificación completado (POC_VERSION=2): send_email con la clave del paso y CustomerNotified con
+    el message_id del servidor, sin datos personales"""
+    order, incident, key = _order(conn), _incident(), uuid.uuid4().hex
+    store = _mail_store()
+    api = _api(database_url, "notify_customer", llm=FakeLlmClient([{"text": NOTICE}]), version=2,
+               mail_server=build_server(store))
+
+    response = _execute(api, _step("notify_customer", order, incident, key=key))
+
+    assert response.status_code == 202
+    [mail] = store.mailbox
+    assert (mail.idempotency_key, mail.customer_ref) == (key, "CUST-1")
+    events = _events(conn, "notify_customer", incident)
+    assert [e["event_type"] for e in events] == ["LlmCallRecorded", "CustomerNotified", "StepCompleted"]
+    assert events[1]["payload"] == {"order_id": order, "message_id": mail.message_id}
+    assert address_for("CUST-1") not in str([e["payload"] for e in events])
+
+
+def test_v2_too_many_mails_for_an_incident(database_url, conn):
+    """Demasiados correos para una incidencia (POC_VERSION=2, MCP_MAX_EMAILS_PER_INCIDENT=3 contados en
+    customer_messages)"""
+    order, incident = _order(conn), _incident()
+    store = _mail_store()
+    api = _api(database_url, "notify_customer", llm=FakeLlmClient([{"text": NOTICE}] * 4), version=2,
+               mail_server=build_server(store))
+    for n in range(4):
+        _execute(api, _step("notify_customer", order, incident, step_id=f"S{n}"))
+
+    assert len(store.mailbox) == 3
+    failed = [e for e in _events(conn, "notify_customer", incident) if e["event_type"] == "StepFailed"]
+    assert [(e["payload"]["error"], e["payload"]["retryable"]) for e in failed] == [("mail_limit_exceeded", False)]

@@ -31,6 +31,11 @@ Modos de idempotencia (E1, supuesto A3):
   deduplicación de los servicios; el resto conserva su inbox. Es lo que mide H1.
 - `none`: todo desactivado.
 Un duplicado es una ejecución externa repetida del mismo paso o una reserva de más.
+
+Versión 2 (`POC_VERSION=2`): `notify_customer` envía el correo con su cliente MCP a un servidor de correo en
+proceso (`mail_server_for`), sin el proceso `eda-mail-server`. Su buzón no deduplica: genera el `message_id`
+con el servicio simulado `mail`, que conserva la semántica de E1 (clave reconocida o no) y cuenta las
+ejecuciones. Con la versión 1, el ejecutor llama al servicio simulado directamente, como antes.
 """
 
 from __future__ import annotations
@@ -48,6 +53,7 @@ from typing import Any, Self
 
 import psycopg
 from confluent_kafka.admin import AdminClient, NewTopic
+from mcp.server.mcpserver import MCPServer
 
 from eda_retail.config import Settings
 from eda_retail.event_log import cli as event_log
@@ -68,6 +74,9 @@ from eda_retail.intake import handler as intake
 from eda_retail.interpreter import consumer as interpreter
 from eda_retail.inventory import handler as inventory
 from eda_retail.llm.generation import LlmClient
+from eda_retail.mail_server.directory import synthetic_directory
+from eda_retail.mail_server.server import build_server as build_mail_server
+from eda_retail.mail_server.store import MemoryMailStore
 from eda_retail.orchestrator import consumer as orchestrator
 from eda_retail.orchestrator.dispatcher import dispatch_once, expire_once
 from eda_retail.orchestrator.saga import target_url
@@ -128,6 +137,13 @@ def service_duplicates(services: Services) -> Counter[str]:
     for action, attr in SERVICE_OF.items():
         out[action] += sum(n - 1 for n in getattr(services, attr).executions.values() if n > 1)
     return out
+
+
+def mail_server_for(services: Services, poc_version: int) -> MCPServer | None:
+    """El servidor de correo MCP en proceso de la versión 2, respaldado por el servicio simulado `mail`."""
+    if poc_version != 2:
+        return None
+    return build_mail_server(MemoryMailStore(synthetic_directory(), new_id=services.mail.call, dedup=False))
 
 
 def effect_duplicates(conn: psycopg.Connection, services: Services) -> dict[str, int]:
@@ -383,9 +399,11 @@ class Harness:
             "inventory": Target(inventory.SCHEMA, dict(inventory.specs(effects), ExecuteStep=failing(
                 inventory.specs(effects)["ExecuteStep"], inventory.SCHEMA, plan)), mode == "full"),
         }
+        mail_server = mail_server_for(self.services, s.poc_version)
         for action in EXECUTOR_ACTIONS:
             spec = step_executors.specs(effects, action, self.llm, self.rules,
-                                        service=getattr(self.services, SERVICE_OF[action]))["ExecuteStep"]
+                                        service=getattr(self.services, SERVICE_OF[action]),
+                                        mail_server=mail_server)["ExecuteStep"]
             targets[f"executor_{action}"] = Target(f"executor_{action}",
                                                    {"ExecuteStep": failing(spec, f"executor-{action}", plan)},
                                                    mode == "full")

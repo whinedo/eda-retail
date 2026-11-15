@@ -24,7 +24,7 @@ class Drafted:
     kind: DraftKind
     needs_context = True
 
-    def __init__(self, writer: Writer, service: FakeService, *, order_known: Callable[[str], bool],
+    def __init__(self, writer: Writer, service: FakeService | None, *, order_known: Callable[[str], bool],
                  budget: Callable[[str], Budget]) -> None:
         self._writer = writer
         self._service = service
@@ -46,4 +46,5 @@ class Drafted:
         return Preparation(draft.text, draft.calls)
 
     def call(self, step: ExecuteStep, preparation: Preparation) -> str:
+        assert self._service is not None, "una acción redactada sin servicio define su propio call"
         return self._service.call(step.idempotency_key)
