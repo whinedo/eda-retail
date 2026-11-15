@@ -96,7 +96,7 @@ Cada sistema ve el estado de los demás a través de eventos y proyecciones, as�
 | Presupuesto atrasado | Dos agentes llaman al LLM a la vez para la misma incidencia | El límite se comprueba con la proyección `cost_per_incident`; el exceso queda acotado a las llamadas en curso, se registra en `LlmCallRecorded` y la siguiente comprobación lo ve. Es una cota blanda documentada, no una garantía fuerte |
 | Vista atrasada respecto a una acción del usuario | El front envía un aviso y la vista `incident_status` aún no lo refleja | Cada consulta devuelve la posición aplicada de la vista; el front y `eda-notice interactive` muestran «actualizando» hasta que la posición incluye el evento esperado, y nunca leen el estado del dueño para «saltarse» el retraso |
 | Decisión con información vieja | El replanificador revisa un plan que el orquestador ya ha cerrado | El dueño (orquestador) valida al consumir `PlanRevised`: si la incidencia está cerrada o la versión no encaja, lo descarta y lo deja en el log como obsoleto |
-| Un sistema no responde a un comando | `inventory` está caído cuando la saga invoca `ExecuteStep` de `reserve_stock` | El despachador reintenta la invocación con el mismo `command_id` (sección 4.4), y la saga guarda un plazo por cada comando. Si vence antes del evento de resultado, sigue la ruta de fallo de la saga (sección 4.2): revisión del plan o escalado, con las compensaciones que correspondan. Lo que llegue después es obsoleto |
+| Un sistema no responde a un comando | `inventory` está caído cuando la saga invoca `ExecuteStep` de `reserve_stock` | El dispatcher reintenta la invocación con el mismo `command_id` (sección 4.4), y la saga guarda un plazo por cada comando. Si vence antes del evento de resultado, sigue la ruta de fallo de la saga (sección 4.2): revisión del plan o escalado, con las compensaciones que correspondan. Lo que llegue después es obsoleto |
 
 Regla general: **quien decide sobre un estado es su dueño**, al consumir el evento. Los demás proponen con lo que saben (lo que trae el comando y lo que consultan en las proyecciones) y aceptan que su propuesta pueda llegar tarde. Ningún sistema espera: aparca lo que no puede hacer aún, lo reanuda al consumir el evento que le faltaba y, si vence su plazo, escala.
 
@@ -131,7 +131,7 @@ La saga es **reactiva y orquestada**: es un *process manager* dentro del orquest
 
 **Escalado.** La incidencia pasa a `escalated`, la saga cancela los pasos pendientes (`StepCancelled`), pide la compensación de cada `reserve_stock` completado cuyo dependiente no se ha completado y publica `IncidentEscalated` con el motivo. Nunca emite `issue_refund`. Un escalado por `compensation_failed` no vuelve a compensar.
 
-**Plazos.** Cada comando que invoca la saga lleva un plazo, guardado en `orchestrator.deadlines` en la misma transacción. Un hilo del orquestador revisa sus propios plazos vencidos (es su tabla, como el relay con su outbox) y trata cada uno como un mensaje más. El plazo de un `ExecuteStep` cubre los reintentos del despachador y los del ejecutor. Configuración: `SAGA_STEP_TIMEOUT_S`, `SAGA_PLAN_TIMEOUT_S` y, para los avisos aparcados del intérprete, `PENDING_NOTICE_TIMEOUT_S`. Una compensación pedida por un plazo vencido es idempotente: si el efecto original nunca ocurrió, no hace nada.
+**Plazos.** Cada comando que invoca la saga lleva un plazo, guardado en `orchestrator.deadlines` en la misma transacción. Un hilo del orquestador revisa sus propios plazos vencidos (es su tabla, como el relay con su outbox) y trata cada uno como un mensaje más. El plazo de un `ExecuteStep` cubre los reintentos del dispatcher y los del ejecutor. Configuración: `SAGA_STEP_TIMEOUT_S`, `SAGA_PLAN_TIMEOUT_S` y, para los avisos aparcados del intérprete, `PENDING_NOTICE_TIMEOUT_S`. Una compensación pedida por un plazo vencido es idempotente: si el efecto original nunca ocurrió, no hace nada.
 
 Los reintentos de un paso con fallo transitorio los hace el propio ejecutor (spec `resilience`); a la saga solo le llega el resultado final.
 
@@ -148,7 +148,7 @@ BEGIN
   INSERT INTO orchestrator.outbox (eventos de la saga, si los hay)
 COMMIT
 
-despachador (hilo del orquestador), sobre su propia tabla:
+dispatcher (hilo del orquestador), sobre su propia tabla:
 loop:
   leer command_outbox pendientes (FOR UPDATE SKIP LOCKED)
   POST <URL del target>/commands/<command_type>   (mismo command_id en cada intento)
@@ -167,7 +167,7 @@ COMMIT
 responder 202 (aceptado) o 422 (rechazado)
 ```
 
-- **Todo comando es idempotente.** El despachador reutiliza el `command_id` en cada reintento y el handler lo deduplica con su inbox en la misma transacción que su estado y sus eventos: un comando repetido devuelve la misma respuesta sin repetir estado, eventos ni efectos.
+- **Todo comando es idempotente.** El dispatcher reutiliza el `command_id` en cada reintento y el handler lo deduplica con su inbox en la misma transacción que su estado y sus eventos: un comando repetido devuelve la misma respuesta sin repetir estado, eventos ni efectos.
 - **Ni perdidos ni duplicados.** El `command_outbox` de la saga garantiza que cada comando se invoca al menos una vez aunque el orquestador caiga tras el `COMMIT`; el inbox del sistema garantiza que se aplica una sola vez. Es el mismo par outbox/inbox que en los eventos, con transporte síncrono.
 - **Un comando aceptado no cambia el estado del paso.** Lo cambia el evento de resultado (`StepCompleted`, `PlanCreated`…). Si el handler llama al LLM, lo hace antes de su transacción; una petición repetida mientras la primera está en curso puede repetir la llamada al LLM (cuesta tokens), pero el inbox impide aplicarla dos veces.
 - Configuración: la URL base de cada sistema (`<SISTEMA>_URL`, p. ej. `PLANNER_URL`) y `COMMAND_HTTP_TIMEOUT_S`.
@@ -320,7 +320,7 @@ Trazas distribuidas con OpenTelemetry (OpenTracing está archivado y se fusionó
 | Asíncrono | Escritura del evento → relay → Kafka → consumidor → eventos derivados, en una sola traza por incidencia | Span `<event_type> create` al escribir; su contexto W3C (`traceparent`) se guarda en el outbox del componente (`trace_context`); el relay abre `<event_type> publish` como hijo y lo pone en las cabeceras del mensaje; el consumidor abre `<event_type> process` como hijo de esas cabeceras |
 | Síncrono | Cada sentencia SQL y las operaciones en proceso | Instrumentación de psycopg en `infra/db.connect` y decorador `@traced` |
 
-- En los comandos, el despachador pone `traceparent` en la cabecera HTTP y el handler abre `<command_type> handle` como hijo.
+- En los comandos, el dispatcher pone `traceparent` en la cabecera HTTP y el handler abre `<command_type> handle` como hijo.
 - El contexto va en el outbox de cada componente y en las cabeceras del mensaje; `event_log` lo guarda junto al evento, y la republicación (`--replay-from`) conserva la traza original.
 - Atributos de cada span: `eda.incident_id` (= `correlation_id`), `eda.event_id`, `eda.causation_id`, `eda.event_type`, `eda.producer`; los de consumo añaden `eda.outcome` (`processed`, `duplicate`) y los datos de Kafka. En Jaeger se busca una incidencia con el tag `eda.incident_id`.
 - Las sentencias SQL sin operación en curso (el polling del relay) no se trazan: el sampler descarta los spans CLIENT sin padre.

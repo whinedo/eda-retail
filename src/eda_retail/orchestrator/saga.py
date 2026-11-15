@@ -1,7 +1,7 @@
 """Transiciones de la saga del orquestador (design.md §4.2, spec incident-planning "Saga reactiva").
 
 Cada transición corre en una transacción que bloquea la fila de la incidencia (`FOR UPDATE`), así
-que el consumidor, el despachador y el hilo de plazos nunca deciden a la vez sobre la misma
+que el consumidor, el dispatcher y el hilo de plazos nunca deciden a la vez sobre la misma
 incidencia. En esa transacción escribe sus tablas (`orchestrator.incidents`, `plan_steps`), deja en
 `command_outbox` los comandos que invocará por REST con su plazo en `deadlines`, y en su outbox los
 eventos: `StepRequested` (uno por `ExecuteStep`, un evento de notificación para la auditoría y el

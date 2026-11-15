@@ -1,7 +1,7 @@
 """Saga del orquestador contra PostgreSQL real (T7): sus tablas, su command_outbox, sus plazos y su outbox.
 
 Los eventos se entregan llamando a la transición de la saga sin Kafka, en una transacción como la del
-inbox. El despachador usa un `invoke` falso en lugar de HTTP.
+inbox. El dispatcher usa un `invoke` falso en lugar de HTTP.
 """
 
 from __future__ import annotations
@@ -325,7 +325,7 @@ class _Invoke:
 
 def _drain(conn, settings, invoke, incident) -> None:
     """Despacha los comandos pendientes de esta incidencia. La base es compartida entre pruebas: los
-    comandos pendientes de otras incidencias se aplazan para que el despachador no los tome."""
+    comandos pendientes de otras incidencias se aplazan para que el dispatcher no los tome."""
     with conn.transaction():
         conn.execute("UPDATE orchestrator.command_outbox SET next_attempt_at = 'infinity'"
                      " WHERE status = 'pending' AND incident_id <> %s", (incident,))

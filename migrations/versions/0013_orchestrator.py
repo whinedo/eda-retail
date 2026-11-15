@@ -4,7 +4,7 @@
   la versión vigente del plan, las revisiones hechas y los datos que lleva `CreatePlan`.
 - `orchestrator.plan_steps`: los pasos del plan y su estado (único dueño: el orquestador).
 - `orchestrator.command_outbox`: los comandos que la saga invocará por REST, con su destino; el
-  despachador los entrega con el mismo `command_id` hasta que el sistema responde.
+  dispatcher los entrega con el mismo `command_id` hasta que el sistema responde.
 - `orchestrator.deadlines`: el plazo durable de cada comando invocado.
 
 Sin claves foráneas hacia otros esquemas. Es aditiva: las tablas compartidas se quedan hasta T10.

@@ -1,4 +1,4 @@
-"""Despachador de comandos y plazos de la saga (design.md §4.2 y §4.4, spec event-backbone
+"""Dispatcher de comandos y plazos de la saga (design.md §4.2 y §4.4, spec event-backbone
 "Invocación de comandos").
 
 - `dispatch_once`: toma un comando `pending` de `orchestrator.command_outbox` cuyo intento toca, lo
