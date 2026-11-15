@@ -1,9 +1,8 @@
-"""Frontera con el código anterior (T10a): los componentes nuevos no importan el modelo compartido.
+"""El modelo compartido ya no existe (T10b): ni sus paquetes ni importaciones suyas.
 
 El handler compartido (`command`), los agentes (`agents`), los ejecutores (`executors`), el runner de la
-orquestación y el relay de la tabla `outbox` pública solo los usan los experimentos y la base síncrona
-hasta T11; T10b los borra. Cualquier otro módulo de `src/eda_retail` debe importar sus reglas, prompts,
-errores y servicios de su sitio nuevo.
+orquestación, el relay de la tabla `outbox` pública y la siembra anterior (`synthetic.sample`) se
+borraron; la migración 0017 borra sus tablas.
 """
 
 from __future__ import annotations
@@ -12,10 +11,9 @@ import ast
 import pathlib
 
 SRC = pathlib.Path(__file__).parents[1] / "src" / "eda_retail"
+TESTS = pathlib.Path(__file__).parent
 LEGACY = ("eda_retail.command", "eda_retail.agents", "eda_retail.executors", "eda_retail.orchestrator.runner",
           "eda_retail.infra.relay", "eda_retail.synthetic.sample")
-# Módulos del modelo compartido (los borra T10b); desde T11 los experimentos tampoco los usan.
-ALLOWED = ("command/", "agents/", "executors/", "orchestrator/runner.py", "infra/relay.py", "synthetic/sample.py")
 
 
 def _imports(path: pathlib.Path) -> set[str]:
@@ -28,13 +26,16 @@ def _imports(path: pathlib.Path) -> set[str]:
     return found
 
 
-def test_new_modules_do_not_import_the_legacy_model():
+def test_legacy_modules_are_gone():
+    for module in LEGACY:
+        relative = module.removeprefix("eda_retail.").replace(".", "/")
+        assert not list((SRC / relative).rglob("*.py")) and not (SRC / f"{relative}.py").exists(), module
+
+
+def test_nothing_imports_the_legacy_model():
     offenders = {}
-    for path in sorted(SRC.rglob("*.py")):
-        relative = path.relative_to(SRC).as_posix()
-        if relative.startswith(ALLOWED):
-            continue
+    for path in sorted([*SRC.rglob("*.py"), *TESTS.rglob("*.py")]):
         legacy = sorted(m for m in _imports(path) if any(m == p or m.startswith(p + ".") for p in LEGACY))
         if legacy:
-            offenders[relative] = legacy
+            offenders[str(path)] = legacy
     assert offenders == {}

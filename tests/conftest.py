@@ -1,7 +1,7 @@
 """Fixtures de integración: PostgreSQL y Kafka reales de `docker compose`.
 
-La tabla `events` no admite TRUNCATE, así que cada sesión de tests crea una base
-`eda_test` nueva con las migraciones de Alembic (que parten de `db/init/001_schema.sql`). Cada test usa un topic de
+El log `event_log.events` no admite TRUNCATE, así que cada sesión de tests crea una base
+`eda_test` nueva con las migraciones de Alembic (parten de `db/init/001_schema.sql` y 0017 borra ese modelo). Cada test usa un topic de
 Kafka propio para no ver mensajes de otros tests.
 """
 

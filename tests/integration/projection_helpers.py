@@ -2,8 +2,7 @@
 
 `publish` publica en el topic del test eventos del catálogo (`History` construye los de una
 incidencia), como hacen los relays de los componentes. `catch_up` pone al día un proyector
-consumiendo ese topic con su consumidor posicionado. `publish_log` y `project` leen el log
-compartido `events` del modelo anterior y desaparecen con él (T10b).
+consumiendo ese topic con su consumidor posicionado.
 """
 
 from __future__ import annotations
@@ -18,7 +17,7 @@ from eda_retail.infra.effect_keys import compute_idempotency_key
 from eda_retail.infra.kafka import make_producer
 from eda_retail.infra.outbox import encode_event
 from eda_retail.infra.positions import Position
-from eda_retail.projectors.base import consumer_for, load_event
+from eda_retail.projectors.base import consumer_for
 from eda_retail.projectors.registry import PROJECTORS
 
 _published: dict[str, set[uuid.UUID]] = defaultdict(set)
@@ -122,14 +121,6 @@ class History:
         return self._add("IncidentEscalated", {"incident_id": self.incident, "reason": reason}, producer)
 
 
-def publish_log(settings: Settings, conn, *incidents: str) -> list[Position]:
-    """Publica los eventos de `events` de esas incidencias que aún no están en el topic del test."""
-    rows = conn.execute(
-        "SELECT * FROM events WHERE correlation_id = ANY(%s) ORDER BY seq", (list(incidents),)
-    ).fetchall()
-    conn.commit()
-    pending = [load_event(r) for r in rows if r["event_id"] not in _published[settings.events_topic]]
-    return publish(settings, pending) if pending else []
 
 
 def catch_up(settings: Settings, conn, view: str) -> int:
@@ -139,8 +130,3 @@ def catch_up(settings: Settings, conn, view: str) -> int:
         return consumer.catch_up()
     finally:
         consumer.close()
-
-
-def project(settings: Settings, conn, view: str, *incidents: str) -> int:
-    publish_log(settings, conn, *incidents)
-    return catch_up(settings, conn, view)

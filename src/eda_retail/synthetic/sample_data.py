@@ -1,7 +1,6 @@
 """Datos de ejemplo de la demo: pedidos, stock, transportista y avisos (sin datos personales).
 
-Los usan `eda-notice` (que los envía a `intake` e `inventory` por REST), el front y, hasta T11, la siembra
-anterior de `synthetic.sample`.
+Los usan `eda-notice` (que los envía a `intake` e `inventory` por REST) y el front.
 """
 
 from __future__ import annotations

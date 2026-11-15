@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import json
 
-from eda_retail.agents.interpreter import NoticeInterpretation
 from eda_retail.experiments.oracle import Oracle
 from eda_retail.llm.generation import LlmRequest
+from eda_retail.llm.prompts.interpreter import NoticeInterpretation
 from eda_retail.llm.schemas import PlanProposal
 from eda_retail.synthetic.generator import generate
 
@@ -51,7 +51,7 @@ def test_oracle_writes_valid_drafts():
     """El oráculo redacta un borrador en español que solo menciona su pedido"""
     from decimal import Decimal
 
-    from eda_retail.agents.writer import DraftRequest, validate_draft
+    from eda_retail.llm.prompts.writer import DraftRequest, validate_draft
 
     data = generate(seed=11, size=3)
     n = data.notices[0]

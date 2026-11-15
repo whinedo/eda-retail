@@ -70,7 +70,7 @@ def test_every_notice_has_an_order_and_stock():
 
 def test_order_ids_are_single_references_for_the_writer():
     """Los pedidos generados se reconocen como una sola referencia en los borradores del redactor"""
-    from eda_retail.agents.writer import _ORDER_REF
+    from eda_retail.llm.prompts.writer import _ORDER_REF
 
     for o in generate(seed=12, size=20).orders:
         assert _ORDER_REF.findall(f"Su pedido {o.order_id} llegará tarde.") == [o.order_id]

@@ -66,7 +66,7 @@ NODES: tuple[Node, ...] = (
          "Guarda cada evento consumido de Kafka en event_log.events, ordenado; alimenta el panel de eventos.",
          "eda-event-log"),
     Node("projectors", "Proyector", "code", "Mantiene las vistas views.view_* consumiendo Kafka, con su offset por partición.", "eda-projector"),
-    *(Node(agent, label, "llm", desc, _PROCESSES.get(agent, f"eda-agent {agent}"), agent)
+    *(Node(agent, label, "llm", desc, _PROCESSES[agent], agent)
       for agent, (label, desc) in _AGENTS.items()),
     Node("orchestrator", "Orquestador", "code", "Avanza el plan, pide pasos y deriva compensaciones.",
          "eda-orchestrator"),

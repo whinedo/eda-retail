@@ -3,8 +3,7 @@
 Un hilo consume los eventos (grupo e inbox `orchestrator`), otro publica su outbox (relay), otro
 invoca por REST los comandos de su `command_outbox` y otro trata los plazos vencidos. Todo su estado
 está en sus tablas, así que reiniciarlo no pierde nada (spec resilience, "Reinicio del orquestador").
-Una instancia basta. `orchestrator.runner` es el orquestador anterior, que solo usan los experimentos
-hasta T11.
+Una instancia basta.
 """
 
 from __future__ import annotations
