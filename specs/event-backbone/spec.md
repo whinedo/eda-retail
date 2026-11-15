@@ -94,32 +94,32 @@ El bus MUST entregar cada evento a cada consumidor al menos una vez y reentregar
 
 ### Requirement: Invocación de comandos
 
-Los comandos SHALL invocarse de forma síncrona por HTTP (REST): cada sistema expone su command handler como `POST /commands/<Comando>`. La saga MUST guardar cada comando en `orchestrator.command_outbox` en la misma transacción que su transición, y su despachador SHALL invocarlo y reintentarlo con backoff, siempre con el mismo `command_id`, hasta recibir una respuesta. Todo comando MUST ser idempotente: el handler registra el `command_id` en su inbox en la misma transacción que su estado y sus eventos, y un comando repetido devuelve la misma respuesta sin repetir estado, eventos ni efectos. La respuesta solo dice si el comando se acepta (202) o se rechaza (422); el resultado le llega a la saga como evento por Kafka. Un comando rechazado SHALL tratarse como un fallo no reintentable.
+Los comandos SHALL invocarse de forma síncrona por HTTP (REST): cada sistema expone su command handler como `POST /commands/<Comando>`. La saga MUST guardar cada comando en `orchestrator.command_outbox` en la misma transacción que su transición, y su dispatcher SHALL invocarlo y reintentarlo con backoff, siempre con el mismo `command_id`, hasta recibir una respuesta. Todo comando MUST ser idempotente: el handler registra el `command_id` en su inbox en la misma transacción que su estado y sus eventos, y un comando repetido devuelve la misma respuesta sin repetir estado, eventos ni efectos. La respuesta solo dice si el comando se acepta (202) o se rechaza (422); el resultado le llega a la saga como evento por Kafka. Un comando rechazado SHALL tratarse como un fallo no reintentable.
 
 #### Scenario: Caída antes de invocar
 
 - **GIVEN** una transición de la saga confirmada con un `CreatePlan` en `orchestrator.command_outbox`
 - **WHEN** el orquestador cae antes de invocarlo y se reinicia
-- **THEN** el despachador invoca `CreatePlan` con su `command_id`
+- **THEN** el dispatcher invoca `CreatePlan` con su `command_id`
 
 #### Scenario: Comando invocado dos veces
 
 - **GIVEN** un `ExecuteStep` de `file_claim` ya aceptado con `command_id` C1
-- **WHEN** el despachador lo invoca otra vez con C1
+- **WHEN** el dispatcher lo invoca otra vez con C1
 - **THEN** el handler devuelve la misma respuesta que la primera vez
 - **AND** no escribe estado ni eventos nuevos ni repite la reclamación
 
 #### Scenario: Sistema que no responde
 
 - **GIVEN** el ejecutor de reclamaciones sin responder
-- **WHEN** el despachador invoca su `ExecuteStep`
+- **WHEN** el dispatcher invoca su `ExecuteStep`
 - **THEN** reintenta con backoff y el mismo `command_id`
 - **AND** la saga sigue procesando los eventos de otras incidencias
 
 #### Scenario: El resultado llega como evento
 
 - **GIVEN** un `ExecuteStep` de `reserve_stock` aceptado con 202
-- **WHEN** el despachador recibe la respuesta
+- **WHEN** el dispatcher recibe la respuesta
 - **THEN** el paso sigue `requested`
 - **AND** pasa a `completed` cuando la saga consume el `StepCompleted` de `inventory`
 

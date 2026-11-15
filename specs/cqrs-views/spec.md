@@ -102,7 +102,7 @@ Las consultas de las personas (front, `eda-notice interactive`, experimentos) y 
 
 ### Requirement: Vistas mínimas
 
-El sistema SHALL mantener las vistas `orders` (pedido, importe y `customer_ref`, de `OrderRegistered`), `incident_status` (estado y paso actual por incidencia), `cost_per_incident` (tokens y coste de efectos), `audit_trail` (quién decidió qué y con qué versión del plan) y `carrier_dashboard` (retrasos y reclamaciones por transportista).
+El sistema SHALL mantener las vistas `orders` (pedido, importe y `customer_ref`, de `OrderRegistered`), `incident_status` (estado y paso actual por incidencia), `cost_per_incident` (tokens y coste de efectos), `audit_trail` (quién decidió qué y con qué versión del plan), `carrier_dashboard` (retrasos y reclamaciones por transportista) y `order_status` (estado de negocio de cada pedido afectado por una incidencia, requirement «Estado de los pedidos»).
 
 #### Scenario: Incidencia con plan en curso
 
@@ -121,6 +121,45 @@ El sistema SHALL mantener las vistas `orders` (pedido, importe y `customer_ref`,
 - **GIVEN** una incidencia sin `CarrierNoticeReceived`
 - **WHEN** se proyectan sus eventos
 - **THEN** cuentan para el transportista `unknown`
+
+### Requirement: Estado de los pedidos
+
+La vista `order_status` SHALL dar el estado de negocio de cada pedido afectado por una incidencia, para la analítica del front (spec `web-front`, «Vista de analítica de pedidos»). Tiene una fila por pedido e incidencia (`order_id`, `incident_id`, `status`, el tipo y el `seq` del último evento que lo cambió y su timestamp) y la mantiene un proyector que consume Kafka, como el resto de vistas. Los estados y los eventos reales que los producen SHALL ser:
+
+| Estado | Etiqueta | Evento |
+| --- | --- | --- |
+| `delayed` | Envío retrasado | `ShipmentDelayed` (uno por cada pedido de su `order_ids`) |
+| `in_resolution` | En proceso de solución | `PlanCreated` o `PlanRevised` de la incidencia |
+| `resolved` | Solucionada | `IncidentResolved` con `outcome` `resolved` |
+| `refunded` | Reembolsada | `IncidentResolved` con `outcome` `refunded` |
+| `escalated` | Escalada | `IncidentEscalated` (supuesto: sin este estado, un pedido de una incidencia escalada se quedaría «en proceso» para siempre) |
+
+`PlanCreated`, `PlanRevised`, `IncidentResolved` e `IncidentEscalated` no llevan pedidos: el proyector SHALL aplicar el estado a los pedidos que esa incidencia registró con su `ShipmentDelayed`. Un estado final (`resolved`, `refunded`, `escalated`) MUST NOT volver a `in_resolution` por un evento posterior de la misma incidencia. Una incidencia escalada antes de su `ShipmentDelayed` no tiene pedidos y no aparece.
+
+#### Scenario: Pedido con envío retrasado
+
+- **GIVEN** un `ShipmentDelayed` de la incidencia I-1 con los pedidos P-1001 y P-1002
+- **WHEN** el proyector lo consume
+- **THEN** `order_status` tiene P-1001 y P-1002 en `delayed` para I-1
+
+#### Scenario: Pedido en proceso de solución
+
+- **GIVEN** P-1001 en `delayed` para I-1
+- **WHEN** se proyecta el `PlanCreated` de I-1
+- **THEN** P-1001 pasa a `in_resolution`
+
+#### Scenario: Pedido solucionado o reembolsado
+
+- **GIVEN** P-1001 en `in_resolution` para I-1
+- **WHEN** se proyecta el `IncidentResolved` de I-1 con `outcome` `refunded`
+- **THEN** P-1001 pasa a `refunded`, y con `outcome` `resolved` pasaría a `resolved`
+
+#### Scenario: Pedido de una incidencia escalada
+
+- **GIVEN** P-1001 en `in_resolution` para I-1
+- **WHEN** se proyecta el `IncidentEscalated` de I-1
+- **THEN** P-1001 pasa a `escalated`
+- **AND** un `PlanRevised` posterior de I-1 no lo devuelve a `in_resolution`
 
 ### Requirement: Proyectores idempotentes
 

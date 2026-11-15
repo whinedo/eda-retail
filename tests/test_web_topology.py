@@ -53,6 +53,8 @@ def test_twelve_processes_are_monitored():
     assert node("interpreter").process == "eda-interpreter"
     assert node("planner").process == "eda-planner"
     assert node("executor-issue_refund").process == "eda-executor issue_refund"
+    assert node("executor-reserve_stock").process == "eda-inventory"
+    assert node("executor-release_stock").process == "eda-inventory"
 
 
 def test_edges_join_existing_nodes():

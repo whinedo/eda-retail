@@ -119,13 +119,13 @@ El sistema MUST NOT emitir `issue_refund` mientras queden compensaciones pendien
 
 ### Requirement: Saga reactiva
 
-La saga SHALL avanzar solo por eventos y por el vencimiento de sus propios plazos: cada transición ocurre cuando el orquestador, único dueño de `orchestrator.plan_steps`, consume un evento (`ShipmentDelayed`, `PlanCreated`, `PlanRevised`, `StepCompleted`, `StepFailed`, `IncidentEscalated`) o vence uno de sus plazos, y deja, en la misma transacción, los comandos que invocará por REST (`CreatePlan`, `RevisePlan`, `ExecuteStep`) en su `command_outbox` y los eventos siguientes en su outbox. El orquestador no recibe comandos; un comando aceptado no cambia el estado del paso, que solo cambia al consumir el evento de resultado (spec `event-backbone`, "Invocación de comandos"). Ningún otro componente MUST escribir el estado de la saga, y el orquestador MUST NOT consultar ni esperar el estado de otros componentes: los resultados le llegan como eventos.
+La saga SHALL avanzar solo por eventos y por el vencimiento de sus propios plazos: cada transición ocurre cuando el orquestador, único dueño de `orchestrator.plan_steps`, consume un evento (`ShipmentDelayed`, `PlanCreated`, `PlanRevised`, `StepCompleted`, `StepFailed`, `IncidentEscalated`) o vence uno de sus plazos, y deja, en la misma transacción, los comandos que invocará por REST (`CreatePlan`, `RevisePlan`, `ExecuteStep`) en su `command_outbox` y los eventos siguientes en su outbox, entre ellos un `StepRequested` por cada `ExecuteStep`: un evento de notificación para la auditoría y el front, que ningún ejecutor consume. El orquestador no recibe comandos; un comando aceptado no cambia el estado del paso, que solo cambia al consumir el evento de resultado (spec `event-backbone`, "Invocación de comandos"). Ningún otro componente MUST escribir el estado de la saga, y el orquestador MUST NOT consultar ni esperar el estado de otros componentes: los resultados le llegan como eventos.
 
 #### Scenario: Resultado de un paso
 
 - **GIVEN** un `reserve_stock` en estado `requested` del que depende un `reissue_shipment`
 - **WHEN** el orquestador consume el `StepCompleted` de `reserve_stock` publicado por `inventory`
-- **THEN** marca el paso `completed` y deja en su `command_outbox` el comando `ExecuteStep` de `reissue_shipment`, en la misma transacción
+- **THEN** marca el paso `completed` y deja en su `command_outbox` el comando `ExecuteStep` de `reissue_shipment` y en su outbox su `StepRequested`, en la misma transacción
 - **AND** `inventory` no ha escrito ninguna tabla del orquestador
 
 #### Scenario: Compensación terminada

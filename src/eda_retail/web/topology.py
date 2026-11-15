@@ -51,6 +51,8 @@ _AGENTS = {
 
 # El intérprete ya es un componente con su propio proceso (T5); el resto de agentes, hasta T6 y T8.
 _PROCESSES = {"interpreter": "eda-interpreter", "planner": "eda-planner"}
+# reserve_stock y release_stock los ejecuta inventory (T4); el resto, sus ejecutores (T9).
+_EXECUTOR_PROCESSES = {Action.RESERVE_STOCK: "eda-inventory", Action.RELEASE_STOCK: "eda-inventory"}
 
 NODES: tuple[Node, ...] = (
     Node("intake", "eda-notice", "code", "CLI de avisos (scripts/notice.sh): registra CarrierNoticeReceived."),
@@ -66,7 +68,7 @@ NODES: tuple[Node, ...] = (
     *(
         Node(
             f"executor-{a.value}", a.value, "code", f"Ejecutor de {a.value}: aplica el efecto de forma idempotente.",
-            f"eda-executor {a.value}", WRITER if a in _WRITER_ACTIONS else None,
+            _EXECUTOR_PROCESSES.get(a, f"eda-executor {a.value}"), WRITER if a in _WRITER_ACTIONS else None,
         )
         for a in Action
     ),
