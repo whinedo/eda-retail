@@ -158,3 +158,19 @@ def test_carrier_agent_settings_have_defaults(monkeypatch):
     s = Settings()
     assert (s.carrier_agent_url, s.carrier_agent_port, s.a2a_carrier_token) == ("http://127.0.0.1:8130", 8130, "")
     assert (s.a2a_timeout_s, s.a2a_max_rounds, s.carrier_agent_seed) == (5.0, 2, 42)
+
+
+def test_run_agents_starts_the_carrier_agent_only_in_version_2():
+    """scripts/run-agents.sh: eda-carrier-agent solo con POC_VERSION=2 (y con A2A_CARRIER_TOKEN)"""
+    import pathlib
+    import re
+    import tomllib
+
+    root = pathlib.Path(__file__).parents[1]
+    script = (root / "scripts" / "run-agents.sh").read_text()
+    initial = script[script.index("PROCESSES=("):script.index(")\n", script.index("PROCESSES=("))]
+    assert "eda-carrier-agent" not in initial
+    branch = re.search(r"\n  2\)\n(.*?)\n    ;;", script, re.DOTALL).group(1)
+    assert 'PROCESSES+=("carrier-agent|eda-carrier-agent")' in branch and "A2A_CARRIER_TOKEN" in branch
+    scripts = tomllib.loads((root / "pyproject.toml").read_text())["project"]["scripts"]
+    assert scripts["eda-carrier-agent"] == "eda_retail.carrier_agent.cli:main"

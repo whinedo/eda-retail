@@ -3,6 +3,10 @@
 Los ids coinciden con el emisor y el destino de los eventos (`web.routing`), para que el front
 pueda resaltar la arista de cada evento. `process` es el patrón de `pgrep -f` de
 `scripts/run-agents.sh`; los nodos sin proceso propio no se vigilan.
+
+`NODES`, `EDGES` y `MONITORED` son los de la versión 1. Con `POC_VERSION=2`, `nodes(2)`, `edges(2)` y
+`monitored(2)` añaden el agente del transportista (A2A, spec a2a-carrier), un proceso aparte
+(`eda-carrier-agent`) que consulta el planificador.
 """
 
 from __future__ import annotations
@@ -110,3 +114,29 @@ EDGES: tuple[tuple[str, str], ...] = (
 def node(node_id: str) -> Node:
     """Nodo por id; KeyError si no existe."""
     return _BY_ID[node_id]
+
+
+# Segunda versión (design.md §15): el agente del transportista, opaco y simulado, que consulta el planificador.
+CARRIER_AGENT = Node(
+    "carrier_agent", "Agente del transportista (A2A)", "simulated",
+    "Agente externo y opaco del transportista: el planificador le pide opciones de entrega (delivery_options) "
+    "por A2A antes del LLM. Reglas deterministas con semilla.",
+    "eda-carrier-agent",
+)
+_V2_NODES = (*NODES, CARRIER_AGENT)
+_V2_EDGES = (*EDGES, ("planner", CARRIER_AGENT.id))
+
+
+def nodes(version: int) -> tuple[Node, ...]:
+    """Los nodos del mapa de la versión `version` de la PoC (1 o 2)."""
+    return _V2_NODES if version == 2 else NODES
+
+
+def edges(version: int) -> tuple[tuple[str, str], ...]:
+    return _V2_EDGES if version == 2 else EDGES
+
+
+def monitored(version: int) -> tuple[Node, ...]:
+    """Los nodos con proceso propio que vigila la salud, según la versión."""
+    return tuple(n for n in nodes(version) if n.process)
+_BY_ID[CARRIER_AGENT.id] = CARRIER_AGENT  # el detalle de nodo lo encuentra en la versión 2

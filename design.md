@@ -46,7 +46,7 @@ Por Kafka **solo viajan eventos**: el topic `eda.events`, con clave `incident_id
 | `intake` | `RegisterCarrierNotice` (de `eda-notice` y del front) | — | `CarrierNoticeReceived` | Código |
 | `inventory` | `SeedSampleData`; `ExecuteStep` de `reserve_stock` y `release_stock` | — | `OrderRegistered`, `StockReserved`, `StockReleased`, `StepCompleted`, `StepFailed` | Código |
 | `interpreter` | — (su handler atiende `OpenIncident`, que deriva de `CarrierNoticeReceived`) | `CarrierNoticeReceived`; `OrderRegistered` (solo para reanudar avisos aparcados) | `ShipmentDelayed`, `NoticeParked` o `IncidentEscalated`, `LlmCallRecorded` | LLM + su command handler |
-| `planner` | `CreatePlan` | — | `PlanCreated` o `IncidentEscalated`, `LlmCallRecorded` | LLM + su command handler |
+| `planner` | `CreatePlan` | — | `PlanCreated` o `IncidentEscalated`, `LlmCallRecorded`; con `POC_VERSION=2`, `CarrierConsulted` | LLM + su command handler (y cliente A2A, §15.1) |
 | `orchestrator` (saga) | Ninguno; invoca `CreatePlan`, `RevisePlan` y `ExecuteStep` | `ShipmentDelayed`, `PlanCreated`, `PlanRevised`, `StepCompleted`, `StepFailed`, `IncidentEscalated` | `StepRequested`, `StepCancelled`, `IncidentResolved`, `IncidentEscalated` | Código |
 | `replanner` | `RevisePlan` | — | `PlanRevised` o `IncidentEscalated`, `LlmCallRecorded` | LLM + su command handler |
 | `executor-<acción>` | `ExecuteStep` de su acción | — | `StepCompleted`, `StepFailed`, el evento de efecto, `LlmCallRecorded` | Código (el redactor se invoca desde aquí) |
@@ -387,3 +387,27 @@ No se desarrolla por el momento; el resumen y cuándo usar cada modo de comunica
 | Servidor de correo simulado (MCP) | Un servidor MCP nuevo, fuera de los esquemas de la PoC, con una herramienta de envío y su buzón simulado. El ejecutor de `notify_customer` es el cliente MCP: envía el texto ya validado y guarda en `effect_keys` la `idempotency_key` del paso, así que un reintento no envía dos correos. El destinatario se resuelve en el servidor desde `customer_ref` |
 | Agente del transportista (A2A) | Un proceso aparte que publica su Agent Card y atiende tareas A2A. El planificador le envía una tarea en el `prepare` de `CreatePlan`, en su worker, antes de la llamada al LLM y fuera de la transacción (regla 6), con un plazo; si no responde o falla, planifica sin esas opciones. La respuesta entra en el prompt como contenido no confiable y no cambia la validación del plan ni la lista de acciones permitidas. Cada consulta se registra con el evento nuevo `CarrierConsulted` (sin datos personales), para la auditoría y el front |
 | Guardrails | MCP: el cliente solo admite la herramienta de envío (lista blanca), valida entrada y salida con pydantic y limita los envíos por incidencia. A2A: autenticación del agente y Agent Card verificada, respuesta validada con pydantic antes de llegar al prompt, plazo y máximo de rondas `input-required`, solo referencias en la petición y la respuesta delimitada como contenido no confiable (prompt injection). Un fallo de un guardrail se registra y el planificador sigue sin las opciones del transportista |
+
+### 15.1 Agente del transportista (A2A), construido
+
+Se activa con `POC_VERSION=2`; con la versión 1 el planificador no consulta y su prompt y sus eventos son los de siempre.
+
+| Concepto | Cómo lo materializa la pila |
+| --- | --- |
+| Protocolo | SDK oficial `a2a-sdk` 1.3.0 (A2A 1.0): Agent Card en `/.well-known/agent-card.json` y JSON-RPC sobre HTTP en `/`, sin streaming. La card declara un esquema bearer; el servidor responde 401 a toda petición JSON-RPC sin `Authorization: Bearer <A2A_CARRIER_TOKEN>` |
+| Proceso | `eda-carrier-agent` (`src/eda_retail/carrier_agent/`) en `127.0.0.1:CARRIER_AGENT_PORT`; publica `CARRIER_AGENT_URL` en su card. Tareas en memoria: sin base de datos ni datos personales |
+| Reglas | Deterministas, por causa y semilla `CARRIER_AGENT_SEED` (supuesto A1), tabla de abajo. Los días dentro de cada rango salen de un SHA-256 de (semilla, pedido, causa) |
+| `input-required` | `loss` y `damage` exigen el `tracking_ref` sintético del pedido (`synthetic/tracking.py`, supuesto A4); sin él o con otro, la tarea queda en `input-required` con `{"needs": ["tracking_ref"]}` |
+| Cliente | `planner/carrier.py`, código (no el LLM), llamado en `PlanPreparer` dentro del worker de `CreatePlan`, fuera de la transacción y antes del LLM, solo para gravedad `medium` o `high` (la `low` usa el plan fijo sin LLM y no consulta). Con varios pedidos se consulta el primero |
+| Guardrails | Card comprobada antes de la primera tarea (nombre `carrier-agent`, URL JSON-RPC igual a `CARRIER_AGENT_URL`, skill `delivery_options`, esquema bearer) y guardada en el proceso; la tarea solo lleva `order_id` y `cause`, y una ronda solo `tracking_ref`; respuesta validada con `DeliveryOptions` (pydantic, `extra="forbid"`, `notes` ≤ 500); `A2A_MAX_ROUNDS` rondas y plazo total `A2A_TIMEOUT_S`, con `CancelTask` al superarlos; el JSON va al prompt en `<opciones_transportista>` como contenido no confiable, sin `<` ni `>`. Cada fallo se registra con su motivo y su `trace_id` |
+| Evento | `CarrierConsulted` v1 (`answered`, `timeout`, `failed` o `rejected_by_guardrail`, rondas y latencia, sin `notes`), en la transacción de `handle` antes de `LlmCallRecorded` y `PlanCreated`/`IncidentEscalated`. La vista `audit_trail` lo guarda con el `outcome` como motivo |
+| Experimentos | El harness no consulta salvo que un test le inyecte un cliente A2A en proceso: E5 y E6 siguen comparables con la versión 1 |
+
+| Causa | `new_delivery_date` | `can_reship` | `accepts_claim` | Pide `tracking_ref` |
+| --- | --- | --- | --- | --- |
+| `delay` | hoy + 1 a 3 días | no | no | no |
+| `strike` | hoy + 3 a 7 días | no | no | no |
+| `loss` | nula | sí | sí | sí |
+| `damage` | nula | sí | sí | sí |
+| `wrong_address` | hoy + 2 a 4 días | sí | no | no |
+| `unknown` | nula | no | no | no |

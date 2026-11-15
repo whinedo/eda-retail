@@ -4,7 +4,9 @@
 # Uso: scripts/run-agents.sh [--logs DIR] [--no-migrate]
 #
 # Requiere `docker compose up -d` (kafka y postgres) y, para los agentes con LLM, Ollama en
-# OLLAMA_HOST con el modelo LLM_MODEL. Si existe .env, todos los procesos lo cargan. Cada proceso escribe en DIR/<nombre>.log (por defecto logs/). Ctrl+C los para
+# OLLAMA_HOST con el modelo LLM_MODEL. Si existe .env, todos los procesos lo cargan. Con POC_VERSION=2
+# (en .env) arranca también el agente del transportista (eda-carrier-agent, A2A), que exige
+# A2A_CARRIER_TOKEN. Cada proceso escribe en DIR/<nombre>.log (por defecto logs/). Ctrl+C los para
 # todos. Si un proceso termina, el script para el resto y sale con error.
 set -euo pipefail
 
@@ -16,7 +18,7 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --logs) LOGS_DIR="$2"; shift 2 ;;
     --no-migrate) MIGRATE=0; shift ;;
-    -h|--help) sed -n '2,8p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "opción desconocida: $1" >&2; exit 2 ;;
   esac
 done
@@ -50,9 +52,22 @@ if [[ -f .env ]]; then
 fi
 uvrun() { uv run ${UV_ARGS[@]+"${UV_ARGS[@]}"} "$@"; }
 
-# OLLAMA_HOST y LLM_MODEL tal como los verán los procesos (entorno + .env).
-read -r OLLAMA MODEL < <(uvrun python -c \
-  'import os; print(os.environ.get("OLLAMA_HOST", "http://localhost:11434"), os.environ.get("LLM_MODEL", "llama3.1"))')
+# OLLAMA_HOST, LLM_MODEL, POC_VERSION y si hay A2A_CARRIER_TOKEN, tal como los verán los procesos (entorno + .env).
+read -r OLLAMA MODEL POC_VERSION A2A_TOKEN_SET < <(uvrun python -c \
+  'import os; e = os.environ.get; print(e("OLLAMA_HOST", "http://localhost:11434"), e("LLM_MODEL", "llama3.1"),
+  e("POC_VERSION", "1").strip() or "-", "yes" if e("A2A_CARRIER_TOKEN") else "no")')
+case "$POC_VERSION" in
+  1) ;;
+  2)
+    if [[ "$A2A_TOKEN_SET" != "yes" ]]; then
+      echo "error: POC_VERSION=2 necesita A2A_CARRIER_TOKEN (en .env) para el agente del transportista" >&2
+      exit 1
+    fi
+    PROCESSES+=("carrier-agent|eda-carrier-agent")
+    ;;
+  *) echo "error: POC_VERSION debe ser 1 o 2, no '$POC_VERSION'" >&2; exit 1 ;;
+esac
+echo "PoC: versión $POC_VERSION"
 if ! TAGS=$(curl -fsS --max-time 3 "$OLLAMA/api/tags" 2>/dev/null); then
   echo "aviso: Ollama no responde en $OLLAMA; los agentes con LLM fallarán" >&2
 elif ! grep -q "\"name\":\"$MODEL\"" <<<"$TAGS"; then

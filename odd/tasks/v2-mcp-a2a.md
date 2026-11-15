@@ -22,7 +22,7 @@ Branch: `feat/v2-specs` (from `feat/eda-components`). Delivery: specs PR first, 
 | --- | --- | --- | --- | --- | --- |
 | T1 | S1–S4 | Specs and design links for review | inline | written | |
 | T2 | S1, S3 | MCP mail server and MCP client in the notify_customer executor | pending review of T1 | pending | |
-| T3 | S2, S3 | Carrier agent and A2A client in the planner, `CarrierConsulted` | pending review of T1 | pending | |
+| T3 | S2, S3 | Carrier agent and A2A client in the planner, `CarrierConsulted` | delegated (parallel units: T2 and T3, branch `feat/v2-a2a-carrier`) | done (unit GREEN; integration written, not run) | see L-T3 |
 
 ## Log
 
@@ -31,3 +31,4 @@ Branch: `feat/v2-specs` (from `feat/eda-components`). Delivery: specs PR first, 
 - L3 (2026-11-15) User: "para A2A y MCP indica que se pondrán guardrails"
 - L4 (2026-11-15) User: "sí, empieza por las specs de la v2". The specs start from design.md §15 (PR #56). The planner's A2A call moves into the `CreatePlan` job worker (PR #58).
 - L5 (2026-11-15) User, on A1 (deterministic rules or its own LLM): "Reglas deterministas".
+- L-T3 (2026-11-15) T3 built on `feat/v2-a2a-carrier`. Coordinator change: gate on `POC_VERSION` (1 default, 2 enables A2A) instead of `A2A_ENABLED`. Decisions: `a2a-sdk[http-server]==1.3.0` (2026-10-27); carrier agent with deterministic rules by cause and `CARRIER_AGENT_SEED` (table in `carrier_agent/rules.py` and design.md §15.1); `loss` and `damage` ask `tracking_ref` (synthetic, `synthetic/tracking.py`); low severity does not consult (no LLM); multi-order incidents consult the first order; `CarrierConsulted` is audited with `outcome` as reason; the experiments harness never consults unless a client is injected. RED: new tests failed on import (`eda_retail.carrier_agent`, `planner.carrier`) and 12 assertions (catalog, audit, topology, `POC_VERSION`). GREEN: 490 unit tests pass; ruff and pre-commit pass. Integration tests added (planner v2 outbox sequence, audit trail row) but not run. Pending outside T3's surface: `web/app.py` must pass `topology.nodes/edges/monitored(settings.poc_version)` and `HealthChecker(monitored=...)`; `scripts/stop-all.sh` pattern lacks `eda-carrier-agent`.

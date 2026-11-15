@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Consultar al agente del transportista, un agente externo y opaco de otra organización, mediante A2A (Agent2Agent) antes de proponer un plan. Muestra el modo A2A: una conversación con otro agente autónomo en una tarea que puede negociarse. Los efectos siguen yendo por comandos REST. Es parte de la segunda versión de la PoC (design.md §15).
+Consultar al agente del transportista, un agente externo y opaco de otra organización, mediante A2A (Agent2Agent) antes de proponer un plan. Muestra el modo A2A: una conversación con otro agente autónomo en una tarea que puede negociarse. Los efectos siguen yendo por comandos REST. Es parte de la segunda versión de la PoC (design.md §15) y solo se activa con `POC_VERSION=2`: con la versión 1 el planificador no consulta al agente y su prompt y sus eventos no cambian.
 
 ## Requirements
 
@@ -30,7 +30,7 @@ El sistema SHALL incluir un agente del transportista simulado, `carrier-agent`, 
 
 ### Requirement: Consulta del planificador
 
-El planificador SHALL consultar al agente del transportista en el `prepare` de `CreatePlan`, en su worker y fuera de la transacción (regla 6 de CLAUDE.md), antes de la llamada al LLM, con un plazo (`A2A_TIMEOUT_S`). La respuesta validada entra en el prompt como contexto, marcada como contenido no confiable. MUST NOT cambiar la validación del plan, la lista de acciones permitidas ni las reglas de compensación. Si el agente no responde a tiempo, falla o no supera los guardrails, el planificador SHALL planificar sin las opciones del transportista, igual que en la primera versión. Cada consulta SHALL registrarse con el evento nuevo `CarrierConsulted` (`incident_id`, `outcome` `answered` | `timeout` | `failed` | `rejected_by_guardrail`, `rounds`, `latency_ms`), sin datos personales ni el texto de `notes`, para la auditoría y el front. `CarrierConsulted` se añade al catálogo con su `event_version`.
+El planificador SHALL consultar al agente del transportista en el `prepare` de `CreatePlan`, en su worker y fuera de la transacción (regla 6 de CLAUDE.md), antes de la llamada al LLM, con un plazo (`A2A_TIMEOUT_S`). Una incidencia de gravedad `low` usa el plan fijo, sin LLM, y no consulta. La respuesta validada entra en el prompt como contexto, marcada como contenido no confiable. MUST NOT cambiar la validación del plan, la lista de acciones permitidas ni las reglas de compensación. Si el agente no responde a tiempo, falla o no supera los guardrails, el planificador SHALL planificar sin las opciones del transportista, igual que en la primera versión. Cada consulta SHALL registrarse con el evento nuevo `CarrierConsulted` (`incident_id`, `outcome` `answered` | `timeout` | `failed` | `rejected_by_guardrail`, `rounds`, `latency_ms`), sin datos personales ni el texto de `notes`, para la auditoría y el front. `CarrierConsulted` se añade al catálogo con su `event_version`.
 
 #### Scenario: Plan con las opciones del transportista
 

@@ -15,6 +15,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from eda_retail.events.catalog import CATALOG, Action
+from eda_retail.web import topology
 from eda_retail.web.app import create_app
 from eda_retail.web.health import HealthChecker, check_kafka, check_ollama, check_postgres
 from eda_retail.web.routing import receivers
@@ -171,3 +172,27 @@ def test_ollama_check_uses_api_tags():
 def test_checks_report_down_when_nothing_listens(check):
     """Sin servicio escuchando, cada comprobación devuelve False en vez de lanzar"""
     assert check(_free_port()) is False
+
+
+def test_version_1_map_has_no_carrier_agent():
+    """POC_VERSION=1: el mapa y los procesos vigilados son los de la primera versión"""
+    assert topology.nodes(1) == NODES and topology.edges(1) == EDGES and topology.monitored(1) == MONITORED
+    assert "carrier_agent" not in {n.id for n in NODES}
+
+
+def test_version_2_map_shows_the_carrier_agent():
+    """POC_VERSION=2: el agente del transportista (A2A) aparece como nodo vigilado, consultado por el planificador"""
+    ids = {n.id for n in topology.nodes(2)}
+    assert ids == SPEC_NODES | {"carrier_agent"}
+    agent = next(n for n in topology.nodes(2) if n.id == "carrier_agent")
+    assert (agent.kind, agent.process) == ("simulated", "eda-carrier-agent")
+    assert ("planner", "carrier_agent") in topology.edges(2)
+    assert len(topology.monitored(2)) == 14
+
+
+def test_version_2_health_counts_the_carrier_agent():
+    checker = HealthChecker({}, pgrep=lambda pattern: pattern == "eda-carrier-agent",
+                            monitored=topology.monitored(2))
+    report = checker.report()
+    assert report["processes"]["carrier_agent"] is True
+    assert (report["processes_up"], report["processes_total"]) == (1, 14)
