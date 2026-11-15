@@ -30,8 +30,10 @@ def _history(settings, conn) -> None:
     history.customer_notified()
     history.completed("S1", {"message_id": "M1"})
     incident = history.incident
+    parked = History()  # otra incidencia, aún aparcada: deja una fila en view_parked_notices
+    parked.parked(("P-rebuild-parked",))
     publish(settings, [
-        *history.take(),
+        *history.take(), *parked.take(),
         _order("P-rebuild-1"), _order("P-rebuild-2"),
         _llm(incident, "planner", 100, 50), *_effects(incident),
         *_refund_instead_of_reissue(f"{incident}-a"),

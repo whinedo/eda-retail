@@ -87,6 +87,18 @@ def test_order_status_view_migration_reverts(scratch_db):
     assert "status" in _columns(scratch_db, "view_order_status", "views")
 
 
+def test_parked_notices_view_migration_reverts(scratch_db):
+    """0020 crea views.view_parked_notices y su downgrade la borra"""
+    upgrade(scratch_db)
+    assert {"incident_id", "order_ids", "deadline_at", "parked_at", "last_event_id", "kafka_partition",
+            "kafka_offset"} <= _columns(scratch_db, "view_parked_notices", "views")
+    downgrade(scratch_db, "0019")
+    assert _columns(scratch_db, "view_parked_notices", "views") == set()
+    assert "status" in _columns(scratch_db, "view_order_status", "views")
+    upgrade(scratch_db)
+    assert "deadline_at" in _columns(scratch_db, "view_parked_notices", "views")
+
+
 def test_command_jobs_migration_reverts(scratch_db):
     """0019 crea command_jobs en los componentes con trabajo largo y su downgrade la borra"""
     from eda_retail.infra.schemas import JOB_COMPONENTS

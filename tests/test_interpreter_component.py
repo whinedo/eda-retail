@@ -110,3 +110,58 @@ def test_no_interpretation_escalates_with_the_generation_reason():
 
 def test_original_notice_text_is_the_payload_of_the_command():
     assert set(handler.OpenIncident.model_fields) == {"carrier_notice_id", "carrier", "raw_text"}
+
+
+class _Result:
+    def __init__(self, row=None) -> None:
+        self.rowcount = 1
+        self._row = row
+
+    def fetchone(self):
+        return self._row
+
+
+class _Conn:
+    """Conexión falsa del handler: cada INSERT inserta una fila; el de pending_notices devuelve su plazo."""
+
+    def __init__(self, deadline) -> None:
+        self.deadline = deadline
+        self.statements: list[str] = []
+
+    def execute(self, sql: str, params=None) -> _Result:
+        self.statements.append(sql)
+        return _Result({"deadline_at": self.deadline} if "pending_notices" in sql else None)
+
+
+def _handle(prepared: handler.Prepared, deadline=None):
+    command, payload = _command()
+    conn = _Conn(deadline)
+    accepted = handler.open_incident(Settings())(conn, command, payload, prepared)
+    return conn, accepted
+
+
+def test_parked_notice_publishes_notice_parked_with_its_orders_and_deadline():
+    """Aviso aparcado visible: al aparcar el aviso el intérprete publica NoticeParked con los pedidos que espera y
+    su plazo, en la misma transacción que la fila de pending_notices"""
+    from datetime import UTC, datetime
+
+    deadline = datetime(2026, 11, 15, 20, 13, 36, tzinfo=UTC)
+    prepared = handler.Prepared(False, _value(["P-7"]), None, [], [])
+
+    conn, accepted = _handle(prepared, deadline)
+
+    assert any("INSERT INTO interpreter.pending_notices" in s for s in conn.statements)
+    assert accepted.body == {"incident_id": "I-1", "outcome": "parked"}
+    [parked] = accepted.events
+    assert (parked.event_type, parked.producer, parked.correlation_id) == ("NoticeParked", "interpreter", "I-1")
+    assert parked.payload == {"incident_id": "I-1", "order_ids": ["P-7"], "deadline_at": "2026-11-15T20:13:36Z"}
+
+
+def test_known_orders_still_publish_only_shipment_delayed():
+    """Pedidos conocidos: con pedidos en view_orders no se aparca ni se publica NoticeParked"""
+    prepared = handler.Prepared(False, _value(["P-1"]), None, [], ["P-1"])
+
+    conn, accepted = _handle(prepared)
+
+    assert [e.event_type for e in accepted.events] == ["ShipmentDelayed"]
+    assert not any("pending_notices" in s for s in conn.statements)

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import replace
+from datetime import datetime
 
 from eda_retail.config import Settings
 from eda_retail.events.catalog import build_event
@@ -145,21 +146,25 @@ def test_invalid_output_escalates_with_the_generation_reason(base_settings, data
 
 
 def test_lagging_projection_parks_the_notice_and_order_registered_resumes_it(base_settings, database_url, conn):
-    """Proyección atrasada: se aparca sin evento y el OrderRegistered de P-1007 lo reanuda con sus datos"""
+    """Proyección atrasada: se aparca con NoticeParked y el OrderRegistered de P-1007 lo reanuda con sus datos"""
     order = f"P-{uuid.uuid4().hex[:8]}"
     event, incident = _notice()
     consumer = _consumer(conn, _settings(base_settings, database_url), FakeLlmClient([_interpretation([order])]))
 
     assert consumer.process(event) is Outcome.PROCESSED
-    assert _types(conn, incident) == ["LlmCallRecorded"]
+    assert _types(conn, incident) == ["LlmCallRecorded", "NoticeParked"]
     [parked] = _pending(conn, incident)
     assert parked["order_ids"] == [order]
+    # Aviso aparcado visible: NoticeParked va en la misma transacción que la fila, con sus pedidos y su plazo.
+    notice_parked = outbox(conn, "interpreter", incident)[1]["payload"]
+    assert notice_parked["order_ids"] == [order]
+    assert datetime.fromisoformat(notice_parked["deadline_at"]) == parked["deadline_at"]
 
     assert consumer.process(_order_registered(order)) is Outcome.PROCESSED
 
     events = outbox(conn, "interpreter", incident)
-    assert [e["event_type"] for e in events] == ["LlmCallRecorded", "ShipmentDelayed"]
-    assert events[1]["payload"]["order_ids"] == [order]
+    assert [e["event_type"] for e in events] == ["LlmCallRecorded", "NoticeParked", "ShipmentDelayed"]
+    assert events[2]["payload"]["order_ids"] == [order]
     assert _pending(conn, incident) == []
 
 
@@ -172,8 +177,8 @@ def test_expired_parked_notice_escalates_with_no_valid_orders(base_settings, dat
     assert expire_parked(conn) >= 1
 
     events = outbox(conn, "interpreter", incident)
-    assert [e["event_type"] for e in events] == ["LlmCallRecorded", "IncidentEscalated"]
-    assert events[1]["payload"] == {"incident_id": incident, "reason": "no_valid_orders"}
+    assert [e["event_type"] for e in events] == ["LlmCallRecorded", "NoticeParked", "IncidentEscalated"]
+    assert events[2]["payload"] == {"incident_id": incident, "reason": "no_valid_orders"}
     assert _pending(conn, incident) == []
 
 
@@ -188,8 +193,8 @@ def test_order_projected_when_the_deadline_expires(base_settings, database_url, 
     expire_parked(conn)
 
     events = outbox(conn, "interpreter", incident)
-    assert [e["event_type"] for e in events] == ["LlmCallRecorded", "ShipmentDelayed"]
-    assert events[1]["payload"]["order_ids"] == [order]
+    assert [e["event_type"] for e in events] == ["LlmCallRecorded", "NoticeParked", "ShipmentDelayed"]
+    assert events[2]["payload"]["order_ids"] == [order]
 
 
 def test_ambiguous_notice_is_unknown_with_at_least_medium_severity(base_settings, database_url, conn):
