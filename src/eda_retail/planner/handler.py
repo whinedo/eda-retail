@@ -5,7 +5,10 @@ el estado del orquestador. `prepare` (fuera de la transacción) consulta el lado
 presupuesto en `cost_per_incident` y los importes en `view_orders`) y propone el plan:
 
 - `severity` `low`: el plan fijo de `agents.planner`, un `notify_customer` por pedido, sin LLM;
-- en otro caso el LLM, con cada propuesta comprobada por `validate_plan` (acciones permitidas,
+- en otro caso, con `POC_VERSION=2`, primero consulta al agente del transportista por A2A
+  (`planner.carrier`, spec a2a-carrier) y, si la respuesta supera los guardrails, la pasa al prompt como
+  contenido no confiable; con la versión 1, o si la consulta falla, el prompt es el de siempre;
+- después el LLM, con cada propuesta comprobada por `validate_plan` (acciones permitidas,
   compensaciones, dependencias, tope de reembolso y el importe del pedido); un rechazo se explica
   al LLM en la siguiente generación, dentro de los límites de llm-boundaries.
 
@@ -15,7 +18,8 @@ el worker del planificador hace `prepare` (el LLM) y `handle` después.
 
 `handle` (en la transacción del trabajo) valida el plan otra vez con las mismas reglas,
 escribe `planner.plans` y `planner.llm_calls` y publica `LlmCallRecorded` por llamada y
-`PlanCreated`, o `IncidentEscalated` con el motivo cuando no hay plan válido. Si otro `CreatePlan` de
+`PlanCreated`, o `IncidentEscalated` con el motivo cuando no hay plan válido; si hubo consulta A2A, antes
+publica un `CarrierConsulted` con su resultado (sin `notes`). Si otro `CreatePlan` de
 la misma incidencia se adelantó, el trabajo termina rechazado con `plan_exists`, sin eventos.
 """
 
@@ -40,6 +44,7 @@ from eda_retail.llm.generation import Budget, LlmCall, LlmClient, generate
 from eda_retail.llm.prompts.planner import low_severity_plan, plan_request
 from eda_retail.llm.schemas import PlanProposal
 from eda_retail.plan_validation import PlanRejected, validate_plan
+from eda_retail.planner.carrier import CarrierConsultant, CarrierConsultation, render_options
 from eda_retail.queries.cost_per_incident import Prices, budget_from_cost, get_incident_cost
 from eda_retail.queries.orders import get_orders
 from eda_retail.rules import BusinessRules
@@ -75,6 +80,7 @@ class Prepared:
     reason: str | None = None
     calls: list[LlmCall] = field(default_factory=list)
     amounts: dict[str, Decimal] = field(default_factory=dict)
+    carrier: CarrierConsultation | None = None  # la consulta A2A, si la hubo (POC_VERSION=2)
 
 
 def check_plan(steps: list[dict[str, Any]], rules: BusinessRules,
@@ -95,10 +101,11 @@ class PlanPreparer:
     """Lo que se hace antes de abrir la transacción: consultas al lado de lectura y LLM."""
 
     def __init__(self, llm: LlmClient, rules: BusinessRules, *,
-                 context: Callable[[str, list[str]], PlanContext]) -> None:
+                 context: Callable[[str, list[str]], PlanContext], carrier: CarrierConsultant | None = None) -> None:
         self._llm = llm
         self._rules = rules
         self._context = context
+        self._carrier = carrier  # None: versión 1, no se consulta al transportista
 
     def __call__(self, command: CommandEnvelope, payload: CreatePlan) -> Prepared:
         incident_id = command.correlation_id
@@ -112,12 +119,16 @@ class PlanPreparer:
             result = check_plan(plan.command_steps(), self._rules, ctx.amounts)
             return result if isinstance(result, str) else None
 
+        consultation = None
+        if self._carrier is not None:  # A2A antes del LLM, fuera de la transacción (regla 6)
+            consultation = self._carrier.consult(payload.order_ids[0], payload.cause.value, incident_id=incident_id)
+        options = render_options(consultation.options) if consultation and consultation.options else None
         request = plan_request(incident_id, payload.cause.value, payload.severity.value,
-                               payload.estimated_delay_hours, order_lines(ctx.amounts))
+                               payload.estimated_delay_hours, order_lines(ctx.amounts), carrier_options=options)
         gen = generate(self._llm, request, PlanProposal, max_generations=self._rules.max_generations,
                        budget=ctx.budget, check=check)
         steps = gen.value.command_steps() if gen.value is not None else None
-        return Prepared(False, steps, gen.reason, gen.calls, ctx.amounts)
+        return Prepared(False, steps, gen.reason, gen.calls, ctx.amounts, consultation)
 
 
 def _event(command: CommandEnvelope, event_type: str, payload: dict[str, Any]) -> EventEnvelope:
@@ -162,7 +173,10 @@ def create_plan(rules: BusinessRules):
         ).rowcount
         if inserted == 0:  # otro CreatePlan de la misma incidencia se adelantó
             return Rejected(PLAN_EXISTS)
-        events = _record_calls(conn, command, prepared.calls)
+        events = []
+        if prepared.carrier is not None:
+            events.append(_event(command, "CarrierConsulted", prepared.carrier.event_payload(incident_id)))
+        events += _record_calls(conn, command, prepared.calls)
         if payload_steps is not None:
             events.append(_event(command, "PlanCreated", {"incident_id": incident_id, "plan_version": 1,
                                                           "steps": payload_steps}))
@@ -204,7 +218,9 @@ def read_context(settings: Settings, rules: BusinessRules) -> Callable[[str, lis
     return context
 
 
-def specs(settings: Settings, llm: LlmClient, rules: BusinessRules) -> dict[str, CommandSpec]:
-    prepare = PlanPreparer(llm, rules, context=read_context(settings, rules))
+def specs(settings: Settings, llm: LlmClient, rules: BusinessRules, *,
+          carrier: CarrierConsultant | None = None) -> dict[str, CommandSpec]:
+    """Sin `carrier` (versión 1, el harness de experimentos) el planificador no consulta al transportista."""
+    prepare = PlanPreparer(llm, rules, context=read_context(settings, rules), carrier=carrier)
     return {"CreatePlan": CommandSpec(CreatePlan, create_plan(rules), prepare=prepare, deferred=True,
                                       accept=accept_create_plan)}

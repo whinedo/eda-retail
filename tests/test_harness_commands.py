@@ -119,3 +119,20 @@ def test_seed_payload_empties_the_chosen_warehouses():
     emptied = [s for s in payload["stock"] if s["warehouse"] == data.stock[0].warehouse]
     assert emptied and all(s["available"] == 0 for s in emptied)
     assert set(payload["orders"][0]) == {"order_id", "customer_ref", "sku", "quantity", "amount", "carrier"}
+
+
+def test_the_harness_planner_does_not_consult_the_carrier_by_default(monkeypatch):
+    """E5 y E6 sin agente del transportista: el harness no consulta por A2A aunque POC_VERSION=2"""
+    from eda_retail.config import Settings
+    from eda_retail.experiments.harness import Harness, RunConfig
+    from eda_retail.llm.fake import FakeLlmClient
+
+    monkeypatch.setenv("POC_VERSION", "2")
+    harness = Harness(Settings(), RunConfig(seed=1, incidents=1), llm=FakeLlmClient([]))
+    harness.settings = Settings()
+    assert harness._targets()["planner"].specs["CreatePlan"].prepare._carrier is None
+
+    injected = object()
+    harness = Harness(Settings(), RunConfig(seed=1, incidents=1), llm=FakeLlmClient([]), carrier=injected)
+    harness.settings = Settings()
+    assert harness._targets()["planner"].specs["CreatePlan"].prepare._carrier is injected

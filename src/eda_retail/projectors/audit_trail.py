@@ -9,8 +9,8 @@ y la vista se reconstruye volviendo a consumir el topic.
 - `decision`: el tipo de evento; en `StepRequested`, también la acción pedida.
 - `plan_version`: la del evento, si la lleva.
 - `reason`: el motivo que lleva el evento (`PlanRevised.reason`, `StepFailed.error`,
-  `IncidentEscalated.reason`) o `validation_failed` en un `LlmCallRecorded` cuya salida no
-  pasó la validación del código.
+  `IncidentEscalated.reason`), el resultado de la consulta A2A (`CarrierConsulted.outcome`) o
+  `validation_failed` en un `LlmCallRecorded` cuya salida no pasó la validación del código.
 
 Un comando rechazado no escribe eventos: la auditoría solo ve los rechazos que dejan rastro
 en el log. El texto de los avisos (`raw_text`) es contenido no confiable y no se guarda.
@@ -32,10 +32,11 @@ AUDITED = (
     "CarrierNoticeReceived", "ShipmentDelayed", "PlanCreated", "PlanRevised", "StepRequested",
     "StepCompleted", "StepFailed", "StepCancelled", "CustomerNotified", "ClaimFiled", "StockReserved",
     "StockReleased", "ShipmentReissued", "RefundIssued", "IncidentResolved", "IncidentEscalated",
-    "LlmCallRecorded",
+    "LlmCallRecorded", "CarrierConsulted",
 )
 
-_REASON_FIELD = {"PlanRevised": "reason", "StepFailed": "error", "IncidentEscalated": "reason"}
+_REASON_FIELD = {"PlanRevised": "reason", "StepFailed": "error", "IncidentEscalated": "reason",
+                 "CarrierConsulted": "outcome"}
 
 
 def _decision(event: EventEnvelope) -> str:
