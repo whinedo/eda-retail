@@ -127,6 +127,6 @@ El almacén de claves SHALL conservar las claves al menos mientras la incidencia
 
 #### Scenario: Duplicado tardío
 
-- **GIVEN** una incidencia cerrada dentro del plazo de seguridad
-- **WHEN** llega un `ExecuteStep` duplicado
-- **THEN** el ejecutor lo descarta sin repetir el efecto
+- **GIVEN** un paso ya ejecutado de una incidencia cerrada
+- **WHEN** llega otro `ExecuteStep` con la misma `idempotency_key`
+- **THEN** el ejecutor devuelve el resultado guardado sin repetir el efecto

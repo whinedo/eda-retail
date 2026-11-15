@@ -45,7 +45,7 @@ Si un consumidor cae, SHALL retomar desde su último evento confirmado al reinic
 #### Scenario: Caída de un ejecutor a mitad de un plan
 
 - **GIVEN** un plan con cuatro pasos, dos completados
-- **WHEN** el ejecutor cae y se reinicia
+- **WHEN** el ejecutor cae y se reinicia, y la saga le vuelve a invocar los pasos con el mismo `command_id`
 - **THEN** procesa los dos pasos pendientes
 - **AND** no repite los dos completados
 

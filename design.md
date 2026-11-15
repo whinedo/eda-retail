@@ -308,7 +308,7 @@ El proyecto de compose se llama siempre `eda-retail` (`name:` en `docker-compose
 
 ## 12. Estado de la verificación
 
-- El esquema SQL se ha ejecutado contra PostgreSQL 16 (incluida la columna `version` y los estados de compensación): las tablas se crean, `UPDATE`, `DELETE` y `TRUNCATE` sobre `events` se rechazan, y el inbox y `effect_keys` ignoran las inserciones duplicadas.
+- El esquema SQL inicial (`db/init/001_schema.sql`, modelo compartido) se ejecutó contra PostgreSQL 16; hoy es solo la base histórica de Alembic 0001: la migración 0017 borra esas tablas públicas y cada componente vive en su esquema (0008–0016).
 - `docker-compose.yml` se ha ejecutado (2026-11-13): `kafka` y `postgres` quedan `healthy` y `kafka-init` crea `eda.events` (3 particiones) y `eda.dlq` (1 partición) con retención infinita. En el primer arranque falló la creación de topics porque el broker solo anunciaba `localhost:9092`, que dentro de otro contenedor apunta a sí mismo; ahora hay dos listeners: `INTERNAL` (`kafka:19092`, para contenedores) y `EXTERNAL` (`localhost:9092`, para los procesos del host).
 
 ## 13. Observabilidad: OpenTelemetry y Jaeger
@@ -327,7 +327,6 @@ Trazas distribuidas con OpenTelemetry (OpenTracing está archivado y se fusionó
 - Configuración: `TRACING_ENABLED` (por defecto `true`) y `OTEL_EXPORTER_OTLP_ENDPOINT` (por defecto `http://localhost:4318`). Sin Jaeger el sistema funciona; solo se pierden las trazas.
 - Cada proceso llama a `setup_tracing("<componente>", settings)` al arrancar; el componente es el `service.name` en Jaeger.
 - Esquema: cada outbox tiene su columna `trace_context`. Tras `docker compose up -d`, aplicar las migraciones con `uv run alembic upgrade head`.
-- Demo: `uv run python scripts/trace_demo.py` lanza aviso → intérprete → planificador en procesos separados (base `eda_demo`, topic `eda.trace-demo`) e imprime la URL de la traza.
 
 ## 14. Front web
 
