@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 # Arranca todos los procesos de la PoC (componentes, proyector y log de eventos); cada uno publica su outbox.
-# Con POC_VERSION=2 (en el entorno o en .env) arranca también el servidor de correo MCP (eda-mail-server) y
-# el agente del transportista (eda-carrier-agent, A2A), que exige A2A_CARRIER_TOKEN.
+# Con la versión 2 de la PoC arranca también el servidor de correo MCP (eda-mail-server) y el agente
+# del transportista (eda-carrier-agent, A2A), que exige A2A_CARRIER_TOKEN.
 #
-# Uso: scripts/run-agents.sh [--logs DIR] [--no-migrate]
+# Uso: scripts/run-agents.sh [--version 1|2] [--logs DIR] [--no-migrate]
+#
+#   --version 1|2  versión de la PoC; gana a POC_VERSION de .env (por defecto, la de .env o 1)
 #
 # Requiere `docker compose up -d` (kafka y postgres) y, para los agentes con LLM, Ollama en
 # OLLAMA_HOST con el modelo LLM_MODEL. Si existe .env, todos los procesos lo cargan. Cada proceso
@@ -13,13 +15,21 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
+usage() { sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'; }
+
 LOGS_DIR="logs"
 MIGRATE=1
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --logs) LOGS_DIR="$2"; shift 2 ;;
     --no-migrate) MIGRATE=0; shift ;;
-    -h|--help) sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    --version)
+      # Exportada, gana a la de .env: ni `uv run --env-file` ni load_env_file pisan una variable ya definida.
+      case "${2:-}" in
+        1|2) export POC_VERSION="$2"; shift 2 ;;
+        *) echo "error: --version debe ser 1 o 2, no '${2:-}'" >&2; usage >&2; exit 2 ;;
+      esac ;;
+    -h|--help) usage; exit 0 ;;
     *) echo "opción desconocida: $1" >&2; exit 2 ;;
   esac
 done

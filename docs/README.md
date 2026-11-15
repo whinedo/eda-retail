@@ -230,12 +230,15 @@ Con Docker y Ollama instalados, y `.env` creado a partir de `.env.example` (fija
 
 ```bash
 scripts/start-all.sh           # terminal 1: contenedores, migraciones, todos los procesos y el front web
+                               #   (--version 2 para la segunda versión, con MCP y A2A)
 scripts/notice.sh              # terminal 2: CLI interactivo de avisos (o el menú del front)
 tail -f logs/*.log             # terminal 3: seguir el flujo
 scripts/stop-all.sh            # al terminar: para los procesos, el front y los contenedores
 ```
 
 `scripts/start-all.sh` equivale a `docker compose up -d` más `scripts/run-agents.sh` y `scripts/run-web.sh`, que también se pueden lanzar por separado. El front queda en `http://localhost:5173`.
+
+La versión de la PoC se elige al arrancar con `--version 1|2` (en `start-all.sh`, `run-agents.sh` y `run-web.sh`): la opción gana a `POC_VERSION` de `.env`, y sin ella se usa la de `.env` o, si no está, la 1. `start-all.sh` pasa la versión a `run-agents.sh` y a `run-web.sh`, así que los procesos y el backend del front corren la misma; si se lanzan por separado, hay que darles la misma versión. La cabecera del front muestra la versión activa: «Versión 1» o «Versión 2 (MCP + A2A)».
 
 En el CLI interactivo, `s` carga los datos de ejemplo (pedidos `P-1001`…`P-1005` y su stock) y `1`…`4` envían un aviso de ejemplo; después se muestra cómo avanza la incidencia hasta que se resuelve o se escala. Las trazas completas están en Jaeger: `http://localhost:16686`.
 
@@ -245,11 +248,11 @@ El front web (`scripts/run-web.sh`, spec `web-front`) hace lo mismo desde el nav
 
 | Script | Qué hace |
 | --- | --- |
-| `scripts/start-all.sh [--logs DIR] [--no-web]` | Arranca todo: `docker compose up -d`, espera a que postgres y kafka estén healthy, aplica las migraciones y lanza `run-agents.sh` y `run-web.sh` (sin el front con `--no-web`). Ctrl+C para los procesos y el front y deja los contenedores; si uno de los dos scripts termina, para el otro |
-| `scripts/run-agents.sh [--logs DIR] [--no-migrate]` | Comprueba que kafka y postgres están en marcha y que Ollama tiene `LLM_MODEL`, aplica las migraciones y arranca todos los procesos cargando `.env`; deja un log por proceso en `logs/` y los para todos con Ctrl+C o si alguno termina. Solo con `POC_VERSION=2` arranca además los procesos de la segunda versión: `eda-mail-server` (servidor de correo MCP) y `eda-carrier-agent` (agente A2A del transportista) |
+| `scripts/start-all.sh [--version 1\|2] [--logs DIR] [--no-web]` | Arranca todo: `docker compose up -d`, espera a que postgres y kafka estén healthy, aplica las migraciones y lanza `run-agents.sh` y `run-web.sh` (sin el front con `--no-web`), los dos con la versión de `--version` (por defecto, `POC_VERSION` de `.env` o 1; otro valor termina con error y el uso). Ctrl+C para los procesos y el front y deja los contenedores; si uno de los dos scripts termina, para el otro |
+| `scripts/run-agents.sh [--version 1\|2] [--logs DIR] [--no-migrate]` | Comprueba que kafka y postgres están en marcha y que Ollama tiene `LLM_MODEL`, aplica las migraciones y arranca todos los procesos cargando `.env`; deja un log por proceso en `logs/` y los para todos con Ctrl+C o si alguno termina. `--version` gana a `POC_VERSION` de `.env`; una versión no válida termina con error sin arrancar nada. Solo con la versión 2 arranca además los procesos de la segunda versión: `eda-mail-server` (servidor de correo MCP) y `eda-carrier-agent` (agente A2A del transportista) |
 | `scripts/notice.sh [argumentos de eda-notice]` | Abre `eda-notice` (por defecto, el modo interactivo) con la misma configuración (`.env`) |
-| `scripts/run-web.sh [--logs DIR]` | Arranca el front web: `eda-web` en `127.0.0.1:WEB_PORT` (8000 por defecto) y Vite en `http://localhost:5173`; la primera vez instala las dependencias de `web/` (`npm ci`, requiere Node 24). Carga `.env` (`WEB_PORT`, `JAEGER_UI_URL`) y para los dos con Ctrl+C o si uno termina |
-| `scripts/stop-all.sh [--dry-run] [--keep-docker]` | Para todos los procesos de la PoC (también el front, su backend y Vite) y después los contenedores (`docker compose stop`, sin borrar datos); `--keep-docker` deja los contenedores y `--dry-run` solo muestra qué pararía |
+| `scripts/run-web.sh [--version 1\|2] [--logs DIR]` | Arranca el front web: `eda-web` en `127.0.0.1:WEB_PORT` (8000 por defecto) y Vite en `http://localhost:5173`; la primera vez instala las dependencias de `web/` (`npm ci`, requiere Node 24). Carga `.env` (`WEB_PORT`, `JAEGER_UI_URL`) y para los dos con Ctrl+C o si uno termina. `--version` (gana a `POC_VERSION` de `.env`) elige el mapa, los procesos vigilados y la insignia de la cabecera |
+| `scripts/stop-all.sh [--dry-run] [--keep-docker]` | Para todos los procesos de la PoC (también el front, su backend, Vite y los de la versión 2, `eda-mail-server` y `eda-carrier-agent`) y después los contenedores (`docker compose stop`, sin borrar datos); `--keep-docker` deja los contenedores y `--dry-run` solo muestra qué pararía |
 
 ### Comandos
 
@@ -345,11 +348,11 @@ E5 y E6 repiten 3 veces con Ollama. Cada repetición usa su propia semilla (`--s
 
 La latencia de E6 se lee con cuidado: el arnés atiende los consumidores por turnos en un solo proceso, con esperas cortas en cada consumidor, así que la latencia de la versión de eventos incluye ese reparto de turnos y no es la de un despliegue con un proceso por componente. Con el oráculo la diferencia la marca el arnés; con Ollama la domina el LLM.
 
-## Segunda versión (en construcción)
+## Segunda versión
 
 La segunda versión de la PoC añade los dos modos de comunicación que faltan, MCP y A2A, para cubrir todos los de un sistema distribuido con agentes y mostrar cuándo conviene cada uno. Sus requisitos están en `specs/mcp-mail/spec.md` y `specs/a2a-carrier/spec.md`. Están construidos los dos: el servidor de correo MCP y el agente del transportista (A2A).
 
-Se activa con `POC_VERSION=2` en `.env` (después llegará la opción `--version 1|2` de `scripts/start-all.sh`); sin ella, o con `POC_VERSION=1`, la PoC es la primera versión.
+Se activa con `scripts/start-all.sh --version 2` o con `POC_VERSION=2` en `.env` (la opción gana a `.env`); sin ninguna de las dos, o con la versión 1, la PoC es la primera versión. Cómo activarla, en «Versión 2».
 
 | Modo | Cuándo usarlo | En la PoC |
 | --- | --- | --- |
@@ -366,7 +369,15 @@ Se activa con `POC_VERSION=2` en `.env` (después llegará la opción `--version
 
 ## Versión 2
 
-La versión 2 añade a la PoC los dos modos de comunicación que faltaban: **MCP**, con un servidor de correo simulado, y **A2A**, con un agente del transportista simulado. Se elige al arrancar: con `POC_VERSION=1` (por defecto) la PoC se comporta como la primera versión; con `POC_VERSION=2` arrancan `eda-mail-server` y `eda-carrier-agent`, el ejecutor de `notify_customer` envía el correo por MCP y el planificador consulta al transportista por A2A. Los requisitos están en `specs/mcp-mail/spec.md` y `specs/a2a-carrier/spec.md`, y cuándo conviene cada modo, en «Segunda versión (fuera de alcance)».
+La versión 2 añade a la PoC los dos modos de comunicación que faltaban: **MCP**, con un servidor de correo simulado, y **A2A**, con un agente del transportista simulado. Se elige al arrancar: con `POC_VERSION=1` (por defecto) la PoC se comporta como la primera versión; con `POC_VERSION=2` arrancan `eda-mail-server` y `eda-carrier-agent`, el ejecutor de `notify_customer` envía el correo por MCP y el planificador consulta al transportista por A2A. Los requisitos están en `specs/mcp-mail/spec.md` y `specs/a2a-carrier/spec.md`, y cuándo conviene cada modo, en «Segunda versión».
+
+Para activarla:
+
+```bash
+scripts/start-all.sh --version 2   # o POC_VERSION=2 en .env y scripts/start-all.sh
+```
+
+Con la versión 2, `.env` debe tener `A2A_CARRIER_TOKEN` (un valor propio, nunca en el repositorio); sin él, `run-agents.sh` termina con error antes de arrancar nada. `--version` también existe en `scripts/run-agents.sh` y `scripts/run-web.sh` si se lanzan por separado (con la misma versión en los dos). La cabecera del front muestra «Versión 2 (MCP + A2A)» y el mapa, el servidor de correo MCP y el agente del transportista como procesos vigilados. `scripts/stop-all.sh` también para `eda-mail-server` y `eda-carrier-agent`.
 
 ### Diagrama de agentes (versión 2)
 
