@@ -20,10 +20,9 @@ import psycopg
 from opentelemetry import context as otel_context
 from psycopg.types.json import Jsonb
 
-from eda_retail.command.rules import BusinessRules
 from eda_retail.config import Settings
-from eda_retail.executors.retry import Backoff
 from eda_retail.infra import command_client, tracing
+from eda_retail.infra.backoff import Backoff
 from eda_retail.orchestrator.saga import (
     COMMAND_REJECTED,
     PLAN_TIMEOUT,
@@ -32,6 +31,7 @@ from eda_retail.orchestrator.saga import (
     lock,
     target_url,
 )
+from eda_retail.rules import BusinessRules
 
 log = logging.getLogger("eda_retail.orchestrator")
 Invoke = Callable[..., command_client.CommandReply]

@@ -8,11 +8,11 @@ import uuid
 import psycopg
 from confluent_kafka import Consumer
 
-from eda_retail.command.rules import BusinessRules
 from eda_retail.config import Settings
 from eda_retail.infra.consumer import EventConsumer
 from eda_retail.infra.dead_letters import INVALID_SCHEMA
 from eda_retail.orchestrator.saga import SCHEMA, Saga, lock
+from eda_retail.rules import BusinessRules
 
 EVENT_TYPES = ("ShipmentDelayed", "PlanCreated", "PlanRevised", "StepCompleted", "StepFailed", "IncidentEscalated")
 

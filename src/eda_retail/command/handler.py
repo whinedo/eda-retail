@@ -35,6 +35,7 @@ from eda_retail.events.ids import incident_id_for_notice
 from eda_retail.infra import tracing
 from eda_retail.infra.event_store import append_events
 from eda_retail.llm.generation import BUDGET_EXHAUSTED, Budget
+from eda_retail.plan_validation import PlanRejected
 
 log = logging.getLogger("eda_retail.command")
 FINAL_STEP_STATUSES = ("completed", "cancelled", "compensated")
@@ -55,11 +56,8 @@ class _DryRun(Exception):
     """Interrumpe un ensayo (`CommandHandler.validate`) antes de escribir eventos."""
 
 
-class Rejected(Exception):
-    def __init__(self, reason: str, detail: str | None = None) -> None:
-        super().__init__(reason)
-        self.reason = reason
-        self.detail = detail
+# El rechazo de un comando del handler compartido es el mismo que el de la validación de planes.
+Rejected = PlanRejected
 
 
 @dataclass

@@ -9,7 +9,7 @@ from eda_retail.events.ids import incident_id_for_notice
 from eda_retail.infra.command_client import CommandReply, CommandUnavailable
 from eda_retail.synthetic import cli
 from eda_retail.synthetic.client import NoticeClient
-from eda_retail.synthetic.sample import CARRIER, EXAMPLES, ORDERS, STOCK
+from eda_retail.synthetic.sample_data import CARRIER, EXAMPLES, ORDERS, STOCK
 
 SETTINGS = replace(Settings(), intake_url="http://intake:1", inventory_url="http://inventory:2",
                    command_http_timeout_s=3.0)

@@ -16,7 +16,6 @@ from typing import Any
 import psycopg
 from confluent_kafka import Consumer
 
-from eda_retail.command.rules import BusinessRules
 from eda_retail.config import Settings
 from eda_retail.events.catalog import build_event
 from eda_retail.events.envelope import EventEnvelope
@@ -36,11 +35,15 @@ from eda_retail.interpreter.handler import (
 from eda_retail.llm.generation import LlmClient
 from eda_retail.queries.cost_per_incident import Prices, budget_from_cost, get_incident_cost
 from eda_retail.queries.orders import get_orders
+from eda_retail.rules import BusinessRules
 
 _PARKED = """
     SELECT p.incident_id, p.order_ids, i.command_id, i.cause, i.estimated_delay_hours, i.severity
     FROM interpreter.pending_notices p JOIN interpreter.interpretations i USING (incident_id)
 """
+
+# Eventos que consume el intérprete de Kafka (también los usa el front para el destino de cada evento).
+EVENT_TYPES = ("CarrierNoticeReceived", "OrderRegistered")
 
 
 def _known_orders(conn: psycopg.Connection, order_ids: list[str]) -> list[str]:
@@ -146,6 +149,6 @@ def build_consumer(conn: psycopg.Connection, kafka: Consumer, settings: Settings
                    rules: BusinessRules) -> EventConsumer:
     return EventConsumer(
         SCHEMA, conn, kafka, settings.events_topic,
-        {"CarrierNoticeReceived": InterpretNotice(settings, llm, rules), "OrderRegistered": resume_on_order},
+        dict(zip(EVENT_TYPES, (InterpretNotice(settings, llm, rules), resume_on_order), strict=True)),
         inbox_enabled=settings.inbox_enabled, on_dead_letter=escalate_dead_letter, schema=SCHEMA,
     )

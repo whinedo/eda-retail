@@ -9,16 +9,15 @@ from types import SimpleNamespace
 
 import pytest
 
-from eda_retail.command.handler import Rejected as PlanRejected
-from eda_retail.command.plans import validate_plan
-from eda_retail.command.rules import BusinessRules
 from eda_retail.config import Settings
 from eda_retail.infra import ownership
 from eda_retail.infra.commands import CommandEnvelope
 from eda_retail.llm.fake import FakeLlmClient
 from eda_retail.llm.generation import BUDGET_EXHAUSTED, LLM_OUTPUT_INVALID, Budget
+from eda_retail.plan_validation import PlanRejected, validate_plan
 from eda_retail.planner import handler
 from eda_retail.queries.cost_per_incident import budget_from_cost
+from eda_retail.rules import BusinessRules
 
 RULES = BusinessRules()
 LOSS = {"order_ids": ["P-1"], "cause": "loss", "estimated_delay_hours": 0, "severity": "high"}

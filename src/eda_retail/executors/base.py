@@ -36,32 +36,11 @@ from eda_retail.executors.retry import Backoff
 from eda_retail.infra import dead_letters, effect_keys, inbox, tracing
 from eda_retail.infra.consumer import Outcome
 from eda_retail.llm.generation import LlmCall
+from eda_retail.step_executors.errors import TIMEOUT, BusinessError, EffectError, Transient  # noqa: F401
 
 log = logging.getLogger("eda_retail.executor")
-TIMEOUT = "timeout"
 # Rechazos que no son un error del ejecutor: el paso ya no espera este resultado.
 _NO_LONGER_EXPECTED = {"step_not_requested", "incident_closed"}
-
-
-class EffectError(Exception):
-    """El efecto no se pudo ejecutar. `retryable` distingue transitorio de negocio."""
-
-    escalate: str | None = None  # motivo con el que, además, se escala la incidencia
-
-    def __init__(self, error: str, *, retryable: bool) -> None:
-        super().__init__(error)
-        self.error = error
-        self.retryable = retryable
-
-
-class Transient(EffectError):
-    def __init__(self, error: str = TIMEOUT) -> None:
-        super().__init__(error, retryable=True)
-
-
-class BusinessError(EffectError):
-    def __init__(self, error: str) -> None:
-        super().__init__(error, retryable=False)
 
 
 @dataclass(frozen=True)

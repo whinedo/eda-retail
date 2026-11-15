@@ -7,11 +7,11 @@ from __future__ import annotations
 
 import argparse
 
-from eda_retail.command.rules import BusinessRules
 from eda_retail.config import load_settings
 from eda_retail.infra.component import serve
 from eda_retail.llm.ollama_client import OllamaClient
 from eda_retail.planner.handler import SCHEMA, specs
+from eda_retail.rules import BusinessRules
 
 
 def main(argv: list[str] | None = None) -> None:

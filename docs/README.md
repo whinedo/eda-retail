@@ -255,7 +255,7 @@ Cada componente es un proceso independiente; los scripts anteriores los lanzan, 
 
 | Comando | Qué hace |
 | --- | --- |
-| `uv run eda-relay` | Publica en Kafka las filas pendientes del outbox, en orden de `seq` |
+| `uv run eda-relay` | Relay anterior de la tabla `outbox` pública (solo para los experimentos hasta T11; `run-agents.sh` ya no lo arranca: cada componente publica su `<esquema>.outbox` con su propio relay) |
 | `uv run eda-event-log` | Consulta de CQRS `event_log`: consume `eda.events` y guarda cada evento en `event_log.events` con un `seq` creciente, su partición, su offset y su contexto de traza; su posición va en `event_log.offsets`. El front lee el log de ahí |
 | `uv run eda-intake` | Sistema `intake`: atiende `RegisterCarrierNotice` en `POST /commands/RegisterCarrierNotice` (escucha en `INTAKE_URL`, por defecto `http://127.0.0.1:8101`), guarda el aviso en `intake.carrier_notices` y publica `CarrierNoticeReceived` con el relay de `intake.outbox`. `eda-notice` y el front registran los avisos aquí |
 | `uv run eda-inventory` | Sistema `inventory`: atiende `SeedSampleData` y `ExecuteStep` de `reserve_stock` y `release_stock` (escucha en `INVENTORY_URL`, por defecto `http://127.0.0.1:8102`) sobre `inventory.orders`, `stock` y `reservations`, y publica `OrderRegistered`, `StockReserved`, `StockReleased`, `StepCompleted` y `StepFailed` con el relay de `inventory.outbox`. Lo invoca la saga |
@@ -317,7 +317,7 @@ Cada experimento se lanza con un solo comando y escribe su informe en `experimen
 uv run eda-experiment e1 --seed 42 --incidents 50
 ```
 
-El arnés (`experiments/harness.py`) monta el sistema completo en un solo proceso, con los mismos componentes que `scripts/run-agents.sh`, contra una base de datos y un topic propios de cada ejecución que se borran al terminar. Los avisos salen del generador con semilla (`synthetic/generator.py`) y los fallos se inyectan con `synthetic/faults.py`. E1–E4 y E7 usan un LLM oráculo que responde con las etiquetas del generador, así miden la arquitectura y no el modelo; E5 y E6 usan Ollama.
+El arnés (`experiments/harness.py`) monta el sistema completo en un solo proceso, con los componentes anteriores (handler compartido, agentes, ejecutores y relay de la tabla `outbox` pública; T11 lo pasa a los componentes de `scripts/run-agents.sh`), contra una base de datos y un topic propios de cada ejecución que se borran al terminar. Los avisos salen del generador con semilla (`synthetic/generator.py`) y los fallos se inyectan con `synthetic/faults.py`. E1–E4 y E7 usan un LLM oráculo que responde con las etiquetas del generador, así miden la arquitectura y no el modelo; E5 y E6 usan Ollama.
 
 E1 compara tres modos de idempotencia: `full` (todo activo), `no_effect_keys` (los ejecutores sin inbox, sin `effect_keys` y con servicios que no reconocen la clave) y `none` (todo desactivado). H1 se evalúa con los dos primeros; `none` se informa como observación: sin inbox, un evento repetido vuelve a llegar al planificador y la incidencia se escala antes de ejecutar ningún paso. Sin la idempotencia de los efectos, la segunda ejecución de un paso choca con la restricción UNIQUE de su tabla, el ejecutor cae y Kafka vuelve a entregar el mensaje: el efecto externo se repite hasta que el arnés salta el mensaje tras tres caídas.
 

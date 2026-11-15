@@ -27,7 +27,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from eda_retail.synthetic.sample import EXAMPLES
+from eda_retail.synthetic.sample_data import EXAMPLES
 
 NOTICE_SCRIPT = Path(__file__).resolve().parents[3] / "scripts" / "notice.sh"
 SCRIPT_LABEL = "scripts/notice.sh"

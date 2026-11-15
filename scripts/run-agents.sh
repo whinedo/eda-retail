@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Arranca todos los procesos de la PoC (relay, proyector, agentes, orquestador y ejecutores).
+# Arranca todos los procesos de la PoC (componentes, proyector y log de eventos); cada uno publica su outbox.
 #
 # Uso: scripts/run-agents.sh [--logs DIR] [--no-migrate]
 #
@@ -23,7 +23,6 @@ done
 
 # Nombre del proceso y comando, en orden de arranque.
 PROCESSES=(
-  "relay|eda-relay"
   "projector|eda-projector"
   "event-log|eda-event-log"
   "intake|eda-intake"

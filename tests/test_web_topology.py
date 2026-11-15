@@ -21,7 +21,7 @@ from eda_retail.web.routing import receivers
 from eda_retail.web.topology import EDGES, KINDS, MONITORED, NODES, node
 
 SPEC_NODES = {
-    "intake", "postgres", "relay", "kafka", "dlq", "projectors", "interpreter", "planner", "replanner",
+    "intake", "postgres", "relay", "kafka", "dlq", "event_log", "projectors", "interpreter", "planner", "replanner",
     "orchestrator", "ollama", "mail", "claims", "carrier", "warehouse", "payments", "jaeger",
     *(f"executor-{a.value}" for a in Action),
 }
@@ -46,10 +46,12 @@ def test_map_has_the_spec_nodes():
     assert len({n.id for n in NODES}) == len(NODES)
 
 
-def test_twelve_processes_are_monitored():
-    """Estado de un nodo: se vigilan los 12 procesos de scripts/run-agents.sh"""
-    assert len(MONITORED) == 12
-    assert node("relay").process == "eda-relay"
+def test_thirteen_processes_are_monitored():
+    """Estado de un nodo: se vigilan los procesos de scripts/run-agents.sh (13 nodos)"""
+    assert len(MONITORED) == 13
+    assert node("relay").process is None  # cada componente publica su outbox con su propio relay
+    assert node("intake").process == "eda-intake"
+    assert node("event_log").process == "eda-event-log"
     assert node("interpreter").process == "eda-interpreter"
     assert node("planner").process == "eda-planner"
     assert node("replanner").process == "eda-replanner"
@@ -86,12 +88,12 @@ def test_topology_endpoint():
 
 def test_node_state_and_process_count():
     """Estado de un nodo: activo si el proceso existe, caído si no, y el recuento de procesos"""
-    body = _client(_checker(up={"relay", "planner"})).get("/api/health").json()
+    body = _client(_checker(up={"intake", "planner"})).get("/api/health").json()
 
-    assert body["processes"]["relay"] is True
+    assert body["processes"]["intake"] is True
     assert body["processes"]["planner"] is True
     assert body["processes"]["orchestrator"] is False
-    assert body["processes_up"] == 2 and body["processes_total"] == 12
+    assert body["processes_up"] == 2 and body["processes_total"] == 13
 
 
 def test_infrastructure_health():

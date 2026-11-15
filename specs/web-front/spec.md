@@ -121,14 +121,14 @@ El menú SHALL ofrecer los comandos de `scripts/notice.sh`: `seed`, `send`, `sen
 
 ### Requirement: Mapa de sistemas
 
-El mapa SHALL mostrar como nodos: `eda-notice`, PostgreSQL, relay, Kafka (`eda.events`), `eda.dlq`, proyector, agentes con LLM (intérprete, planificador, replanificador), orquestador, ejecutores (`notify_customer`, `file_claim`, `reissue_shipment`, `reserve_stock`, `release_stock`, `issue_refund`), Ollama, servicios simulados (correo, aseguradora, transportista, almacén y pagos, los de `eda_retail.executors.services` más las tablas de stock) y Jaeger. Las aristas SHALL representar las comunicaciones de design.md §3, incluidas las invocaciones REST de comandos de la saga (`orchestrator` → `planner`, `replanner`, `inventory` y ejecutores), y se distinguirán por tipo de nodo (LLM, código, datos y bus, externo, simulado). El id de cada nodo SHALL coincidir con el emisor o destino que usan los eventos (`intake` para `eda-notice`, `interpreter`, `orchestrator`, `executor-<acción>`, `projectors`…), para poder resaltar la arista de cada evento. `GET /api/topology` SHALL devolver esos nodos (id, etiqueta, tipo, descripción y si se vigila su proceso) y aristas (origen, destino).
+El mapa SHALL mostrar como nodos: `intake` (que recibe los avisos de `eda-notice`), PostgreSQL, relay (el de cada componente, sin proceso propio), Kafka (`eda.events`), `eda.dlq`, log de eventos (`event_log`), proyector, agentes con LLM (intérprete, planificador, replanificador), orquestador, ejecutores (`notify_customer`, `file_claim`, `reissue_shipment`, `reserve_stock`, `release_stock`, `issue_refund`), Ollama, servicios simulados (correo, aseguradora, transportista, almacén y pagos, los de `eda_retail.step_executors.services` más las tablas de stock) y Jaeger. Las aristas SHALL representar las comunicaciones de design.md §3, incluidas las invocaciones REST de comandos de la saga (`orchestrator` → `planner`, `replanner`, `inventory` y ejecutores), y se distinguirán por tipo de nodo (LLM, código, datos y bus, externo, simulado). El id de cada nodo SHALL coincidir con el emisor o destino que usan los eventos (`intake` para `eda-notice`, `interpreter`, `orchestrator`, `executor-<acción>`, `projectors`…), para poder resaltar la arista de cada evento. `GET /api/topology` SHALL devolver esos nodos (id, etiqueta, tipo, descripción y si se vigila su proceso) y aristas (origen, destino).
 
 #### Scenario: Estado de un nodo
 
 - **GIVEN** el proceso de un agente o ejecutor
 - **WHEN** el backend consulta el estado de procesos
 - **THEN** el nodo se pinta como activo si el proceso existe y como caído si no
-- **AND** la cabecera muestra «Procesos: N de 12»
+- **AND** la cabecera muestra «Procesos: N de 13»
 
 #### Scenario: Salud de la infraestructura
 

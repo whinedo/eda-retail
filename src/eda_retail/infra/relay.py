@@ -23,6 +23,7 @@ from eda_retail.infra import tracing
 from eda_retail.infra.db import connect
 from eda_retail.infra.kafka import make_producer
 from eda_retail.infra.logs import setup_logging
+from eda_retail.infra.outbox import RelayDeliveryError
 from eda_retail.infra.tracing import setup_tracing
 
 log = logging.getLogger("eda_retail.relay")
@@ -56,8 +57,6 @@ FOR UPDATE SKIP LOCKED
 """
 
 
-class RelayDeliveryError(RuntimeError):
-    """El broker no confirmó algún mensaje del lote; el lote se reintenta."""
 
 
 def encode_message(seq: int, envelope: EventEnvelope) -> bytes:

@@ -9,13 +9,13 @@ from __future__ import annotations
 import uuid
 from dataclasses import replace
 
-from eda_retail.command.rules import BusinessRules
 from eda_retail.config import Settings
 from eda_retail.events.catalog import build_event
 from eda_retail.events.ids import incident_id_for_notice
 from eda_retail.infra.consumer import Outcome
 from eda_retail.interpreter.consumer import build_consumer, expire_parked
 from eda_retail.llm.fake import FakeLlmClient
+from eda_retail.rules import BusinessRules
 
 from .component_helpers import outbox
 

@@ -233,7 +233,7 @@ def test_node_detail(conn, database_url: str):
     body = client.get("/api/nodes/interpreter").json()
 
     assert body["id"] == "interpreter" and body["kind"] == "llm" and body["description"]
-    assert body["consumes"] == ["CarrierNoticeReceived"]
+    assert body["consumes"] == ["CarrierNoticeReceived", "OrderRegistered"]  # reanuda avisos aparcados (T5)
     assert "ShipmentDelayed" in body["emits"]
     assert body["llm"]["calls"] >= 0
     assert isinstance(body["up"], bool)

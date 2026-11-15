@@ -4,14 +4,7 @@ from __future__ import annotations
 
 import psycopg
 
-ACTIONS = """Acciones permitidas:
-- notify_customer: avisa al cliente del problema.
-- file_claim: abre una reclamación al transportista.
-- reserve_stock: reserva stock para un reenvío.
-- reissue_shipment: reenvía el pedido (necesita una reserva de stock).
-- issue_refund: reembolsa el pedido; es irreversible y va al final.
-Para un mismo pedido, reenvío (reissue_shipment) y reembolso (issue_refund) son excluyentes:
-elige uno de los dos, nunca ambos."""
+from eda_retail.llm.prompts.planner import ACTIONS  # noqa: F401
 
 
 def format_orders(conn: psycopg.Connection, order_ids: list[str]) -> str:

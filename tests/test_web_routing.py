@@ -26,7 +26,7 @@ def test_event_without_kafka_consumer():
 
 
 def test_agents_receive_the_event_they_declare():
-    """Cada agente recibe el tipo de evento que declara en agents.cli.AGENTS"""
+    """Cada componente con LLM recibe los tipos de evento que consume de Kafka"""
     assert receivers("CarrierNoticeReceived", {})[0] == "interpreter"
 
 
@@ -39,3 +39,8 @@ def test_shipment_delayed_goes_to_the_saga():
     """La saga consume ShipmentDelayed e invoca CreatePlan por REST: el planificador no lo consume"""
     assert receivers("ShipmentDelayed", {}) == ["orchestrator", PROJECTORS]
     assert receivers("IncidentEscalated", {})[0] == "orchestrator"
+
+
+def test_order_registered_goes_to_the_interpreter():
+    """El intérprete reanuda los avisos aparcados al consumir OrderRegistered (T5)"""
+    assert receivers("OrderRegistered", {}) == ["interpreter", PROJECTORS]
