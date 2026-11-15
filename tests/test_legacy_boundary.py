@@ -13,11 +13,9 @@ import pathlib
 
 SRC = pathlib.Path(__file__).parents[1] / "src" / "eda_retail"
 LEGACY = ("eda_retail.command", "eda_retail.agents", "eda_retail.executors", "eda_retail.orchestrator.runner",
-          "eda_retail.infra.relay", "eda_retail.synthetic.sample", "eda_retail.synthetic.generator",
-          "eda_retail.synthetic.faults")
-# Módulos que todavía corren sobre el modelo compartido (los migra T11 y los borra T10b).
-ALLOWED = ("command/", "agents/", "executors/", "experiments/", "baseline_sync/", "orchestrator/runner.py",
-           "infra/relay.py", "synthetic/sample.py", "synthetic/generator.py", "synthetic/faults.py")
+          "eda_retail.infra.relay", "eda_retail.synthetic.sample")
+# Módulos del modelo compartido (los borra T10b); desde T11 los experimentos tampoco los usan.
+ALLOWED = ("command/", "agents/", "executors/", "orchestrator/runner.py", "infra/relay.py", "synthetic/sample.py")
 
 
 def _imports(path: pathlib.Path) -> set[str]:

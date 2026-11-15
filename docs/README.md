@@ -317,14 +317,14 @@ Cada experimento se lanza con un solo comando y escribe su informe en `experimen
 uv run eda-experiment e1 --seed 42 --incidents 50
 ```
 
-El arnés (`experiments/harness.py`) monta el sistema completo en un solo proceso, con los componentes anteriores (handler compartido, agentes, ejecutores y relay de la tabla `outbox` pública; T11 lo pasa a los componentes de `scripts/run-agents.sh`), contra una base de datos y un topic propios de cada ejecución que se borran al terminar. Los avisos salen del generador con semilla (`synthetic/generator.py`) y los fallos se inyectan con `synthetic/faults.py`. E1–E4 y E7 usan un LLM oráculo que responde con las etiquetas del generador, así miden la arquitectura y no el modelo; E5 y E6 usan Ollama.
+El arnés (`experiments/harness.py`) monta el sistema completo en un solo proceso, con los componentes de `scripts/run-agents.sh` (los command handlers se ejecutan en el proceso, sin HTTP; el intérprete y la saga consumen Kafka; cada componente publica su outbox; `event_log` y los proyectores mantienen el lado de lectura), contra una base de datos y un topic propios de cada ejecución que se borran al terminar. Los avisos salen del generador con semilla (`synthetic/generator.py`) y los fallos se inyectan con `synthetic/faults.py`. E1–E4 y E7 usan un LLM oráculo que responde con las etiquetas del generador, así miden la arquitectura y no el modelo; E5 y E6 usan Ollama.
 
 E1 compara tres modos de idempotencia: `full` (todo activo), `no_effect_keys` (los ejecutores sin inbox, sin `effect_keys` y con servicios que no reconocen la clave) y `none` (todo desactivado). H1 se evalúa con los dos primeros; `none` se informa como observación: sin inbox, un evento repetido vuelve a llegar al planificador y la incidencia se escala antes de ejecutar ningún paso. Sin la idempotencia de los efectos, la segunda ejecución de un paso choca con la restricción UNIQUE de su tabla, el ejecutor cae y Kafka vuelve a entregar el mensaje: el efecto externo se repite hasta que el arnés salta el mensaje tras tres caídas.
 
 | Comando | Qué hace |
 | --- | --- |
-| `uv run eda-experiment e1` | E1: cada evento entregado 2 y 3 veces, en los tres modos de idempotencia |
-| `uv run eda-experiment e2` | E2: el ejecutor de `notify_customer` cae tras la mitad de sus pasos y se reinicia |
+| `uv run eda-experiment e1` | E1: cada evento y cada comando de la saga entregados 2 y 3 veces, en los tres modos de idempotencia |
+| `uv run eda-experiment e2` | E2: el ejecutor de `notify_customer` cae tras la mitad de sus pasos, después de confirmar y antes de responder; la saga lo reinvoca con el mismo `command_id` |
 | `uv run eda-experiment e3` | E3: 30 incidencias de pérdida con los dos almacenes sin stock; el replanner sustituye la reserva y el reenvío por un reembolso |
 | `uv run eda-experiment e4` | E4: 200 incidencias; borra cada vista, la reconstruye desde `events` y compara las huellas |
 | `uv run eda-experiment e5` | E5: el planificador aislado, con la interpretación etiquetada, sobre 40 incidencias y 3 repeticiones con Ollama; acierto global, por causa y planes que no coinciden. `--llm oracle` lo ejecuta sin coste y `--threshold` cambia el umbral de H5 (0,8) |
@@ -333,7 +333,7 @@ E1 compara tres modos de idempotencia: `full` (todo activo), `no_effect_keys` (l
 
 Sin `--incidents`, cada experimento usa el tamaño de su escenario en la spec (E1 y E2: 50; E3: 30; E4: 200; E7: 50).
 
-La base síncrona de referencia (`baseline_sync/runner.py`) atiende cada aviso de principio a fin en una sola llamada, con los mismos prompts y comprobaciones de los agentes, las mismas reglas del plan, las mismas acciones de los ejecutores y las mismas compensaciones, pero sin `events`, outbox, inbox, vistas ni Kafka. Guarda el estado de negocio en una base de datos PostgreSQL propia de cada ejecución, así E6 compara las dos versiones con la misma base de datos. Recibe los mismos avisos y los mismos fallos de negocio que la versión de eventos; un aviso repetido devuelve la incidencia ya creada.
+La base síncrona de referencia (`baseline_sync/runner.py`) atiende cada aviso de principio a fin en una sola llamada, con los mismos prompts y comprobaciones de los agentes, las mismas reglas del plan, las mismas acciones de los ejecutores y las mismas compensaciones, pero sin `events`, outbox, inbox, vistas ni Kafka. Guarda el estado de negocio en su esquema `baseline_sync` (migración 0016) de una base de datos PostgreSQL propia de cada ejecución, así E6 compara las dos versiones con la misma base de datos. Recibe los mismos avisos y los mismos fallos de negocio que la versión de eventos; un aviso repetido devuelve la incidencia ya creada.
 
 E5 y E6 repiten 3 veces con Ollama. Cada repetición usa su propia semilla (`--seed` + número de repetición) y temperatura 0,7 (`--temperature`): con temperatura 0 y la misma semilla las repeticiones salen idénticas y no muestran ninguna variación. El sistema sigue con temperatura 0 por defecto (`LLM_TEMPERATURE`).
 

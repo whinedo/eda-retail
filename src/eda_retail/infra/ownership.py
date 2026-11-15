@@ -17,6 +17,7 @@ import re
 
 # Paquete bajo src/ -> esquema del componente. Cada tarea añade el suyo al migrar el componente.
 COMPONENT_PACKAGES: dict[str, str] = {
+    "eda_retail/baseline_sync": "baseline_sync",  # la base síncrona de E6 (no es un componente de la EDA)
     "eda_retail/event_log": "event_log",
     **{f"eda_retail/executor_{a}": f"executor_{a}"
        for a in ("notify_customer", "file_claim", "reissue_shipment", "issue_refund")},

@@ -40,9 +40,13 @@ def _faults(scenario: str, seed: int) -> FaultPlan:
     return FaultPlan(seed=seed)
 
 
-def _refunded(conn: Any) -> int:
+# Reembolsos de cada versión: el ejecutor de issue_refund y la base síncrona tienen su propia tabla.
+REFUNDS = {"events": "executor_issue_refund.refunds", "sync": "baseline_sync.refunds"}
+
+
+def _refunded(conn: Any, version: str) -> int:
     with conn.transaction():
-        return conn.execute("SELECT count(DISTINCT incident_id) AS n FROM refunds").fetchone()["n"]
+        return conn.execute(f"SELECT count(DISTINCT incident_id) AS n FROM {REFUNDS[version]}").fetchone()["n"]
 
 
 def _row(version: str, result: Any, refunded: int, base: Settings) -> dict[str, Any]:
@@ -59,13 +63,13 @@ def _row(version: str, result: Any, refunded: int, base: Settings) -> dict[str, 
 def _run_events(base: Settings, config: RunConfig, data: Dataset, llm: LlmClient) -> dict[str, Any]:
     with started(base, config, data=data, llm=llm) as h:
         result = h.result(h.elapsed)
-        return _row("events", result, _refunded(h.conn), base)
+        return _row("events", result, _refunded(h.conn, "events"), base)
 
 
 def _run_sync(base: Settings, config: RunConfig, data: Dataset, llm: LlmClient) -> dict[str, Any]:
     with sync_started(base, config, data=data, llm=llm) as run:
         result = run.result()
-        return _row("sync", result, _refunded(run.conn), base)
+        return _row("sync", result, _refunded(run.conn, "sync"), base)
 
 
 def _spread(values: list[float]) -> dict[str, float]:

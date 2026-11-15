@@ -12,10 +12,10 @@ from __future__ import annotations
 from dataclasses import replace
 from decimal import Decimal
 
-from eda_retail.command.rules import BusinessRules
 from eda_retail.config import Settings
 from eda_retail.experiments.harness import Harness, RunConfig, started
 from eda_retail.experiments.report import Report
+from eda_retail.rules import BusinessRules
 from eda_retail.synthetic.faults import FaultPlan
 from eda_retail.synthetic.generator import VARIANTS, WAREHOUSES, Dataset, generate
 
@@ -34,7 +34,7 @@ def repeated_completions(h: Harness) -> int:
     """Pasos completados más de una vez en una incidencia (mismo `step_id`)."""
     row = h.conn.execute(
         "SELECT count(*) - count(DISTINCT (correlation_id, payload->>'step_id')) AS n "
-        "FROM events WHERE event_type = 'StepCompleted'"
+        "FROM event_log.events WHERE event_type = 'StepCompleted'"
     ).fetchone()
     h.conn.commit()
     return row["n"]
@@ -47,9 +47,9 @@ def run_e3(base: Settings, *, seed: int = 42, incidents: int = 30) -> Report:
         result = h.result(h.elapsed)
         refunds = h.conn.execute(
             "SELECT correlation_id, payload->>'order_id' AS order_id, (payload->>'amount')::numeric AS amount "
-            "FROM events WHERE event_type = 'RefundIssued'"
+            "FROM event_log.events WHERE event_type = 'RefundIssued'"
         ).fetchall()
-        replans = h.conn.execute("SELECT count(*) AS n FROM events WHERE event_type = 'PlanRevised'").fetchone()["n"]
+        replans = h.conn.execute("SELECT count(*) AS n FROM event_log.events WHERE event_type = 'PlanRevised'").fetchone()["n"]
         h.conn.commit()
         repeated = repeated_completions(h) + result.repeated_steps
     amounts = {o.order_id: o.amount for o in data.orders}

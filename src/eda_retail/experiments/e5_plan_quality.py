@@ -15,19 +15,18 @@ from __future__ import annotations
 
 from collections import defaultdict
 from collections.abc import Callable
-from types import SimpleNamespace
+from decimal import Decimal
 from typing import Any
 
-from eda_retail.agents import planner
-from eda_retail.agents.prompts import order_lines
-from eda_retail.command.handler import Rejected, incident_id_for_notice
-from eda_retail.command.plans import validate_plan
-from eda_retail.command.rules import BusinessRules
 from eda_retail.config import Settings
+from eda_retail.events.ids import incident_id_for_notice
 from eda_retail.experiments.oracle import Oracle
 from eda_retail.experiments.report import Report
 from eda_retail.llm.generation import Budget, LlmClient, generate
+from eda_retail.llm.prompts import planner
 from eda_retail.llm.schemas import PlanProposal
+from eda_retail.planner.handler import check_plan, order_lines
+from eda_retail.rules import BusinessRules
 from eda_retail.synthetic.generator import Dataset, SyntheticNotice
 from eda_retail.synthetic.generator import generate as generate_data
 
@@ -42,24 +41,22 @@ class _Evaluation:
     def __init__(self, data: Dataset, llm: LlmClient, rules: BusinessRules) -> None:
         self.llm, self.rules = llm, rules
         self._orders = {o.order_id: o for o in data.orders}
-        self._ctx = SimpleNamespace(rules=rules)
         self.calls: list[Any] = []
 
-    def _check(self, plan: PlanProposal) -> str | None:
-        try:
-            validate_plan(self._ctx, plan.command_steps(), external_ids=set())
-        except Rejected as exc:
-            return f"{exc.reason} ({exc.detail})" if exc.detail else exc.reason
-        return None
-
     def propose(self, notice: SyntheticNotice) -> tuple[list[str], str | None]:
+        """El plan con el prompt y las reglas del componente `planner` (pedidos con su importe)."""
         o = self._orders[notice.order_id]
-        orders = order_lines([{"order_id": o.order_id, "quantity": o.quantity, "sku": o.sku, "amount": o.amount}])
+        amounts = {o.order_id: Decimal(o.amount)}
+
+        def check(plan: PlanProposal) -> str | None:
+            result = check_plan(plan.command_steps(), self.rules, amounts)
+            return result if isinstance(result, str) else None
+
         request = planner.plan_request(incident_id_for_notice(notice.carrier_notice_id), notice.cause,
-                                       notice.severity, notice.delay_hours, orders)
+                                       notice.severity, notice.delay_hours, order_lines(amounts))
         budget = Budget(0, 0, self.rules.max_tokens_per_incident, self.rules.max_llm_calls_per_incident)
         gen = generate(self.llm, request, PlanProposal, max_generations=self.rules.max_generations,
-                       budget=budget, check=self._check)
+                       budget=budget, check=check)
         self.calls += gen.calls
         if gen.value is None:
             return [], gen.reason

@@ -15,7 +15,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from eda_retail.agents import interpreter, planner, replanner, writer
+from eda_retail.llm.prompts import interpreter, planner, replanner, writer
 
 
 def prompts_version() -> str:

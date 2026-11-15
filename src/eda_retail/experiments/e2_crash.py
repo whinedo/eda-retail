@@ -1,7 +1,8 @@
 """E2 Caída de un ejecutor (hipótesis H2, spec experiments).
 
 El ejecutor de `notify_customer` (todas las incidencias tienen ese paso) cae tras completar
-la mitad de sus pasos, sin confirmar el último offset, y se reinicia. H2: todas las
+la mitad de sus pasos: confirma la transacción del último y cae antes de responder al `ExecuteStep`.
+La saga lo vuelve a invocar con el mismo `command_id` y su inbox devuelve la respuesta guardada. H2: todas las
 incidencias terminan en `IncidentResolved` o `IncidentEscalated` y no se repite ningún paso.
 """
 

@@ -28,20 +28,27 @@ _PLANS = ("PlanCreated", "PlanRevised")
 
 
 def _origin(events: dict[str, dict], event: dict) -> str | None:
-    """Sube por `causation_id` hasta el `ShipmentDelayed` y devuelve su causa y gravedad."""
+    """Sube por `causation_id` hasta el `ShipmentDelayed` y devuelve su causa y gravedad.
+
+    Un `PlanCreated` lo causa el comando `CreatePlan`, que no está en el log (los comandos viajan por
+    REST): la saga solo lo invoca al consumir el `ShipmentDelayed` de la incidencia, así que la cadena
+    sigue en el `ShipmentDelayed` con el mismo `correlation_id`."""
     seen = set()
     while event is not None and event["event_id"] not in seen:
         if event["event_type"] == "ShipmentDelayed":
             return f"{event['payload']['cause']}/{event['payload']['severity']}"
         seen.add(event["event_id"])
-        event = events.get(str(event["causation_id"]))
+        cause = events.get(str(event["causation_id"]))
+        if cause is None and event["event_type"] == "PlanCreated":
+            cause = next((e for e in events.values() if e["event_type"] == "ShipmentDelayed"), None)
+        event = cause
     return None
 
 
 def explain(h: Harness, incident_id: str) -> list[dict]:
     trail = get_audit_trail(h.conn, incident_id)
     rows = h.conn.execute(
-        "SELECT seq, event_id, event_type, causation_id, payload FROM events WHERE correlation_id = %s",
+        "SELECT seq, event_id, event_type, causation_id, payload FROM event_log.events WHERE correlation_id = %s",
         (incident_id,),
     ).fetchall()
     h.conn.commit()

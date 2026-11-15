@@ -17,7 +17,7 @@ from eda_retail.projectors.registry import PROJECTORS
 def run_e4(base: Settings, *, seed: int = 42, incidents: int = 200) -> Report:
     with started(base, RunConfig(seed=seed, incidents=incidents)) as h:
         model = h.result(h.elapsed).model
-        log_size = h.conn.execute("SELECT count(*) AS n FROM events").fetchone()["n"]
+        log_size = h.conn.execute("SELECT count(*) AS n FROM event_log.events").fetchone()["n"]
         h.conn.commit()
         views = {}
         for view in PROJECTORS:

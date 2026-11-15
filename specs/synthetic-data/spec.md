@@ -46,7 +46,7 @@ El sistema SHALL simular pedidos, existencias por almacén, transportistas, corr
 
 ### Requirement: Inyección de fallos
 
-El sistema SHALL permitir inyectar fallos configurables: duplicar eventos (de 1 a N veces), retrasar su entrega, hacer fallar un tipo de paso con una probabilidad dada, caer un consumidor en un instante dado y dejar sin stock un almacén.
+El sistema SHALL permitir inyectar fallos configurables: duplicar eventos y comandos (de 1 a N veces), retrasar la entrega de los eventos, hacer fallar un tipo de paso con una probabilidad dada, caer un consumidor o un ejecutor en un instante dado y dejar sin stock un almacén.
 
 #### Scenario: Duplicación de eventos
 
