@@ -13,6 +13,7 @@ from eda_retail.projectors import (
     incident_status,
     order_status,
     orders,
+    parked_notices,
 )
 from eda_retail.projectors.base import Projector
 
@@ -38,6 +39,7 @@ PROJECTORS: dict[str, ProjectorSpec] = {
         carrier_dashboard.build_projector, ("views.view_carrier_dashboard", "views.view_carrier_incidents")
     ),
     order_status.PROJECTOR_NAME: ProjectorSpec(order_status.build_projector, ("views.view_order_status",)),
+    parked_notices.PROJECTOR_NAME: ProjectorSpec(parked_notices.build_projector, ("views.view_parked_notices",)),
 }
 
 

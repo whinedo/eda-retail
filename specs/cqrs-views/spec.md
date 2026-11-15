@@ -102,7 +102,7 @@ Las consultas de las personas (front, `eda-notice interactive`, experimentos) y 
 
 ### Requirement: Vistas mínimas
 
-El sistema SHALL mantener las vistas `orders` (pedido, importe y `customer_ref`, de `OrderRegistered`), `incident_status` (estado y paso actual por incidencia), `cost_per_incident` (tokens y coste de efectos), `audit_trail` (quién decidió qué y con qué versión del plan), `carrier_dashboard` (retrasos y reclamaciones por transportista) y `order_status` (estado de negocio de cada pedido afectado por una incidencia, requirement «Estado de los pedidos»).
+El sistema SHALL mantener las vistas `orders` (pedido, importe y `customer_ref`, de `OrderRegistered`), `incident_status` (estado y paso actual por incidencia), `cost_per_incident` (tokens y coste de efectos), `audit_trail` (quién decidió qué y con qué versión del plan), `carrier_dashboard` (retrasos y reclamaciones por transportista), `order_status` (estado de negocio de cada pedido afectado por una incidencia, requirement «Estado de los pedidos») y `parked_notices` (avisos aparcados por el intérprete, requirement «Avisos aparcados»).
 
 #### Scenario: Incidencia con plan en curso
 
@@ -160,6 +160,28 @@ La vista `order_status` SHALL dar el estado de negocio de cada pedido afectado p
 - **WHEN** se proyecta el `IncidentEscalated` de I-1
 - **THEN** P-1001 pasa a `escalated`
 - **AND** un `PlanRevised` posterior de I-1 no lo devuelve a `in_resolution`
+
+### Requirement: Avisos aparcados
+
+La vista `parked_notices` SHALL listar los avisos que el intérprete aparcó porque `view_orders` aún no tenía ninguno de sus pedidos (requirement «Consistencia eventual declarada», «Proyección atrasada»), para el aviso del front (spec `web-front`, «Aviso de avisos aparcados»). Tiene una fila por incidencia (`incident_id`, `order_ids` que espera, `deadline_at`, `parked_at` y el `event_id`, la partición y el offset del `NoticeParked`) y la mantiene un proyector que consume Kafka. `NoticeParked` SHALL crear la fila; el `ShipmentDelayed` (reanudado por el `OrderRegistered` o por el plazo con el pedido ya proyectado) y el `IncidentEscalated` de esa incidencia SHALL borrarla. La consulta devuelve los avisos por plazo, el que vence antes primero, con `applied`.
+
+#### Scenario: Aviso aparcado visible
+
+- **GIVEN** un aviso sobre P-1007 que el intérprete aparca con un plazo y publica como `NoticeParked`
+- **WHEN** el proyector `parked_notices` lo consume
+- **THEN** la vista tiene la incidencia con P-1007, su plazo y la posición del evento en Kafka
+
+#### Scenario: Aviso aparcado reanudado
+
+- **GIVEN** un aviso aparcado por P-1007 en `parked_notices`
+- **WHEN** se proyecta el `ShipmentDelayed` de su incidencia
+- **THEN** el aviso desaparece de la vista
+
+#### Scenario: Aviso aparcado vencido
+
+- **GIVEN** un aviso aparcado por P-1007 en `parked_notices`
+- **WHEN** se proyecta el `IncidentEscalated` de su incidencia con `no_valid_orders`
+- **THEN** el aviso desaparece de la vista
 
 ### Requirement: Proyectores idempotentes
 

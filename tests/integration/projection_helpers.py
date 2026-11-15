@@ -89,6 +89,10 @@ class History:
                                              "cause": cause, "estimated_delay_hours": 24, "severity": severity},
                          "interpreter")
 
+    def parked(self, order_ids=("P1",), deadline_at: str = "2026-11-15T20:13:36+00:00") -> EventEnvelope:
+        return self._add("NoticeParked", {"incident_id": self.incident, "order_ids": list(order_ids),
+                                          "deadline_at": deadline_at}, "interpreter")
+
     def plan_created(self, steps: list[dict]) -> EventEnvelope:
         return self._add("PlanCreated", {"incident_id": self.incident, "plan_version": 1, "steps": steps},
                          "planner")

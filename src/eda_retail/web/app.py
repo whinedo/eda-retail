@@ -24,6 +24,7 @@ from eda_retail.config import load_settings
 from eda_retail.llm.ollama_client import DEFAULT_HOST as DEFAULT_OLLAMA_HOST
 from eda_retail.projectors.order_status import OrderStatus
 from eda_retail.queries.order_status import get_order_status
+from eda_retail.queries.parked_notices import get_parked_notices
 from eda_retail.web.commands import (
     NOTICE_SCRIPT,
     RUN_MAX_SECONDS,
@@ -181,6 +182,13 @@ def create_app(
         """Vista de analítica de pedidos (spec web-front): solo lee `order_status` (CQRS)."""
         view = get_order_status(conn, status=status, incident_id=incident_id or None, topic=settings.events_topic)
         return {"counts": view.counts, "orders": [asdict(o) for o in view.orders], "applied": view.applied}
+
+    @app.get("/api/parked-notices")
+    def parked_notices(conn: Conn) -> dict:
+        """Avisos aparcados por el intérprete (spec web-front, «Aviso de avisos aparcados»): solo lee
+        `parked_notices` (CQRS), por plazo."""
+        view = get_parked_notices(conn, topic=settings.events_topic)
+        return {"notices": [asdict(n) for n in view.notices], "applied": view.applied}
 
     @app.get("/api/events/stream")
     def events_stream(

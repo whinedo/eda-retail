@@ -388,6 +388,7 @@ La cabecera SHALL ofrecer un enlace a la interfaz web de Jaeger, que se abre en 
 | `GET /api/nodes/{id}` | Detalle y métricas de un nodo |
 | `GET /api/health` | Kafka, PostgreSQL, Ollama y procesos |
 | `GET /api/analytics/orders?status=&incident_id=` | Contadores por estado y pedidos de `order_status`, con `applied` |
+| `GET /api/parked-notices` | Avisos aparcados de `parked_notices`, por plazo, con `applied` |
 | `GET /api/config` | Configuración para el front (`jaeger_ui_url`, `free_text_enabled`, `interactive_enabled`) |
 | `POST /api/commands` | Ejecuta un comando de la lista blanca; devuelve `run_id` |
 | `GET /api/commands/{run_id}/stream` | SSE con la salida y, al final, el código de salida |

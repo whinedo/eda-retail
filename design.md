@@ -270,7 +270,7 @@ El lado de lectura (CQRS) son componentes que consumen Kafka y mantienen **sus p
 | Componente | Esquema | Mantiene | Lo usan |
 | --- | --- | --- | --- |
 | `event_log` | `event_log` | `events`: la vista del log de eventos completo, ordenada, con la partición, el offset y el contexto de traza de cada mensaje | El front (panel de eventos, mapa, detalle de nodo), que hace polling sobre ella, y la auditoría |
-| `projectors` (uno por vista) | `views` | `view_orders`, `view_incident_status`, `view_cost_per_incident`, `view_audit_trail`, `view_carrier_dashboard`, `view_order_status` | El front, `eda-notice interactive`, los experimentos y los sistemas que necesitan datos de otro dominio (`view_orders`, `view_cost_per_incident`) |
+| `projectors` (uno por vista) | `views` | `view_orders`, `view_incident_status`, `view_cost_per_incident`, `view_audit_trail`, `view_carrier_dashboard`, `view_order_status`, `view_parked_notices` | El front, `eda-notice interactive`, los experimentos y los sistemas que necesitan datos de otro dominio (`view_orders`, `view_cost_per_incident`) |
 
 Cada uno guarda su posición en Kafka (`offsets`: partición y offset por consumidor) en la misma transacción que su vista, así que aplica cada mensaje exactamente una vez a la vista aunque Kafka lo reentregue. Al arrancar asigna todas las particiones en el offset guardado + 1; no confirma offsets en Kafka. Los proyectores anotan además cada `event_id` aplicado en `views.applied_events`: un evento que se vuelve a publicar con otro offset (p. ej. al reproducir un outbox) tampoco se aplica dos veces. Las consultas leen `views.view_*` y responden con `applied` (offset aplicado por partición).
 

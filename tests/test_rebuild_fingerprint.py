@@ -34,3 +34,12 @@ def test_fingerprint_changes_when_a_row_changes():
     rows = [{"order_id": "P1", "incident_id": "I-a", "status": "delayed"}]
     changed = [{"order_id": "P1", "incident_id": "I-a", "status": "refunded"}]
     assert fingerprint(_Conn(rows), "order_status") != fingerprint(_Conn(changed), "order_status")
+
+
+def test_parked_notices_fingerprint_is_independent_of_row_order():
+    """Reconstrucción de parked_notices: la huella de los avisos aparcados no depende del orden de las filas"""
+    rows = [
+        {"incident_id": "I-a", "order_ids": ["P-1001"], "deadline_at": "2026-11-15 20:13:36+00:00"},
+        {"incident_id": "I-b", "order_ids": ["P-1004", "P-1005"], "deadline_at": "2026-11-15 20:14:02+00:00"},
+    ]
+    assert fingerprint(_Conn(rows), "parked_notices") == fingerprint(_Conn(list(reversed(rows))), "parked_notices")
