@@ -59,8 +59,7 @@ def _capture_uvicorn(monkeypatch) -> dict:
     """Arranque de un componente sin servidor real: guarda lo que se le pasaría a uvicorn."""
     import uvicorn
 
-    import eda_retail.infra.outbox as outbox
-    import eda_retail.infra.tracing as tracing
+    from eda_retail.infra import outbox, tracing
 
     calls: dict = {}
     monkeypatch.setenv("EXECUTOR_MAX_CONCURRENCY", "3")
