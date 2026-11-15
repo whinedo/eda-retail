@@ -9,10 +9,10 @@ from __future__ import annotations
 
 import argparse
 
-from eda_retail.command.rules import BusinessRules
 from eda_retail.config import load_settings
 from eda_retail.infra.component import serve
 from eda_retail.llm.ollama_client import OllamaClient
+from eda_retail.rules import BusinessRules
 from eda_retail.step_executors.actions import ACTIONS
 from eda_retail.step_executors.component import specs, url
 

@@ -21,12 +21,12 @@ from typing import Any
 import psycopg
 from psycopg.types.json import Jsonb
 
-from eda_retail.command.rules import BusinessRules
 from eda_retail.config import Settings
 from eda_retail.events.catalog import Action, build_event
 from eda_retail.events.envelope import EventEnvelope
 from eda_retail.infra import outbox, tracing
 from eda_retail.orchestrator import rules
+from eda_retail.rules import BusinessRules
 
 SCHEMA = "orchestrator"
 PLAN_TIMEOUT = "plan_timeout"

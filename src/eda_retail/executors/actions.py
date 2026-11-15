@@ -27,19 +27,11 @@ from eda_retail.command.rules import BusinessRules
 from eda_retail.executors.base import BusinessError, Effect, EffectError, NoPreparation, Prepared, StepRequest
 from eda_retail.executors.services import FakeService, Services
 from eda_retail.llm.generation import BUDGET_EXHAUSTED, LlmClient
+from eda_retail.step_executors.errors import REFUND_LIMIT, Escalating
 
 OUT_OF_STOCK = "out_of_stock"
-REFUND_LIMIT = "refund_limit"
 ORDER_NOT_FOUND = "order_not_found"
 RESERVATION_NOT_FOUND = "reservation_not_found"
-
-
-class Escalating(BusinessError):
-    """Error de negocio que, además del `StepFailed`, escala la incidencia con su motivo."""
-
-    def __init__(self, error: str) -> None:
-        super().__init__(error)
-        self.escalate = error
 
 
 def _order(conn: psycopg.Connection, order_id: str) -> dict[str, Any]:

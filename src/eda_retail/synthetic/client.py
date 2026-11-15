@@ -15,7 +15,7 @@ from eda_retail.events.ids import incident_id_for_notice
 from eda_retail.infra import command_client
 from eda_retail.infra.command_client import CommandReply
 from eda_retail.inventory.handler import SAMPLE_DATA_CORRELATION
-from eda_retail.synthetic.sample import CARRIER, ORDERS, STOCK
+from eda_retail.synthetic.sample_data import CARRIER, ORDERS, STOCK
 
 
 class SeedRejected(RuntimeError):

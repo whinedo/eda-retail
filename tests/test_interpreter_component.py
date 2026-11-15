@@ -5,15 +5,15 @@ from __future__ import annotations
 import uuid
 from decimal import Decimal
 
-from eda_retail.agents.interpreter import NoticeInterpretation
-from eda_retail.command.rules import BusinessRules
 from eda_retail.config import Settings
 from eda_retail.events.catalog import Cause, Severity
 from eda_retail.infra.commands import CommandEnvelope
 from eda_retail.interpreter import handler
 from eda_retail.llm.fake import FakeLlmClient
 from eda_retail.llm.generation import BUDGET_EXHAUSTED, Budget
+from eda_retail.llm.prompts.interpreter import NoticeInterpretation
 from eda_retail.queries.cost_per_incident import IncidentCost, budget_from_cost
+from eda_retail.rules import BusinessRules
 
 DELAY = {"order_ids": ["P-1", "P-9"], "cause": "delay", "estimated_delay_hours": 24, "severity": "low"}
 

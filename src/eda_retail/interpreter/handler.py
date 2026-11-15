@@ -21,13 +21,13 @@ from typing import Any
 import psycopg
 from pydantic import BaseModel, ConfigDict, Field
 
-from eda_retail.agents.interpreter import NoticeInterpretation, check_interpretation, notice_request
-from eda_retail.command.rules import BusinessRules
 from eda_retail.config import Settings
 from eda_retail.events.catalog import build_event
 from eda_retail.events.envelope import EventEnvelope
 from eda_retail.infra.commands import Accepted, CommandEnvelope, Rejected
 from eda_retail.llm.generation import Budget, LlmCall, LlmClient, generate
+from eda_retail.llm.prompts.interpreter import NoticeInterpretation, check_interpretation, notice_request
+from eda_retail.rules import BusinessRules
 
 SCHEMA = "interpreter"
 DUPLICATE_NOTICE = "duplicate_notice"

@@ -14,7 +14,7 @@ import psycopg
 from eda_retail.infra.command_client import CommandUnavailable
 from eda_retail.queries.incident_status import IncidentStatus, get_incident_status
 from eda_retail.synthetic.client import NoticeClient, SeedRejected
-from eda_retail.synthetic.sample import EXAMPLES
+from eda_retail.synthetic.sample_data import EXAMPLES
 
 FINAL = ("resolved", "escalated")
 _EXAMPLES_MENU = ["\nAvisos de ejemplo:"] + [

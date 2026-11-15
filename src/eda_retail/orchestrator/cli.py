@@ -16,9 +16,8 @@ from collections.abc import Callable
 
 import psycopg
 
-from eda_retail.command.rules import BusinessRules
 from eda_retail.config import Settings, load_settings
-from eda_retail.executors.retry import Backoff
+from eda_retail.infra.backoff import Backoff
 from eda_retail.infra.db import connect
 from eda_retail.infra.kafka import make_consumer
 from eda_retail.infra.logs import setup_logging
@@ -27,6 +26,7 @@ from eda_retail.infra.tracing import setup_tracing
 from eda_retail.orchestrator.consumer import build_consumer
 from eda_retail.orchestrator.dispatcher import dispatch_once, expire_once
 from eda_retail.orchestrator.saga import SCHEMA
+from eda_retail.rules import BusinessRules
 
 log = logging.getLogger("eda_retail.orchestrator")
 IDLE_S = 0.2

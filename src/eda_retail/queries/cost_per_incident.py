@@ -12,11 +12,11 @@ from decimal import Decimal
 
 import psycopg
 
-from eda_retail.command.rules import BusinessRules
 from eda_retail.config import Settings
 from eda_retail.llm.generation import Budget
 from eda_retail.projectors.cost_per_incident import PROJECTOR_NAME
 from eda_retail.queries.positions import applied
+from eda_retail.rules import BusinessRules
 
 
 @dataclass(frozen=True)

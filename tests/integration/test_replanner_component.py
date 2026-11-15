@@ -10,10 +10,10 @@ from __future__ import annotations
 import uuid
 from dataclasses import replace
 
-from eda_retail.command.rules import BusinessRules
 from eda_retail.config import Settings
 from eda_retail.llm.fake import FakeLlmClient
 from eda_retail.replanner.handler import specs
+from eda_retail.rules import BusinessRules
 
 from .component_helpers import body, client, outbox
 

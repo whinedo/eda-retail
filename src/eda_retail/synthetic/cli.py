@@ -18,7 +18,7 @@ from eda_retail.infra.command_client import CommandUnavailable
 from eda_retail.infra.db import connect
 from eda_retail.synthetic.client import NoticeClient, SeedRejected
 from eda_retail.synthetic.interactive import run
-from eda_retail.synthetic.sample import CARRIER, EXAMPLES
+from eda_retail.synthetic.sample_data import CARRIER, EXAMPLES
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:

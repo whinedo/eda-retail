@@ -11,7 +11,6 @@ import argparse
 import logging
 import threading
 
-from eda_retail.command.rules import BusinessRules
 from eda_retail.config import Settings, load_settings
 from eda_retail.infra.db import connect
 from eda_retail.infra.kafka import make_consumer
@@ -21,6 +20,7 @@ from eda_retail.infra.tracing import setup_tracing
 from eda_retail.interpreter.consumer import build_consumer, expire_parked
 from eda_retail.interpreter.handler import SCHEMA
 from eda_retail.llm.ollama_client import OllamaClient
+from eda_retail.rules import BusinessRules
 
 log = logging.getLogger("eda_retail.interpreter")
 EXPIRY_INTERVAL_S = 1.0
