@@ -21,6 +21,7 @@ COMPONENT_PACKAGES: dict[str, str] = {
     "eda_retail/intake": "intake",
     "eda_retail/interpreter": "interpreter",
     "eda_retail/inventory": "inventory",
+    "eda_retail/orchestrator": "orchestrator",
     "eda_retail/planner": "planner",
     "eda_retail/projectors": "views",
 }

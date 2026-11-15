@@ -47,7 +47,7 @@ Por Kafka **solo viajan eventos**: el topic `eda.events`, con clave `incident_id
 | `inventory` | `SeedSampleData`; `ExecuteStep` de `reserve_stock` y `release_stock` | — | `OrderRegistered`, `StockReserved`, `StockReleased`, `StepCompleted`, `StepFailed` | Código |
 | `interpreter` | — (su handler atiende `OpenIncident`, que deriva de `CarrierNoticeReceived`) | `CarrierNoticeReceived`; `OrderRegistered` (solo para reanudar avisos aparcados) | `ShipmentDelayed` o `IncidentEscalated`, `LlmCallRecorded` | LLM + su command handler |
 | `planner` | `CreatePlan` | — | `PlanCreated` o `IncidentEscalated`, `LlmCallRecorded` | LLM + su command handler |
-| `orchestrator` (saga) | Ninguno; invoca `CreatePlan`, `RevisePlan` y `ExecuteStep` | `ShipmentDelayed`, `PlanCreated`, `PlanRevised`, `StepCompleted`, `StepFailed`, `IncidentEscalated` | `StepCancelled`, `IncidentResolved`, `IncidentEscalated` | Código |
+| `orchestrator` (saga) | Ninguno; invoca `CreatePlan`, `RevisePlan` y `ExecuteStep` | `ShipmentDelayed`, `PlanCreated`, `PlanRevised`, `StepCompleted`, `StepFailed`, `IncidentEscalated` | `StepRequested`, `StepCancelled`, `IncidentResolved`, `IncidentEscalated` | Código |
 | `replanner` | `RevisePlan` | — | `PlanRevised` o `IncidentEscalated`, `LlmCallRecorded` | LLM + su command handler |
 | `executor-<acción>` | `ExecuteStep` de su acción | — | `StepCompleted`, `StepFailed`, el evento de efecto, `LlmCallRecorded` | Código (el redactor se invoca desde aquí) |
 | `event_log` (consulta) | — | todos | — (mantiene la vista del log para el front) | Código |
@@ -112,7 +112,7 @@ La orquestación gobierna la saga y es la única que escribe `orchestrator.plan_
 | `reissue_shipment` | Ninguna | |
 | `issue_refund` | Ninguna | Paso pivote: se emite el último y solo sin compensaciones pendientes |
 
-La saga es **reactiva y orquestada**: es un *process manager* dentro del orquestador. Cada transición ocurre al consumir un evento o al vencer uno de sus plazos, en una transacción que actualiza `orchestrator.plan_steps` y `orchestrator.deadlines`, deja en su `command_outbox` los comandos que invocará y en su outbox los eventos siguientes. El orquestador no recibe comandos ni consulta a nadie: invoca por REST el command handler de cada sistema (sección 4.4), que solo responde si acepta el comando, y reacciona al evento que ese sistema emite. Nadie más escribe el estado de la saga.
+La saga es **reactiva y orquestada**: es un *process manager* dentro del orquestador. Cada transición ocurre al consumir un evento o al vencer uno de sus plazos, en una transacción que actualiza `orchestrator.plan_steps` y `orchestrator.deadlines`, deja en su `command_outbox` los comandos que invocará y en su outbox los eventos siguientes. Cada `ExecuteStep` va acompañado de un `StepRequested` en su outbox, en la misma transacción: es un evento de notificación (event notification) de que la saga pidió el paso (con su `plan_version` e `idempotency_key`), que interesa a la auditoría y, en la PoC, al front (vistas `incident_status` y `audit_trail`); ningún ejecutor lo consume. El orquestador no recibe comandos ni consulta a nadie: invoca por REST el command handler de cada sistema (sección 4.4), que solo responde si acepta el comando, y reacciona al evento que ese sistema emite. Nadie más escribe el estado de la saga.
 
 | Lo que consume | Transición de la saga | Comandos que invoca y eventos que emite |
 | --- | --- | --- |

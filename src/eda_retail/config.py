@@ -64,6 +64,23 @@ class Settings:
         default_factory=lambda: os.environ.get("INVENTORY_URL", "http://127.0.0.1:8102")
     )
     planner_url: str = field(default_factory=lambda: os.environ.get("PLANNER_URL", "http://127.0.0.1:8103"))
+    replanner_url: str = field(default_factory=lambda: os.environ.get("REPLANNER_URL", "http://127.0.0.1:8104"))
+    # Ejecutores de las acciones que no son de inventory (T9); reserve_stock y release_stock van a INVENTORY_URL.
+    executor_notify_customer_url: str = field(
+        default_factory=lambda: os.environ.get("EXECUTOR_NOTIFY_CUSTOMER_URL", "http://127.0.0.1:8111")
+    )
+    executor_file_claim_url: str = field(
+        default_factory=lambda: os.environ.get("EXECUTOR_FILE_CLAIM_URL", "http://127.0.0.1:8112")
+    )
+    executor_reissue_shipment_url: str = field(
+        default_factory=lambda: os.environ.get("EXECUTOR_REISSUE_SHIPMENT_URL", "http://127.0.0.1:8113")
+    )
+    executor_issue_refund_url: str = field(
+        default_factory=lambda: os.environ.get("EXECUTOR_ISSUE_REFUND_URL", "http://127.0.0.1:8114")
+    )
+    # Plazos durables de la saga (design.md §4.2): un ExecuteStep y un CreatePlan/RevisePlan (LLM, más lento).
+    saga_step_timeout_s: float = field(default_factory=lambda: float(os.environ.get("SAGA_STEP_TIMEOUT_S", "60")))
+    saga_plan_timeout_s: float = field(default_factory=lambda: float(os.environ.get("SAGA_PLAN_TIMEOUT_S", "300")))
     command_http_timeout_s: float = field(
         default_factory=lambda: float(os.environ.get("COMMAND_HTTP_TIMEOUT_S", "5"))
     )
