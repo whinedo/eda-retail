@@ -49,8 +49,8 @@ _AGENTS = {
     "replanner": ("Replanificador", "Revisa el plan cuando falla un paso."),
 }
 
-# El intérprete ya es un componente con su propio proceso (T5); el resto de agentes, hasta T6 y T8.
-_PROCESSES = {"interpreter": "eda-interpreter", "planner": "eda-planner"}
+# Cada agente es un componente con su propio proceso (T5, T6 y T8).
+_PROCESSES = {"interpreter": "eda-interpreter", "planner": "eda-planner", "replanner": "eda-replanner"}
 # reserve_stock y release_stock los ejecuta inventory (T4); el resto, sus ejecutores (T9).
 _EXECUTOR_PROCESSES = {Action.RESERVE_STOCK: "eda-inventory", Action.RELEASE_STOCK: "eda-inventory"}
 
