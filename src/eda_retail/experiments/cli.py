@@ -1,7 +1,7 @@
 """`eda-experiment <exp>`: ejecuta un experimento con un solo comando y escribe su informe
 (spec experiments, «Informe reproducible»).
 
-Usa la configuración de siempre (`.env`): PostgreSQL y Kafka de `docker compose`. Cada
+Usa la configuración de siempre (el `.env` del directorio de trabajo, que se carga solo): PostgreSQL y Kafka de `docker compose`. Cada
 ejecución crea y borra su propia base de datos y su topic. Los experimentos con LLM real (E5 y E6)
 usan Ollama por defecto; `--llm oracle` los ejecuta con el oráculo, sin coste (decisión D2).
 """
@@ -81,10 +81,11 @@ def experiment_kwargs(args: argparse.Namespace) -> dict[str, Any]:
 
 def main(argv: list[str] | None = None, settings: Settings | None = None) -> int:
     args = parse_args(argv)
+    settings = settings or load_settings()  # carga `.env` antes de crear el cliente de Ollama (LLM_MODEL)
     setup_logging("experiment")
     logging.getLogger("eda_retail").setLevel(logging.WARNING)  # el informe es la salida
     logging.getLogger("alembic").setLevel(logging.WARNING)  # las migraciones de cada base de datos aislada
-    report = EXPERIMENTS[args.experiment](settings or load_settings(), **experiment_kwargs(args))
+    report = EXPERIMENTS[args.experiment](settings, **experiment_kwargs(args))
     path = write_report(report, args.out)
     for name, ok in report.hypothesis.items():
         print(f"{name}: {'cumplida' if ok else 'no cumplida'}")

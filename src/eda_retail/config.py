@@ -1,10 +1,18 @@
-"""Configuración leída de variables de entorno (ver `.env.example`)."""
+"""Configuración leída de variables de entorno (ver `.env.example`).
+
+`load_settings` carga antes el `.env` del directorio de trabajo, si existe, sin pisar las variables ya
+definidas: cualquier `uv run eda-*` usa el `.env` del proyecto aunque no se pase `--env-file`.
+"""
 
 from __future__ import annotations
 
 import os
+from collections.abc import MutableMapping
 from dataclasses import dataclass, field
 from decimal import Decimal
+from pathlib import Path
+
+ENV_FILE = ".env"
 
 
 def _env_bool(name: str, default: bool) -> bool:
@@ -100,5 +108,28 @@ class Settings:
     effect_cost_reissue: Decimal = field(default_factory=lambda: _env_decimal("EFFECT_COST_REISSUE"))
 
 
+def load_env_file(path: Path, environ: MutableMapping[str, str] = os.environ) -> list[str]:
+    """Añade al entorno las variables de `path` (`CLAVE=valor`) que aún no estén definidas.
+
+    Ignora líneas vacías, comentarios y líneas sin `=`; admite `export ` delante y comillas alrededor del
+    valor. Devuelve los nombres que cargó (nunca los valores, que pueden ser credenciales)."""
+    if not path.is_file():
+        return []
+    loaded = []
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        name, _, value = line.removeprefix("export ").partition("=")
+        name, value = name.strip(), value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
+            value = value[1:-1]
+        if name and name not in environ:
+            environ[name] = value
+            loaded.append(name)
+    return loaded
+
+
 def load_settings() -> Settings:
+    load_env_file(Path.cwd() / ENV_FILE)
     return Settings()

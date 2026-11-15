@@ -57,3 +57,23 @@ def test_each_repetition_uses_its_own_seed_and_the_temperature():
     assert factory(None, 1).temperature == 0.2
     with pytest.raises(SystemExit):
         parse_args(["e1", "--temperature", "0.5"])
+
+
+def test_experiments_use_the_llm_model_of_the_env_file(tmp_path, monkeypatch):
+    """Sin `--env-file`, E5 y E6 usan el LLM_MODEL del `.env` del proyecto, no el valor por defecto"""
+    from eda_retail.experiments import cli
+
+    (tmp_path / ".env").write_text("LLM_MODEL=modelo-del-env\n")
+    monkeypatch.setenv("LLM_MODEL", "placeholder")  # monkeypatch deshace también lo que cargue `.env`
+    monkeypatch.delenv("LLM_MODEL")
+    monkeypatch.chdir(tmp_path)
+    seen = {}
+
+    def experiment(settings, **kwargs):
+        seen["model"] = kwargs["llm"](None, 1).model
+        raise SystemExit(0)
+
+    monkeypatch.setitem(cli.EXPERIMENTS, "e5", experiment)
+    with pytest.raises(SystemExit):
+        cli.main(["e5"])
+    assert seen["model"] == "modelo-del-env"
