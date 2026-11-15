@@ -24,7 +24,7 @@ def main(argv: list[str] | None = None) -> None:
     settings = load_settings()
     schema = f"executor_{args.action}"
     serve(f"executor-{args.action}", schema, specs(settings, args.action, OllamaClient(), BusinessRules()),
-          url(settings, args.action))
+          url(settings, args.action), limit_concurrency=settings.executor_max_concurrency)
 
 
 if __name__ == "__main__":
