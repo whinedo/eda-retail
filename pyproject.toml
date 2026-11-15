@@ -58,3 +58,7 @@ markers = [
 [tool.ruff]
 line-length = 120
 target-version = "py312"
+
+[tool.uv]
+# Transitive dependencies must be at least two weeks old (sse-starlette 3.7.0 is from 2026-11-07).
+constraint-dependencies = ["sse-starlette<3.7"]
