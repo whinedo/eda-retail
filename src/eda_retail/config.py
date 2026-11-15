@@ -102,6 +102,7 @@ class Settings:
     job_retry_max_seconds: float = field(
         default_factory=lambda: float(os.environ.get("JOB_RETRY_MAX_SECONDS", "30"))
     )
+    job_max_attempts: int = field(default_factory=lambda: int(os.environ.get("JOB_MAX_ATTEMPTS", "5")))
     # Plazo de un aviso aparcado por el intérprete hasta que llegue su pedido (design.md §4.3).
     pending_notice_timeout_s: float = field(
         default_factory=lambda: float(os.environ.get("PENDING_NOTICE_TIMEOUT_S", "300"))

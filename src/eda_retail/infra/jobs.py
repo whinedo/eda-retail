@@ -10,7 +10,10 @@ transacción que su inbox y responde 202 (`infra/commands.py`). Este módulo hac
    `running`; si otro worker lo tomó tras vencer el lease, no escribe nada); el `handle` del comando, sus
    eventos en el outbox y el trabajo `done` con el resultado. Un `Rejected` (una carrera que la aceptación no
    podía ver) deja el trabajo `rejected` con el motivo, sin eventos: el plazo de la saga lo trata.
-4. Si algo falla, la transacción se deshace y el trabajo vuelve a `pending` con espera exponencial.
+4. Si algo falla, la transacción se deshace y el trabajo vuelve a `pending` con espera exponencial. Con
+   `max_attempts` (`JOB_MAX_ATTEMPTS`), un trabajo que agota sus intentos, o que se retoma más veces porque su
+   worker cae siempre a mitad, queda `failed` con `job_attempts_exhausted`, sin eventos: el plazo de la saga lo
+   trata, como un rechazo tardío.
 
 Así el resultado (estado y eventos) se escribe una sola vez aunque el worker caiga a mitad: el trabajo se
 retoma al vencer su lease, y el `handle` ya protege los efectos (`effect_keys`, `ON CONFLICT`).
@@ -38,6 +41,8 @@ log = logging.getLogger("eda_retail.jobs")
 
 DONE = "done"
 REJECTED = "rejected"
+FAILED = "failed"
+ATTEMPTS_EXHAUSTED = "job_attempts_exhausted"
 
 
 def _claim(conn: psycopg.Connection, schema: str, lease_seconds: float) -> dict[str, Any] | None:
@@ -86,6 +91,15 @@ def _reject(conn: psycopg.Connection, schema: str, job: dict[str, Any], reason: 
     _finish(conn, schema, job, REJECTED, {"reason": reason})
 
 
+def _fail(conn: psycopg.Connection, schema: str, job: dict[str, Any]) -> None:
+    """El trabajo agotó sus intentos: queda `failed`, sin eventos, si sigue siendo suyo."""
+    with conn.transaction():
+        if _still_ours(conn, schema, job):
+            log.error("trabajo %s de %s %s: %s tras %d intentos", job["job_id"], job["command_type"],
+                      job["command_id"], ATTEMPTS_EXHAUSTED, job["attempts"])
+            _finish(conn, schema, job, FAILED, {"reason": ATTEMPTS_EXHAUSTED})
+
+
 def _command(job: dict[str, Any]) -> CommandEnvelope:
     return CommandEnvelope(command_id=job["command_id"], command_type=job["command_type"],
                            correlation_id=job["correlation_id"], causation_id=job["causation_id"],
@@ -122,13 +136,17 @@ def _work(conn: psycopg.Connection, schema: str, job: dict[str, Any], spec: Comm
 
 
 def run_job_once(conn: psycopg.Connection, schema: str, specs: Mapping[str, CommandSpec], *,
-                 lease_seconds: float, backoff: Backoff) -> bool:
+                 lease_seconds: float, backoff: Backoff, max_attempts: int | None = None) -> bool:
     """Hace un trabajo de `<schema>.command_jobs`. Devuelve False si no había ninguno que tocara.
 
+    Con `max_attempts`, un trabajo que lo supera queda `failed` (ver el punto 4 del módulo).
     `conn` debe estar sin transacción abierta, como en `execute_command`."""
     job = _claim(conn, schema, lease_seconds)
     if job is None:
         return False
+    if max_attempts is not None and job["attempts"] > max_attempts:  # su worker cayó en cada intento
+        _fail(conn, schema, job)
+        return True
     token = otel_context.attach(tracing.extract(job["trace_context"]))
     try:
         with tracing.tracer().start_as_current_span(
@@ -142,7 +160,10 @@ def run_job_once(conn: psycopg.Connection, schema: str, specs: Mapping[str, Comm
             except Exception:  # el trabajo se reintenta; el error queda en el log
                 log.exception("trabajo %s de %s %s falla (intento %d)", job["job_id"], job["command_type"],
                               job["command_id"], job["attempts"])
-                _retry(conn, schema, job, backoff.delay(job["attempts"]))
+                if max_attempts is not None and job["attempts"] >= max_attempts:
+                    _fail(conn, schema, job)
+                else:
+                    _retry(conn, schema, job, backoff.delay(job["attempts"]))
     finally:
         otel_context.detach(token)
     return True
@@ -153,7 +174,7 @@ class JobWorker(threading.Thread):
     trabajo en curso; si el proceso muere antes, el trabajo se retoma al vencer su lease."""
 
     def __init__(self, connect: Callable[[], psycopg.Connection], schema: str, specs: Mapping[str, CommandSpec], *,
-                 lease_seconds: float, poll_interval: float, backoff: Backoff,
+                 lease_seconds: float, poll_interval: float, backoff: Backoff, max_attempts: int | None = None,
                  run_once: Callable[..., bool] = run_job_once, name: str | None = None) -> None:
         super().__init__(name=name or f"jobs-{schema}", daemon=True)
         self._connect = connect
@@ -162,6 +183,7 @@ class JobWorker(threading.Thread):
         self._lease_seconds = lease_seconds
         self._poll_interval = poll_interval
         self._backoff = backoff
+        self._max_attempts = max_attempts
         self._run_once = run_once
         self._stop_requested = threading.Event()
         self.handled = 0
@@ -174,7 +196,7 @@ class JobWorker(threading.Thread):
                     if conn is None or conn.closed:
                         conn = self._connect()
                     if self._run_once(conn, self._schema, self._specs, lease_seconds=self._lease_seconds,
-                                      backoff=self._backoff):
+                                      backoff=self._backoff, max_attempts=self._max_attempts):
                         self.handled += 1
                     else:
                         self._stop_requested.wait(self._poll_interval)
@@ -199,6 +221,7 @@ def start_worker(settings: Any, schema: str, specs: Mapping[str, CommandSpec]) -
 
     worker = JobWorker(lambda: connect(settings.database_url), schema, specs,
                        lease_seconds=settings.job_lease_seconds, poll_interval=settings.job_poll_interval_s,
-                       backoff=Backoff(settings.job_retry_base_seconds, settings.job_retry_max_seconds))
+                       backoff=Backoff(settings.job_retry_base_seconds, settings.job_retry_max_seconds),
+                       max_attempts=settings.job_max_attempts)
     worker.start()
     return worker

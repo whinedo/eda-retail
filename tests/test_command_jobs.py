@@ -330,3 +330,44 @@ def test_a_job_of_an_unknown_command_is_rejected(command_type, caplog):
 
     assert _run(db, work) is True
     assert db.jobs[0]["status"] == "rejected" and db.outbox == []
+
+
+def _run_capped(db, work, max_attempts):
+    return jobs.run_job_once(db, db.schema, {"CreatePlan": work.spec()}, lease_seconds=600,  # type: ignore[arg-type]
+                             backoff=Backoff(1, 1, seed=1), max_attempts=max_attempts)
+
+
+def test_a_job_that_always_fails_stops_after_its_attempts(caplog):
+    """Trabajo que falla siempre: tras JOB_MAX_ATTEMPTS intentos queda failed, sin eventos ni más reintentos"""
+    db, command = FakeDb(), _command()
+
+    def broken(conn, c, p, prepared):
+        raise RuntimeError("siempre falla")
+
+    work = Work(handle=broken)
+    commands.execute_command(db, "planner", command, work.spec())  # type: ignore[arg-type]
+
+    for _ in range(3):
+        assert _run_capped(db, work, 3) is True
+        db.now = max(db.now, db.jobs[0]["next_attempt_at"])
+
+    assert db.outbox == []
+    assert (db.jobs[0]["status"], db.jobs[0]["attempts"]) == ("failed", 3)
+    assert db.jobs[0]["outcome"] == {"reason": "job_attempts_exhausted"}
+    assert _run_capped(db, work, 3) is False  # no se reintenta más
+    assert "job_attempts_exhausted" in caplog.text
+
+
+def test_a_job_whose_worker_keeps_crashing_is_failed_without_running_again():
+    """Un trabajo retomado más veces que JOB_MAX_ATTEMPTS (el worker cae siempre a mitad) queda failed sin trabajar"""
+    db, work, command = FakeDb(), Work(), _command()
+    commands.execute_command(db, "planner", command, work.spec())  # type: ignore[arg-type]
+    for _ in range(2):  # dos caídas: el lease vence cada vez
+        db.execute("UPDATE planner.command_jobs SET status = 'running'", (60,))
+        db.now += 61
+
+    assert _run_capped(db, work, 2) is True
+
+    assert work.calls == ["accept"]  # no llega a prepare ni a handle
+    assert db.outbox == []
+    assert (db.jobs[0]["status"], db.jobs[0]["outcome"]) == ("failed", {"reason": "job_attempts_exhausted"})

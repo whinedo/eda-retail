@@ -6,7 +6,7 @@ misma transacción que su inbox; el worker del componente lo hace después (`inf
 
 - `job_id` es la clave: sin unicidad por `command_id`, porque sin inbox (E1, modo `none`) un comando repetido
   debe repetir el trabajo.
-- `status`: `pending` (espera su intento), `running` (tomado, con `lease_until`), `done` o `rejected`.
+- `status`: `pending` (espera su intento), `running` (tomado, con `lease_until`), `done`, `rejected` o `failed` (agotó `JOB_MAX_ATTEMPTS`).
 - `trace_context`: el contexto W3C de la petición, para que el trabajo continúe su traza.
 
 La lista de componentes está congelada aquí, como en la 0008: añadir uno exige otra migración.
@@ -39,7 +39,7 @@ CREATE TABLE {schema}.command_jobs (
     payload         JSONB       NOT NULL,
     trace_context   JSONB,
     status          TEXT        NOT NULL DEFAULT 'pending'
-                                CHECK (status IN ('pending', 'running', 'done', 'rejected')),
+                                CHECK (status IN ('pending', 'running', 'done', 'rejected', 'failed')),
     attempts        INTEGER     NOT NULL DEFAULT 0,
     next_attempt_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     lease_until     TIMESTAMPTZ,

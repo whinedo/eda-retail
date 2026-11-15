@@ -437,7 +437,7 @@ class Harness:
             if not any(spec.deferred for spec in target.specs.values()):
                 continue
             worker = JobWorker(lambda: connect(s.database_url), target.schema, target.specs,
-                               lease_seconds=s.job_lease_seconds, poll_interval=JOB_POLL_S,
+                               lease_seconds=s.job_lease_seconds, poll_interval=JOB_POLL_S, max_attempts=s.job_max_attempts,
                                backoff=Backoff(0.01, 0.05, seed=self.config.seed), run_once=self._tracked_job,
                                name=f"harness-jobs-{target.schema}")
             worker.start()
