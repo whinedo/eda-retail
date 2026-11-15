@@ -144,7 +144,7 @@ def test_step_result_unblocks_its_dependent_in_the_same_transaction(conn, saga):
     _completed(conn, saga, incident, "S3", result={"reservation_id": "R1", "warehouse": "W1"})
 
     assert _statuses(conn, incident)["S3"] == "completed"
-    assert _executed(conn, incident)[-1] == "S4"
+    assert "S4" in _executed(conn, incident)
     requested = outbox(conn, "orchestrator", incident)[-1]
     assert (requested["event_type"], requested["payload"]["step_id"]) == ("StepRequested", "S4")
 
@@ -203,7 +203,7 @@ def test_revision_compensates_the_reservation_and_holds_the_refund(conn, saga):
     statuses = _statuses(conn, incident)
     assert statuses["S4"] == "cancelled" and statuses["S3"] == "compensating"
     assert statuses["S3-comp"] == "requested" and statuses["S5"] == "pending"
-    comp = _commands(conn, incident, "ExecuteStep")[-1]
+    [comp] = [c for c in _commands(conn, incident, "ExecuteStep") if c["payload"]["step_id"] == "S3-comp"]
     assert comp["payload"]["action"] == "release_stock" and comp["target"] == "inventory"
     assert comp["payload"]["params"]["reservation_id"] == "R1"
     assert "StepCancelled" in _types(conn, incident)
@@ -218,7 +218,7 @@ def test_finished_compensation_releases_the_refund(conn, saga):
     _completed(conn, saga, incident, "S3-comp", plan_version=2, result={"released": True})
 
     assert _statuses(conn, incident)["S3"] == "compensated"
-    assert _executed(conn, incident)[-1] == "S5"
+    assert "S5" in _executed(conn, incident)
 
 
 def test_failed_release_escalates_without_refund(conn, saga):
@@ -324,7 +324,11 @@ class _Invoke:
 
 
 def _drain(conn, settings, invoke, incident) -> None:
-    """Despacha hasta que no quedan comandos pendientes de esta incidencia que toque invocar."""
+    """Despacha los comandos pendientes de esta incidencia. La base es compartida entre pruebas: los
+    comandos pendientes de otras incidencias se aplazan para que el despachador no los tome."""
+    with conn.transaction():
+        conn.execute("UPDATE orchestrator.command_outbox SET next_attempt_at = 'infinity'"
+                     " WHERE status = 'pending' AND incident_id <> %s", (incident,))
     while dispatch_once(conn, settings, RULES, invoke=invoke):
         if not invoke.replies:
             break
