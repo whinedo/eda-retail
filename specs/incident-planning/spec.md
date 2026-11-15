@@ -86,6 +86,13 @@ Cuando un paso termine en `StepFailed` sin posibilidad de reintento, la saga SHA
 - **AND** el plan sustituye `reissue_shipment` por `issue_refund`
 - **AND** no vuelve a incluir `notify_customer`, que ya estaba completado
 
+#### Scenario: Revisión ya hecha
+
+- **GIVEN** una incidencia cuya versión 1 del plan ya revisó el replanner
+- **WHEN** llega otro `RevisePlan` de la versión 1 con otro `command_id`
+- **THEN** el replanner lo rechaza con el motivo `revision_exists`
+- **AND** no llama al LLM ni publica otro `PlanRevised`
+
 ### Requirement: Estabilidad de los step_id
 
 El replanner MUST reutilizar el `step_id` de los pasos que mantiene entre versiones. Solo los pasos nuevos recibirán un `step_id` nuevo.
@@ -95,6 +102,13 @@ El replanner MUST reutilizar el `step_id` de los pasos que mantiene entre versio
 - **GIVEN** un paso `file_claim` con `step_id` S2 pendiente en la versión 1
 - **WHEN** el replanner publica la versión 2 manteniendo ese paso
 - **THEN** el paso conserva el `step_id` S2
+
+#### Scenario: Paso nuevo que repite uno abierto
+
+- **GIVEN** un paso `file_claim` del pedido P1 con `step_id` S2 pendiente en la versión 1
+- **WHEN** el replanner propone un `file_claim` de P1 con el `step_id` S9 y sin S2
+- **THEN** el command handler lo rechaza con el motivo `step_id_changed`
+- **AND** pide al replanner un plan nuevo, dentro de los límites de `llm-boundaries`
 
 ### Requirement: Saga con operaciones y compensaciones
 

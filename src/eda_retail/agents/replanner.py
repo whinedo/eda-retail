@@ -17,6 +17,8 @@ Los fallos de compensaciones (`-comp`) no se replanifican: los gestiona la orque
 
 from __future__ import annotations
 
+from typing import Any
+
 import psycopg
 
 from eda_retail.agents.planner import rejection
@@ -32,7 +34,7 @@ from eda_retail.llm.schemas import PlanProposal, strict_schema
 from eda_retail.queries.incident_status import IncidentStatus, wait_for_incident_status
 
 MAX_REVISIONS = "max_revisions"
-_REPLACEABLE = ("pending", "requested", "failed", "cancelled")
+REPLACEABLE = ("pending", "requested", "failed", "cancelled")  # estados sin efecto
 
 SYSTEM = f"""Eres el replanner de incidencias logísticas de una tienda online.
 Un paso del plan ha fallado sin posibilidad de reintento. Propón el plan revisado.
@@ -54,26 +56,35 @@ class ViewNotCaughtUp(RuntimeError):
     """`incident_status` aún no refleja el fallo; el evento se reprocesará."""
 
 
-def check_step_ids(status: IncidentStatus, plan: PlanProposal) -> str | None:
-    proposed = {s.step_id for s in plan.steps}
-    current = {s["step_id"] for s in status.steps}
-    open_steps = [s for s in status.steps if s["status"] in _REPLACEABLE and s["step_id"] not in proposed]
-    for s in plan.steps:
-        if s.step_id in current:
+def check_step_ids(steps: list[dict[str, Any]], proposed: list[dict[str, Any]]) -> str | None:
+    """Un paso nuevo con la acción y el pedido de un paso abierto que el plan deja fuera: `step_id_changed`.
+
+    `steps` es el plan vigente con el estado de cada paso y `proposed`, los pasos propuestos."""
+    proposed_ids = {s["step_id"] for s in proposed}
+    current = {s["step_id"] for s in steps}
+    open_steps = [s for s in steps if s["status"] in REPLACEABLE and s["step_id"] not in proposed_ids]
+    for s in proposed:
+        if s["step_id"] in current:
             continue
         for old in open_steps:
-            if old["action"] == s.action and old["params"].get("order_id") == s.params.order_id:
-                return f"step_id_changed: reutiliza {old['step_id']} para {s.action} en lugar de {s.step_id}"
+            if old["action"] == s["action"] and old["params"].get("order_id") == s["params"].get("order_id"):
+                return f"step_id_changed: reutiliza {old['step_id']} para {s['action']} en lugar de {s['step_id']}"
     return None
 
 
-def render_plan(status: IncidentStatus) -> str:
+def render_plan(steps: list[dict[str, Any]]) -> str:
     lines = []
-    for s in status.steps:
+    for s in steps:
         error = f", error {s['error']}" if s.get("error") else ""
         lines.append(f"- {s['step_id']}: {s['action']} {s['params']} depends_on {s['depends_on']} "
                      f"-> {s['status']}{error}")
     return "\n".join(lines)
+
+
+def revise_prompt(plan_version: int, steps: list[dict[str, Any]], failed_step_id: str, error: str) -> str:
+    """El prompt del replanner: el plan vigente con el estado de cada paso y el fallo."""
+    return (f"Plan vigente (versión {plan_version}):\n{render_plan(steps)}\n\n"
+            f"Fallo: el paso {failed_step_id} terminó con el error {error} y no se puede reintentar.")
 
 
 class Replanner:
@@ -112,14 +123,13 @@ class Replanner:
             return Decision(incident_id, [EscalateIncident(**common, reason=MAX_REVISIONS)])
 
         def check(plan: PlanProposal) -> str | None:
-            return check_step_ids(status, plan) or rejection(
+            return check_step_ids(status.steps, plan.command_steps()) or rejection(
                 self._handler.validate(conn, RevisePlan(**common, steps=plan.command_steps(), reason=p["error"]))
             )
 
         request = LlmRequest(
             agent=self.name, incident_id=incident_id, system=SYSTEM, schema=strict_schema(PlanProposal),
-            prompt=(f"Plan vigente (versión {status.plan_version}):\n{render_plan(status)}\n\n"
-                    f"Fallo: el paso {p['step_id']} terminó con el error {p['error']} y no se puede reintentar."),
+            prompt=revise_prompt(status.plan_version, status.steps, p["step_id"], p["error"]),
         )
         gen = generate(self._llm, request, PlanProposal, max_generations=self._rules.max_generations,
                        budget=budget, check=check)

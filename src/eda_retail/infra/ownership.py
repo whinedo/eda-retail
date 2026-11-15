@@ -24,6 +24,7 @@ COMPONENT_PACKAGES: dict[str, str] = {
     "eda_retail/orchestrator": "orchestrator",
     "eda_retail/planner": "planner",
     "eda_retail/projectors": "views",
+    "eda_retail/replanner": "replanner",
 }
 
 _WRITE = re.compile(

@@ -218,15 +218,14 @@ class SyncSystem:
                 old = inc.steps.get(s["step_id"])
                 if old is not None and old.action != s["action"]:
                     return f"invalid_plan ({s['step_id']} cambia de acción)"
-            return replanner.check_step_ids(status, plan) or self._rejection(
+            return replanner.check_step_ids(status.steps, steps) or self._rejection(
                 steps, external_ids={c.step_id for c in completed},
                 completed=[{"action": c.action, "params": c.params} for c in completed])
 
         proposal = self._ask(inc, LlmRequest(
             agent="replanner", incident_id=inc.incident_id, system=replanner.SYSTEM,
             schema=strict_schema(PlanProposal),
-            prompt=(f"Plan vigente (versión {inc.plan_version}):\n{replanner.render_plan(status)}\n\n"
-                    f"Fallo: el paso {failed.step_id} terminó con el error {failed.error} y no se puede reintentar."),
+            prompt=replanner.revise_prompt(inc.plan_version, status.steps, failed.step_id, failed.error),
         ), PlanProposal, check)
         inc.plan_version += 1
         apply_revision(inc.steps, proposal.command_steps(), inc.plan_version)

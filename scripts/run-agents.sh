@@ -31,7 +31,7 @@ PROCESSES=(
   "orchestrator|eda-orchestrator"
   "interpreter|eda-interpreter"
   "planner|eda-planner"
-  "agent-replanner|eda-agent replanner"
+  "replanner|eda-replanner"
 )
 
 for service in kafka postgres; do
