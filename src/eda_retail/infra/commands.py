@@ -108,9 +108,13 @@ def _check_causation(command: CommandEnvelope, events: list[EventEnvelope]) -> N
 
 
 def execute_command(
-    conn: psycopg.Connection, schema: str, command: CommandEnvelope, spec: CommandSpec
+    conn: psycopg.Connection, schema: str, command: CommandEnvelope, spec: CommandSpec, *,
+    inbox_enabled: bool = True,
 ) -> CommandResponse:
     """Ejecuta el comando con el handler del sistema `schema`. Idempotente por `command_id`.
+
+    Con `inbox_enabled` falso (solo el experimento E1, para medir el sistema sin idempotencia) no
+    consulta ni escribe el inbox: un comando repetido se vuelve a ejecutar.
 
     `conn` debe estar sin transacción abierta: con una abierta, los bloques serían savepoints y nada
     se confirmaría aquí. El router abre una conexión por petición.
@@ -123,15 +127,16 @@ def execute_command(
             REJECTED, base | {"status": "rejected", "reason": "invalid_payload", "detail": exc.errors(include_url=False, include_context=False)}
         )
 
-    with conn.transaction():
-        stored = _stored(conn, schema, command.command_id)
-    if stored is not None:
-        return stored
+    if inbox_enabled:
+        with conn.transaction():
+            stored = _stored(conn, schema, command.command_id)
+        if stored is not None:
+            return stored
 
     prepared = spec.prepare(command, payload) if spec.prepare is not None else None
 
     with conn.transaction():
-        if not inbox.register(conn, schema, command.command_id, schema=schema, kind="command"):
+        if inbox_enabled and not inbox.register(conn, schema, command.command_id, schema=schema, kind="command"):
             stored = _stored(conn, schema, command.command_id)
             if stored is None:  # no debería ocurrir: la fila y su respuesta se confirman juntas
                 raise RuntimeError(f"comando {command.command_id} registrado sin respuesta")
@@ -143,10 +148,11 @@ def execute_command(
             response = CommandResponse(ACCEPTED, outcome.body | {"status": "accepted"} | base)
         else:
             response = CommandResponse(REJECTED, {"status": "rejected"} | base | {"reason": outcome.reason})
-        conn.execute(
-            f"UPDATE {qualified(schema, 'inbox')} SET status_code = %s, response = %s WHERE message_id = %s",
-            (response.status_code, Jsonb(response.body), command.command_id),
-        )
+        if inbox_enabled:
+            conn.execute(
+                f"UPDATE {qualified(schema, 'inbox')} SET status_code = %s, response = %s WHERE message_id = %s",
+                (response.status_code, Jsonb(response.body), command.command_id),
+            )
     return response
 
 

@@ -137,6 +137,19 @@ def test_repeated_command_returns_the_same_response_without_side_effects():
     assert calls == ["prepare"]  # el duplicado no paga otra llamada al LLM
 
 
+def test_without_inbox_a_repeated_command_runs_again():
+    """E1 sin idempotencia: sin inbox de comandos, el comando repetido se vuelve a ejecutar"""
+    db = FakeDb()
+    command = _command()
+
+    first = commands.execute_command(db, "planner", command, _spec(), inbox_enabled=False)  # type: ignore[arg-type]
+    second = commands.execute_command(db, "planner", command, _spec(), inbox_enabled=False)  # type: ignore[arg-type]
+
+    assert first.status_code == second.status_code == 202 and not second.replayed
+    assert [e["event_type"] for e in db.outbox] == ["PlanCreated", "PlanCreated"]
+    assert db.inbox == {}
+
+
 def test_rejected_command_answers_422_and_writes_no_event():
     """Comando rechazado por sus invariantes: 422 y ningún evento; el rechazo también se repite igual"""
     db = FakeDb()

@@ -28,11 +28,11 @@ Cada experimento SHALL poder ejecutarse con un único comando y generar un infor
 
 ### Requirement: E1 Duplicados en el bus (hipótesis H1)
 
-El experimento E1 SHALL entregar cada evento 2 y 3 veces y comparar el sistema con y sin Idempotency key. Hipótesis H1: con idempotencia el número de efectos duplicados es 0 en todas las ejecuciones; sin ella, mayor que 0.
+El experimento E1 SHALL entregar cada evento a cada consumidor de Kafka y cada comando REST que invoca la saga 2 y 3 veces (el mismo `command_id`, como un reintento HTTP de entrega al menos una vez) y comparar el sistema con y sin Idempotency key. Sin idempotencia, los ejecutores e `inventory` pierden su inbox de comandos, `effect_keys` y la clave en los servicios simulados. Hipótesis H1: con idempotencia el número de efectos duplicados es 0 en todas las ejecuciones; sin ella, mayor que 0.
 
 #### Scenario: Con idempotencia
 
-- **GIVEN** 50 incidencias y cada evento entregado 3 veces
+- **GIVEN** 50 incidencias y cada evento y cada comando entregados 3 veces
 - **WHEN** se ejecuta E1 con las claves activas
 - **THEN** el informe indica 0 avisos, reclamaciones, reservas y reembolsos duplicados
 
@@ -44,7 +44,7 @@ El experimento E1 SHALL entregar cada evento 2 y 3 veces y comparar el sistema c
 
 ### Requirement: E2 Caída de un ejecutor (hipótesis H2)
 
-El experimento E2 SHALL matar un ejecutor a mitad de un plan y reiniciarlo. Hipótesis H2: el 100 % de los planes se completa sin repetir ningún paso ya completado.
+El experimento E2 SHALL matar un ejecutor a mitad de un plan y reiniciarlo: cae después de confirmar su transacción y antes de responder al `ExecuteStep`, y la saga lo vuelve a invocar con el mismo `command_id`. Hipótesis H2: el 100 % de los planes se completa sin repetir ningún paso ya completado.
 
 #### Scenario: Caída a mitad del plan
 
