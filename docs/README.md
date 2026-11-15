@@ -251,7 +251,7 @@ El front web (`scripts/run-web.sh`, spec `web-front`) hace lo mismo desde el nav
 
 ### Comandos
 
-Cada componente es un proceso independiente; los scripts anteriores los lanzan, pero también se pueden arrancar uno a uno (añade `--env-file .env` a `uv run` para cargar la configuración):
+Cada componente es un proceso independiente; los scripts anteriores los lanzan, pero también se pueden arrancar uno a uno. Todos los comandos `eda-*` cargan solos el `.env` del directorio de trabajo, sin pisar las variables ya definidas (no hace falta `--env-file`):
 
 | Comando | Qué hace |
 | --- | --- |
