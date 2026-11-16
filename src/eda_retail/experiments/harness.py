@@ -134,7 +134,9 @@ def isolated_database(base: Settings, name: str) -> Iterator[str]:
 
 # Restricciones de unicidad de negocio de las tablas de efectos (design.md §8): la variante «sin idempotencia»
 # de E1 las elimina en su base de pruebas, junto con INBOX_ENABLED y EFFECT_KEYS_ENABLED.
-BUSINESS_UNIQUES = ("executor_file_claim.claims_incident_order_key",)
+BUSINESS_UNIQUES = ("executor_file_claim.claims_incident_order_key",
+                    "executor_notify_customer.customer_messages_incident_step_key",
+                    "executor_issue_refund.refunds_incident_step_key")
 
 
 def drop_business_uniques(conn: psycopg.Connection) -> None:

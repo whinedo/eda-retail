@@ -33,3 +33,11 @@ class IssueRefund(Refund):
 
     def record_calls(self, conn: psycopg.Connection, command: CommandEnvelope, calls: list[LlmCall]) -> None:
         pass  # sin LLM
+
+
+def existing_refund(conn: psycopg.Connection, step: ExecuteStep) -> dict[str, Any] | None:
+    """El reembolso ya registrado para el paso (`refunds (incident_id, step_id)`, design.md §8), aunque la
+    `idempotency_key` sea otra: el ejecutor lo devuelve en lugar de reembolsar otra vez."""
+    row = conn.execute("SELECT refund_id FROM executor_issue_refund.refunds WHERE incident_id = %s AND step_id = %s",
+                       (step.incident_id, step.step_id)).fetchone()
+    return None if row is None else {"refund_id": row["refund_id"]}

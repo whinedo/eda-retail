@@ -9,7 +9,8 @@ from mcp.server.mcpserver import MCPServer
 
 from eda_retail.config import Settings
 from eda_retail.executor_file_claim.handler import existing_claim
-from eda_retail.executor_notify_customer.handler import sent_count
+from eda_retail.executor_issue_refund.handler import existing_refund
+from eda_retail.executor_notify_customer.handler import existing_message, sent_count
 from eda_retail.executor_notify_customer.mail_client import McpMailClient
 from eda_retail.executor_notify_customer.mailer import Mailer, McpMailer
 from eda_retail.infra import effect_keys
@@ -23,6 +24,12 @@ from eda_retail.rules import BusinessRules
 from eda_retail.step_executors.actions import build_action
 from eda_retail.step_executors.runtime import ExecuteStep, RecordingAction, StepPreparer, accept_step, execute_step
 from eda_retail.step_executors.services import FakeService
+
+EXISTING_EFFECT: dict[str, Callable] = {
+    "file_claim": existing_claim,
+    "notify_customer": existing_message,
+    "issue_refund": existing_refund,
+}
 
 
 def _with_conn(settings: Settings, query: Callable):
@@ -65,10 +72,11 @@ def specs(settings: Settings, action_name: str, llm: LlmClient, rules: BusinessR
                                            order_known=order_known, budget=budget,
                                            mailer=build_mailer(settings, action_name, mail_server=mail_server))
     completed = _with_conn(settings, lambda conn, key: effect_keys.stored_result(conn, key, schema=action.schema))
-    # Clave de negocio del efecto: una reclamación por incidencia y pedido (spec idempotency). Es parte de la
-    # idempotencia de los efectos, así que se apaga con EFFECT_KEYS_ENABLED=false (E1 sin idempotencia).
-    existing = (_with_conn(settings, existing_claim)
-                if action_name == "file_claim" and settings.effect_keys_enabled else None)
+    # Clave de negocio del efecto (design.md §8): una reclamación por incidencia y pedido (spec idempotency), y un
+    # aviso y un reembolso por paso. Es parte de la idempotencia de los efectos, así que se apaga con
+    # EFFECT_KEYS_ENABLED=false (E1 sin idempotencia).
+    lookup = EXISTING_EFFECT.get(action_name)
+    existing = _with_conn(settings, lookup) if lookup is not None and settings.effect_keys_enabled else None
     prepare = StepPreparer(action, completed=completed, max_attempts=settings.step_max_attempts,
                            backoff=Backoff(settings.step_backoff_base_seconds, settings.step_backoff_max_seconds),
                            existing=existing)
