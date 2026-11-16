@@ -76,6 +76,31 @@ def test_a_completed_key_skips_the_preparation_and_the_service():
     assert (action.prepared, service.calls) == (0, 0)
 
 
+def test_an_existing_effect_skips_the_preparation_and_the_service():
+    """Efecto ya existente por su clave de negocio (otra idempotency_key): devuelve el resultado existente"""
+    service = FakeService("carrier", "SH")
+    action = _Action(service)
+    seen = []
+    prepare = runtime.StepPreparer(action, completed=lambda key: None, max_attempts=3,
+                                   backoff=Backoff(0.5, 10, seed=1),
+                                   existing=lambda step: seen.append(step.step_id) or {"new_shipment_id": "SH-1"})
+    prepared = prepare(_command(_step()), _step())
+    assert prepared.stored == {"new_shipment_id": "SH-1"}
+    assert (action.prepared, service.calls) == (0, 0)
+    assert seen == [_step().step_id]
+
+
+def test_no_existing_effect_prepares_and_calls_the_service():
+    """Sin efecto existente: prepara y llama al servicio como siempre"""
+    service = FakeService("carrier", "SH")
+    action = _Action(service)
+    prepare = runtime.StepPreparer(action, completed=lambda key: None, max_attempts=3,
+                                   backoff=Backoff(0.5, 10, seed=1), existing=lambda step: None)
+    prepared = prepare(_command(_step()), _step())
+    assert prepared.stored is None and prepared.external_id is not None
+    assert (action.prepared, service.calls) == (1, 1)
+
+
 def test_a_transient_error_is_retried_with_backoff():
     """Servicio caído: reintenta con espera exponencial y el efecto se ejecuta una sola vez"""
     service = FakeService("carrier", "SH", timeouts=2)
@@ -264,3 +289,20 @@ def test_run_agents_starts_the_mail_server_only_in_version_two():
     assert script.index('"mail-server|eda-mail-server"') > gate
     assert "poc_version_from_env" in script
     assert "eda-mail-server" not in script.split("PROCESSES=(", 1)[1].split(")", 1)[0]  # no en la lista fija
+
+
+def test_the_existing_claim_lookup_follows_effect_keys_enabled():
+    """La búsqueda de la reclamación existente es idempotencia de efectos: se apaga con EFFECT_KEYS_ENABLED=false"""
+    from dataclasses import replace
+
+    from eda_retail.config import Settings
+    from eda_retail.llm.fake import FakeLlmClient
+    from eda_retail.step_executors import component
+
+    settings, rules = Settings(), RULES
+    on = component.specs(settings, "file_claim", FakeLlmClient([]), rules)["ExecuteStep"].prepare
+    off = component.specs(replace(settings, effect_keys_enabled=False), "file_claim", FakeLlmClient([]),
+                          rules)["ExecuteStep"].prepare
+    other = component.specs(settings, "reissue_shipment", FakeLlmClient([]), rules)["ExecuteStep"].prepare
+    assert on._existing is not None
+    assert off._existing is None and other._existing is None

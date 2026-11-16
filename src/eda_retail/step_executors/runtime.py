@@ -126,9 +126,13 @@ class StepPreparer:
     """`prepare` del comando: lo que se hace fuera de la transacción."""
 
     def __init__(self, action: StepAction, *, completed: Callable[[str], dict[str, Any] | None], max_attempts: int,
-                 backoff: Backoff, sleep: Callable[[float], Any] = time.sleep) -> None:
+                 backoff: Backoff, sleep: Callable[[float], Any] = time.sleep,
+                 existing: Callable[[ExecuteStep], dict[str, Any] | None] | None = None) -> None:
+        """`existing`: el resultado de un efecto que ya existe por la clave de negocio de la acción, aunque la
+        `idempotency_key` sea otra (p. ej. la reclamación de la misma incidencia y pedido en `file_claim`)."""
         self._action = action
         self._completed = completed
+        self._existing = existing
         self._max_attempts = max_attempts
         self._backoff = backoff
         self._sleep = sleep
@@ -139,6 +143,8 @@ class StepPreparer:
         stored = self._completed(step.idempotency_key)
         if stored is not None:
             return Prepared(stored=stored)  # no se paga otra vez el redactor ni el servicio
+        if self._existing is not None and (found := self._existing(step)) is not None:
+            return Prepared(stored=found)  # el efecto ya existe con otra clave: no se repite
         preparation = self._action.prepare(step)
         if preparation.error is not None:
             return Prepared(calls=preparation.calls, error=preparation.error, attempts=1)
@@ -200,7 +206,11 @@ def execute_step(action: RecordingAction, settings: Settings):
             # Clave y efecto se confirman juntos: solo otra transacción en curso. El cliente reintenta.
             raise RuntimeError(f"efecto {step.idempotency_key} en curso")
         elif prepared.stored is not None:
+            # Resultado guardado de esta clave, o de un efecto que ya existía con otra clave: se registra en
+            # la clave de este paso, sin evento de efecto nuevo.
             result = prepared.stored
+            effect_keys.complete(conn, step.idempotency_key, result, enabled=settings.effect_keys_enabled,
+                                 schema=action.schema)
         else:
             result, effect = action.record(conn, step, prepared)
             effect_keys.complete(conn, step.idempotency_key, result, enabled=settings.effect_keys_enabled,

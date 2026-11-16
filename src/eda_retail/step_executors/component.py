@@ -8,6 +8,7 @@ from collections.abc import Callable
 from mcp.server.mcpserver import MCPServer
 
 from eda_retail.config import Settings
+from eda_retail.executor_file_claim.handler import existing_claim
 from eda_retail.executor_notify_customer.handler import sent_count
 from eda_retail.executor_notify_customer.mail_client import McpMailClient
 from eda_retail.executor_notify_customer.mailer import Mailer, McpMailer
@@ -64,8 +65,13 @@ def specs(settings: Settings, action_name: str, llm: LlmClient, rules: BusinessR
                                            order_known=order_known, budget=budget,
                                            mailer=build_mailer(settings, action_name, mail_server=mail_server))
     completed = _with_conn(settings, lambda conn, key: effect_keys.stored_result(conn, key, schema=action.schema))
+    # Clave de negocio del efecto: una reclamación por incidencia y pedido (spec idempotency). Es parte de la
+    # idempotencia de los efectos, así que se apaga con EFFECT_KEYS_ENABLED=false (E1 sin idempotencia).
+    existing = (_with_conn(settings, existing_claim)
+                if action_name == "file_claim" and settings.effect_keys_enabled else None)
     prepare = StepPreparer(action, completed=completed, max_attempts=settings.step_max_attempts,
-                           backoff=Backoff(settings.step_backoff_base_seconds, settings.step_backoff_max_seconds))
+                           backoff=Backoff(settings.step_backoff_base_seconds, settings.step_backoff_max_seconds),
+                           existing=existing)
     return {"ExecuteStep": CommandSpec(ExecuteStep, execute_step(action, settings), prepare=prepare, deferred=True,
                                        accept=accept_step(action))}
 

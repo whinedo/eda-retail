@@ -112,6 +112,38 @@ def test_mail_server_migration_reverts(scratch_db):
     assert "to_address" in _columns(scratch_db, "mailbox", "mail_server")
 
 
+def _claim(c, claim_id: str, incident_id: str = "I1", order_id: str = "P1") -> None:
+    c.execute("INSERT INTO executor_file_claim.claims (claim_id, incident_id, order_id, step_id, text)"
+              " VALUES (%s, %s, %s, 'S1', 'texto')", (claim_id, incident_id, order_id))
+
+
+def test_claims_unique_per_incident_and_order_migration(scratch_db):
+    """0022 impide una segunda reclamación por (incidencia, pedido) y su downgrade lo permite de nuevo"""
+    upgrade(scratch_db)
+    with psycopg.connect(scratch_db, autocommit=True) as c:
+        _claim(c, "C-1")
+        _claim(c, "C-2", order_id="P2")  # otro pedido de la misma incidencia: permitido
+        with pytest.raises(psycopg.errors.UniqueViolation):
+            _claim(c, "C-3")
+    downgrade(scratch_db, "0021")
+    with psycopg.connect(scratch_db, autocommit=True) as c:
+        _claim(c, "C-3")
+        assert c.execute("SELECT count(*) FROM executor_file_claim.claims").fetchone()[0] == 3
+
+
+def test_claims_migration_stops_on_existing_duplicates_without_deleting(scratch_db):
+    """0022 con reclamaciones repetidas: se detiene con un error y no borra ninguna"""
+    upgrade(scratch_db, "0021")
+    with psycopg.connect(scratch_db, autocommit=True) as c:
+        _claim(c, "C-1")
+        _claim(c, "C-2")
+    with pytest.raises(RuntimeError, match="no se borra ninguna"):
+        upgrade(scratch_db)
+    with psycopg.connect(scratch_db) as c:
+        assert c.execute("SELECT count(*) FROM executor_file_claim.claims").fetchone()[0] == 2
+        assert c.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0021"
+
+
 def test_command_jobs_migration_reverts(scratch_db):
     """0019 crea command_jobs en los componentes con trabajo largo y su downgrade la borra"""
     from eda_retail.infra.schemas import JOB_COMPONENTS

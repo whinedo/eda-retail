@@ -34,6 +34,19 @@ class FileClaim(Drafted):
         record_llm_calls(conn, command, calls)
 
 
+def existing_claim(conn: psycopg.Connection, step: ExecuteStep) -> dict[str, Any] | None:
+    """La reclamación ya creada para la incidencia y el pedido del paso (spec idempotency, «Una reclamación por
+    incidencia y pedido»): una revisión del plan puede pedir `file_claim` otra vez con otro `step_id` y otra
+    `idempotency_key`, y el ejecutor devuelve la existente en lugar de crear otra."""
+    row = conn.execute(
+        "SELECT claim_id FROM executor_file_claim.claims WHERE incident_id = %s AND order_id = %s",
+        (step.incident_id, str(step.params.get("order_id"))),
+    ).fetchone()
+    if row is None:
+        return None
+    return {"claim_id": row["claim_id"]}
+
+
 def record_llm_calls(conn: psycopg.Connection, command: CommandEnvelope, calls: list[LlmCall]) -> None:
     for call in calls:
         conn.execute(
