@@ -9,8 +9,11 @@ pedido ni el máximo configurado.
 
 from __future__ import annotations
 
+from collections import Counter
+from collections.abc import Iterable, Mapping
 from dataclasses import replace
 from decimal import Decimal
+from typing import Any
 
 from eda_retail.config import Settings
 from eda_retail.experiments.harness import Harness, RunConfig, started
@@ -30,14 +33,34 @@ def only_cause(seed: int, cause: str, incidents: int) -> Dataset:
     return replace(data, notices=notices, orders=tuple(o for o in data.orders if o.order_id in orders))
 
 
-def repeated_completions(h: Harness) -> int:
-    """Pasos completados más de una vez en una incidencia (mismo `step_id`)."""
-    row = h.conn.execute(
-        "SELECT count(*) - count(DISTINCT (correlation_id, payload->>'step_id')) AS n "
-        "FROM event_log.events WHERE event_type = 'StepCompleted'"
-    ).fetchone()
+NOT_EFFECTS = frozenset({"StepCompleted", "LlmCallRecorded"})
+
+
+def repeated_effects(events: Iterable[Mapping[str, Any]]) -> int:
+    """Efectos ejecutados de más por paso (mismo `step_id` de la misma incidencia).
+
+    El evento del efecto y su `StepCompleted` comparten `causation_id` (el `ExecuteStep` que los causó).
+    No cuenta los `StepCompleted` repetidos: un paso mantenido en una revisión se vuelve a pedir con la
+    misma clave y el ejecutor lo confirma otra vez sin repetir el efecto (spec idempotency).
+    """
+    events = list(events)
+    step_of = {(e["correlation_id"], e["causation_id"]): e["payload"]["step_id"]
+               for e in events if e["event_type"] == "StepCompleted"}
+    effects = Counter(
+        (e["correlation_id"], step_of[(e["correlation_id"], e["causation_id"])])
+        for e in events
+        if e["event_type"] not in NOT_EFFECTS and (e["correlation_id"], e["causation_id"]) in step_of
+    )
+    return sum(n - 1 for n in effects.values())
+
+
+def logged_repeated_effects(h: Harness) -> int:
+    rows = h.conn.execute(
+        "SELECT event_type, correlation_id, causation_id, payload FROM event_log.events"
+        " WHERE event_type <> 'LlmCallRecorded'"
+    ).fetchall()
     h.conn.commit()
-    return row["n"]
+    return repeated_effects(rows)
 
 
 def run_e3(base: Settings, *, seed: int = 42, incidents: int = 30) -> Report:
@@ -51,7 +74,7 @@ def run_e3(base: Settings, *, seed: int = 42, incidents: int = 30) -> Report:
         ).fetchall()
         replans = h.conn.execute("SELECT count(*) AS n FROM event_log.events WHERE event_type = 'PlanRevised'").fetchone()["n"]
         h.conn.commit()
-        repeated = repeated_completions(h) + result.repeated_steps
+        repeated = logged_repeated_effects(h) + result.repeated_steps
     amounts = {o.order_id: o.amount for o in data.orders}
     limit = BusinessRules().max_refund_amount
     over = sum(1 for r in refunds if r["amount"] > min(Decimal(amounts[r["order_id"]]), limit))
