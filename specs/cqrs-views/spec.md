@@ -73,7 +73,8 @@ El estado de escritura de cada componente y las vistas (`views.view_*`) SHALL se
 
 - **GIVEN** un panel que muestra incidencias abiertas
 - **WHEN** consulta los datos
-- **THEN** la consulta solo lee tablas `views.view_*`
+- **THEN** la consulta solo lee tablas `views.view_*` y la posición aplicada de cada vista en `views.offsets` (la `applied` de «Consistencia eventual declarada»)
+- **AND** no lee ninguna tabla de estado de escritura de otro componente
 
 ### Requirement: Consultas al lado de lectura
 
