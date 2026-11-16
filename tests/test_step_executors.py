@@ -306,3 +306,21 @@ def test_the_existing_claim_lookup_follows_effect_keys_enabled():
     other = component.specs(settings, "reissue_shipment", FakeLlmClient([]), rules)["ExecuteStep"].prepare
     assert on._existing is not None
     assert off._existing is None and other._existing is None
+
+
+def test_existing_effect_lookups_per_step_follow_effect_keys_enabled():
+    """notify_customer e issue_refund buscan el efecto ya registrado para el paso (incident_id, step_id),
+    solo con EFFECT_KEYS_ENABLED (design.md §8)"""
+    from dataclasses import replace
+
+    from eda_retail.config import Settings
+    from eda_retail.llm.fake import FakeLlmClient
+    from eda_retail.step_executors import component
+
+    settings = Settings()
+    for action in ("notify_customer", "issue_refund"):
+        on = component.specs(settings, action, FakeLlmClient([]), RULES)["ExecuteStep"].prepare
+        off = component.specs(replace(settings, effect_keys_enabled=False), action, FakeLlmClient([]),
+                              RULES)["ExecuteStep"].prepare
+        assert on._existing is not None, action
+        assert off._existing is None, action

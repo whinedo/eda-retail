@@ -291,3 +291,40 @@ def test_v2_too_many_mails_for_an_incident(database_url, conn):
     assert len(store.mailbox) == 3
     failed = [e for e in _events(conn, "notify_customer", incident) if e["event_type"] == "StepFailed"]
     assert [(e["payload"]["error"], e["payload"]["retryable"]) for e in failed] == [("mail_limit_exceeded", False)]
+
+
+def test_a_refund_step_already_recorded_with_another_key_is_not_repeated(database_url, conn):
+    """Reembolso ya registrado para el paso (incident_id, step_id) con otra clave: devuelve el existente,
+    sin otro reembolso ni RefundIssued (restricción refunds (incident_id, step_id), design.md §8)"""
+    order, incident = _order(conn), _incident()
+    payments = FakeService("payments", "RF")
+    api = _api(database_url, "issue_refund", service=payments)
+    _execute(api, _step("issue_refund", order, incident, amount="40.00", step_id="S4"))
+    [issued] = [e for e in _events(conn, "issue_refund", incident) if e["event_type"] == "RefundIssued"]
+
+    _execute(api, _step("issue_refund", order, incident, amount="40.00", step_id="S4"))  # otra clave
+
+    events = _events(conn, "issue_refund", incident)
+    assert [e["event_type"] for e in events] == ["RefundIssued", "StepCompleted", "StepCompleted"]
+    assert events[2]["payload"]["result"] == {"refund_id": issued["payload"]["refund_id"]}
+    assert _count(conn, "executor_issue_refund.refunds", incident) == 1
+    assert payments.calls == 1
+
+
+def test_a_notice_step_already_recorded_with_another_key_is_not_resent(database_url, conn):
+    """Aviso ya registrado para el paso (incident_id, step_id) con otra clave: devuelve el existente, sin otro
+    correo ni CustomerNotified (restricción customer_messages (incident_id, step_id), design.md §8)"""
+    order, incident = _order(conn), _incident()
+    mail = FakeService("mail", "M")
+    api = _api(database_url, "notify_customer", llm=FakeLlmClient([{"text": NOTICE}] * 2), service=mail)
+    _execute(api, _step("notify_customer", order, incident, step_id="S1"))
+    [sent] = [e for e in _events(conn, "notify_customer", incident) if e["event_type"] == "CustomerNotified"]
+
+    _execute(api, _step("notify_customer", order, incident, step_id="S1"))  # otra clave
+
+    events = _events(conn, "notify_customer", incident)
+    assert [e["event_type"] for e in events] == ["LlmCallRecorded", "CustomerNotified", "StepCompleted",
+                                                 "StepCompleted"]
+    assert events[3]["payload"]["result"] == {"message_id": sent["payload"]["message_id"]}
+    assert _count(conn, "executor_notify_customer.customer_messages", incident) == 1
+    assert mail.calls == 1

@@ -61,6 +61,16 @@ def sent_count(conn: psycopg.Connection, incident_id: str) -> int:
     return int(row["n"])
 
 
+def existing_message(conn: psycopg.Connection, step: ExecuteStep) -> dict[str, Any] | None:
+    """El aviso ya registrado para el paso (`customer_messages (incident_id, step_id)`, design.md §8), aunque la
+    `idempotency_key` sea otra: el ejecutor lo devuelve en lugar de enviar otro correo."""
+    row = conn.execute(
+        "SELECT message_id FROM executor_notify_customer.customer_messages WHERE incident_id = %s AND step_id = %s",
+        (step.incident_id, step.step_id),
+    ).fetchone()
+    return None if row is None else {"message_id": row["message_id"]}
+
+
 def record_llm_calls(conn: psycopg.Connection, command: CommandEnvelope, calls: list[LlmCall]) -> None:
     for call in calls:
         conn.execute(
