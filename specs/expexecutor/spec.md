@@ -19,7 +19,7 @@ El `expexecutor` SHALL generar el informe de resultados solo con código, sin ll
 
 ### Requirement: CLI del expexecutor
 
-El `expexecutor` SHALL ofrecer un CLI, `uv run eda-expexecutor`, con tres subcomandos: `run` (ejecutar un experimento y generar su informe de resultados), `report` (generar el informe de resultados de una ejecución ya hecha) y `delete` (borrar informes de resultados). Cada subcomando MUST terminar con código 0 si tiene éxito y distinto de 0 si falla, con un mensaje de error en español.
+El `expexecutor` SHALL ofrecer un CLI, `uv run eda-expexecutor`, con tres subcomandos: `run` (ejecutar un experimento y generar su informe de resultados), `report` (generar el informe de resultados de una ejecución ya hecha) y `delete` (borrar el informe de resultados de una ejecución o todos los datos de los experimentos). Cada subcomando MUST terminar con código 0 si tiene éxito y distinto de 0 si falla, con un mensaje de error en español.
 
 #### Scenario: Ayuda del CLI
 
@@ -159,7 +159,7 @@ La sección de evidencias SHALL contener solo datos tomados de los informes de l
 
 ### Requirement: Borrado de informes de resultados
 
-`eda-expexecutor delete <carpeta>` SHALL borrar el informe de resultados (`results.md`) de esa ejecución, y `eda-expexecutor delete --all` SHALL borrar todos los informes de resultados de la carpeta de resultados (`--out`, por defecto `experiments/results`). El borrado MUST conservar `report.json`, `report.md` y `experiment.log`, para que el informe se pueda regenerar con `report`. Si la carpeta no existe o no tiene `results.md`, MUST terminar con error sin borrar nada. `delete` sin carpeta ni `--all` MUST terminar con error.
+`eda-expexecutor delete <carpeta>` SHALL borrar el informe de resultados (`results.md`) de esa ejecución y MUST conservar su `report.json`, `report.md` y `experiment.log`, para que el informe se pueda regenerar con `report`. Si la carpeta no existe o no tiene `results.md`, MUST terminar con error sin borrar nada. `eda-expexecutor delete --all` SHALL borrar todos los datos de todos los experimentos: todas las carpetas de ejecución de la carpeta de resultados (`--out`, por defecto `experiments/results`), con su `report.json`, `report.md`, `experiment.log` y `results.md`. MUST NOT borrar nada fuera de la carpeta de resultados (ni el fichero de configuración `experiments/config.py`). `delete` sin carpeta ni `--all` MUST terminar con error.
 
 #### Scenario: Borrar un informe
 
@@ -168,12 +168,12 @@ La sección de evidencias SHALL contener solo datos tomados de los informes de l
 - **THEN** solo desaparece el `results.md` de la primera
 - **AND** su `report.json`, `report.md` y `experiment.log` siguen ahí
 
-#### Scenario: Borrar todos los informes
+#### Scenario: Borrar todos los datos de los experimentos
 
-- **GIVEN** tres ejecuciones con su `results.md`
+- **GIVEN** tres ejecuciones de experimentos distintos, cada una con `report.json`, `report.md`, `experiment.log` y `results.md`
 - **WHEN** se ejecuta `uv run eda-expexecutor delete --all`
-- **THEN** no queda ningún `results.md` en la carpeta de resultados
-- **AND** los `report.json`, `report.md` y `experiment.log` siguen ahí
+- **THEN** no queda ninguna carpeta de ejecución en la carpeta de resultados
+- **AND** `experiments/config.py` sigue ahí
 
 #### Scenario: Borrar un informe que no existe
 
