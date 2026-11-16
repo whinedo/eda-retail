@@ -113,7 +113,7 @@ def _e21(report: dict[str, Any]) -> list[Check]:
         _check(report, "metrics.replay.lag", "0", lambda v: v == 0),
         _check(report, "metrics.replay.inbox_matches", "true", lambda v: v is True),
         _check(report, "metrics.old_commands.not_replayed", "0", lambda v: v == 0),
-        _check(report, "metrics.controls.orchestrator.changed", "true", lambda v: v is True),
+        _check(report, "metrics.control.new_executions", "> 0", lambda v: isinstance(v, int) and v > 0),
     ]
 
 
@@ -153,8 +153,8 @@ CATALOG: dict[str, Entry] = {
     "e21": Entry(
         "E21", "Mide la reproducción total del log: con las incidencias cerradas y el sistema parado, se llevan "
         "los offsets de todos los grupos al principio de `eda.events` y se vuelve a consumir hasta que el lag "
-        "sea 0; se entregan otra vez los `ExecuteStep` antiguos y, como control, se repite sin el inbox del "
-        "orquestador y del intérprete.",
+        "sea 0; se entregan otra vez los `ExecuteStep` antiguos y, como control, se reentregan a los ejecutores "
+        "sin inbox de comandos ni `effect_keys`.",
         "H21: reproducir el log no produce ningún efecto, evento ni cambio de estado nuevos, y la variante de "
-        "control sin inbox sí produce alguna diferencia.", _e21),
+        "control sin idempotencia en los efectos sí repite algún efecto.", _e21),
 }

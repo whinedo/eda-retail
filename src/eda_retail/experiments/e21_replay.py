@@ -11,9 +11,14 @@ las filas de cada `outbox`, `inbox` y `command_outbox` (y de las reservas, los r
 de `orchestrator.plan_steps` y de cada vista. Cuenta además los mensajes que el inbox de cada consumidor
 descartó frente a los que tenía registrados.
 
-Control: reproduce otra vez con el inbox del orquestador desactivado y después con el del intérprete; deben
-aparecer efectos, filas o huellas nuevos, para demostrar que el experimento detecta la falta de idempotencia.
-H21 se cumple si la reproducción con inbox no cambia nada y el control del orquestador sí.
+Observaciones (fuera de H21): reproduce otra vez sin el inbox del orquestador y después sin el del intérprete.
+No repiten nada: la saga descarta por estado los eventos de incidencias cerradas y los resultados obsoletos, y el
+intérprete deduplica el aviso con el inbox de comandos de `OpenIncident`.
+
+Control: reentrega los `ExecuteStep` antiguos a los ejecutores en el modo `no_effect_keys` de E1 (sin inbox de
+comandos ni `effect_keys`, servicios sin deduplicar); deben aparecer efectos repetidos, para demostrar que el
+experimento detecta la falta de idempotencia. Va el último porque quita las restricciones de unicidad de negocio.
+H21 se cumple si la reproducción con inbox no cambia nada y el control repite algún efecto.
 """
 
 from __future__ import annotations
@@ -38,7 +43,8 @@ from eda_retail.projectors.registry import PROJECTORS
 from eda_retail.synthetic.faults import FaultPlan
 
 FAIL_RESERVE = 0.3  # fallos en reserve_stock: revisiones del plan y compensaciones (spec E21)
-CONTROLS = (orchestrator.SCHEMA, interpreter.SCHEMA)  # el control de H21 es el primero
+OBSERVATIONS = (orchestrator.SCHEMA, interpreter.SCHEMA)  # reproducciones sin el inbox de un consumidor
+CONTROL = "no_effect_keys"  # modo de E1 de los ejecutores en la reentrega de control
 LOG_TABLES = ("outbox", "inbox", "command_outbox")
 EFFECT_TABLES = ("inventory.reservations", "executor_issue_refund.refunds", "event_log.events")
 PLAN_STEPS = "orchestrator.plan_steps"
@@ -75,7 +81,7 @@ def summarize(diff: dict[str, Any]) -> dict[str, Any]:
 def h21(metrics: dict[str, Any]) -> bool:
     replay, old = metrics["replay"], metrics["old_commands"]
     return (metrics["open"] == 0 and not replay["changed"] and replay["lag"] == 0 and replay["inbox_matches"]
-            and old["not_replayed"] == 0 and metrics["controls"][CONTROLS[0]]["changed"])
+            and old["not_replayed"] == 0 and metrics["control"]["new_executions"] > 0)
 
 
 def _table_fingerprint(conn: psycopg.Connection, table: str) -> str:
@@ -134,11 +140,14 @@ def run_e21(base: Settings, *, seed: int = 42, incidents: int = 50) -> Report:
         discarded = {name: received(outcomes, h.outcomes, Outcome.DUPLICATE.value).get(name, 0) for name in registered}
         replies = h.redeliver("ExecuteStep")
         replay_changes = changes(before, snapshot(h))
-        controls = {}
-        for group in CONTROLS:
+        observations = {}
+        for group in OBSERVATIONS:
             prev = snapshot(h)
             h.replay(inbox_off={group})
-            controls[group] = summarize(changes(prev, snapshot(h)))
+            observations[group] = summarize(changes(prev, snapshot(h)))
+        prev = snapshot(h)
+        h.redeliver("ExecuteStep", idempotency=CONTROL)
+        control = summarize(changes(prev, snapshot(h)))
     metrics = {
         "closed": result.closed, "open": result.open, "resolved": result.resolved, "escalated": result.escalated,
         "replans": replans,
@@ -149,11 +158,12 @@ def run_e21(base: Settings, *, seed: int = 42, incidents: int = 50) -> Report:
         },
         "old_commands": {"redelivered": len(replies), "replayed": sum(r.replayed for r in replies),
                          "not_replayed": sum(not r.replayed for r in replies)},
-        "controls": controls,
+        "control": control,
+        "observations": observations,
     }
     return Report(
         experiment="E21", seed=seed, model=result.model,
         config={"incidents": incidents, "fail_probability": {"reserve_stock": FAIL_RESERVE},
-                "controls": [f"inbox_off:{group}" for group in CONTROLS]},
+                "control": f"redeliver:{CONTROL}", "observations": [f"inbox_off:{g}" for g in OBSERVATIONS]},
         metrics=metrics, hypothesis={"H21": h21(metrics)},
     )

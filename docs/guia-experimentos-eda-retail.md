@@ -166,12 +166,13 @@ Si I1 o I2 se violan, la hipótesis no se da por cumplida aunque su criterio pro
 ### E21 Reproducción total del log (H21)
 
 - **Objetivo.** Demostrar que reprocesar todo el log, por error o por una recuperación, no repite ningún efecto (spec `idempotency`: «Reproducción del log con ejecutores activos»).
-- **Escenario.** 50 incidencias cerradas con 30 % de fallos en `reserve_stock` (hay revisiones y compensaciones). Con el sistema parado se llevan los offsets de todos los grupos a 0 y se reinicia hasta lag 0. Variante de control `inbox_off` en el orquestador y luego en el intérprete.
+- **Escenario.** 50 incidencias cerradas con 30 % de fallos en `reserve_stock` (hay revisiones y compensaciones). Con el sistema parado se llevan los offsets de todos los grupos a 0 y se reinicia hasta lag 0. Variante de control `no_effect_keys`: los `ExecuteStep` antiguos se reentregan a los ejecutores sin inbox de comandos ni `effect_keys`. Como observación, se reproduce además sin el inbox del orquestador y luego sin el del intérprete.
 - **Mide.** Ejecuciones de cada servicio simulado por clave, filas de cada `outbox`, `inbox` y `command_outbox`, huella de `plan_steps` y de las vistas, mensajes descartados por inbox; además, `ExecuteStep` antiguos reentregados a los ejecutores activos.
-- **Criterio.** H21: nada cambia con el inbox activo y el control sí produce diferencias (demuestra que el experimento detecta la falta de idempotencia).
+- **Criterio.** H21: nada cambia con el inbox activo y el control produce efectos repetidos (demuestra que el experimento detecta la falta de idempotencia).
+- **Hallazgo.** Apagar el inbox de un solo consumidor no repite nada: la saga descarta por estado los eventos de incidencias cerradas y los resultados obsoletos, y el intérprete deduplica el aviso con el inbox de comandos de `OpenIncident`. Por eso el control está en la capa de efectos y la variante `inbox_off` queda como observación.
 - **Necesita.** Reinicio de offsets de un grupo.
 - **Diferencia con E1.** E1 duplica en caliente durante una ejecución; E21 reproduce el log completo después, con todo el estado ya escrito.
-- **Implementación.** `uv run eda-expexecutor run e21`. Los grupos de Kafka (intérprete y orquestador) vuelven al offset 0 con el sistema parado; el lado de lectura guarda su posición en PostgreSQL (`views.offsets`), así que se rebobina desde el offset 0 y descarta lo ya aplicado. Los `ExecuteStep` antiguos se reentregan con el sistema en marcha y las incidencias ya cerradas (duplicado tardío). Los dos controles se ejecutan sobre la misma base, después de la reproducción con inbox, y cada uno se compara con la foto anterior.
+- **Implementación.** `uv run eda-expexecutor run e21`. Los grupos de Kafka (intérprete y orquestador) vuelven al offset 0 con el sistema parado; el lado de lectura guarda su posición en PostgreSQL (`views.offsets`), así que se rebobina desde el offset 0 y descarta lo ya aplicado. Los `ExecuteStep` antiguos se reentregan con el sistema en marcha y las incidencias ya cerradas (duplicado tardío). Las observaciones `inbox_off` y el control `no_effect_keys` (el último, porque quita las restricciones de unicidad de negocio) se ejecutan sobre la misma base después de la reproducción con inbox, y cada uno se compara con la foto anterior.
 
 ### E22 Carreras de comandos y ventana efecto–registro (H22)
 

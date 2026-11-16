@@ -19,7 +19,8 @@ def metrics(**over):
         "open": 0,
         "replay": {"changed": False, "lag": 0, "inbox_matches": True},
         "old_commands": {"redelivered": 12, "not_replayed": 0},
-        "controls": {"orchestrator": {"changed": True}, "interpreter": {"changed": True}},
+        "control": {"changed": True, "new_executions": 4},
+        "observations": {"orchestrator": {"changed": False}, "interpreter": {"changed": False}},
     }
     for key, value in over.items():
         base[key] = base[key] | value if isinstance(value, dict) else value
@@ -47,7 +48,7 @@ def test_new_effects_rows_and_fingerprints_are_reported():
 
 
 def test_control_summary_counts_changed_keys():
-    """Control sin inbox: el informe resume cuántos efectos, filas y huellas cambiaron"""
+    """Control sin idempotencia en los efectos: el informe resume cuántos efectos, filas y huellas cambiaron"""
     diff = {"executions": {"payments:k1": [1, 3], "claims:k3": [None, 1]}, "rows": {"x.outbox": [1, 4]},
             "fingerprints": ["view_orders"]}
     assert summarize(diff) == {"changed": True, "new_executions": 3, "rows": {"x.outbox": [1, 4]},
@@ -56,8 +57,14 @@ def test_control_summary_counts_changed_keys():
 
 
 def test_h21_holds():
-    """Cumplimiento de H21: nada cambia con inbox y el control produce alguna diferencia"""
+    """Cumplimiento de H21: nada cambia con inbox y el control produce efectos repetidos"""
     assert h21(metrics())
+
+
+def test_observations_without_inbox_do_not_decide_h21():
+    """Reproducción sin el inbox de un consumidor: lo que cambie es una observación, fuera de H21"""
+    changed = {"orchestrator": {"changed": True}, "interpreter": {"changed": True}}
+    assert h21(metrics(observations=changed))
 
 
 def test_h21_fails_when_the_replay_changes_something():
@@ -66,8 +73,9 @@ def test_h21_fails_when_the_replay_changes_something():
 
 
 def test_h21_fails_when_the_control_detects_nothing():
-    """Cumplimiento de H21: si la variante de control no produce diferencias, el experimento no detecta nada"""
-    assert not h21(metrics(controls={"orchestrator": {"changed": False}, "interpreter": {"changed": True}}))
+    """Control sin idempotencia en los efectos: sin efectos repetidos, el experimento no detecta nada"""
+    assert not h21(metrics(control={"changed": False, "new_executions": 0}))
+    assert not h21(metrics(control={"changed": True, "new_executions": 0}))
 
 
 def test_h21_fails_when_the_inbox_did_not_discard_everything():

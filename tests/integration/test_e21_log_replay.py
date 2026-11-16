@@ -43,9 +43,16 @@ def test_executors_answer_old_commands(report):
     assert old["redelivered"] > 0 and old["not_replayed"] == 0
 
 
-def test_control_without_inbox(report):
-    """Control sin inbox"""
-    assert report.metrics["controls"]["orchestrator"]["changed"]
+def test_control_without_effect_idempotency(report):
+    """Control sin idempotencia en los efectos"""
+    control = report.metrics["control"]
+    assert control["changed"] and control["new_executions"] > 0
+
+
+def test_replay_without_one_consumer_inbox(report):
+    """Reproducción sin el inbox de un consumidor"""
+    assert set(report.metrics["observations"]) == {"orchestrator", "interpreter"}
+    assert all("changed" in o for o in report.metrics["observations"].values())
 
 
 def test_h21_met(report):

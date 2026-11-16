@@ -392,10 +392,7 @@ class Harness:
                                 step_backoff_base_seconds=0.01, step_backoff_max_seconds=0.05,
                                 pending_notice_timeout_s=PENDING_NOTICE_TIMEOUT_S, **saga_deadlines(self.config))
         self.conn = connect(url)
-        if self.config.idempotency != "full":
-            drop_business_uniques(self.conn)
-        for service in (self.services.mail, self.services.claims, self.services.carrier, self.services.payments):
-            service.idempotent = self.config.idempotency == "full"
+        self._set_idempotency(self.config.idempotency)
         self._build()
         self._start_threads()
         self._seed()
@@ -414,6 +411,13 @@ class Harness:
             for fut in self._admin.delete_topics([self.settings.events_topic, self.settings.dlq_topic]).values():
                 fut.result(timeout=30)
 
+    def _set_idempotency(self, mode: str) -> None:
+        """Restricciones de unicidad de negocio y deduplicación de los servicios simulados según el modo."""
+        if mode != "full":
+            drop_business_uniques(self.conn)
+        for service in (self.services.mail, self.services.claims, self.services.carrier, self.services.payments):
+            service.idempotent = mode == "full"
+
     @property
     def llm(self) -> LlmClient:
         if self._llm is None:
@@ -425,8 +429,8 @@ class Harness:
         self._closables.append(conn)
         return conn
 
-    def _targets(self) -> dict[str, Target]:
-        s, plan, mode = self.settings, self.config.faults, self.config.idempotency
+    def _targets(self, mode: str | None = None) -> dict[str, Target]:
+        s, plan, mode = self.settings, self.config.faults, mode or self.config.idempotency
         effects = replace(s, effect_keys_enabled=mode == "full")  # ejecutores e inventory
         targets = {
             "intake": Target(intake.SCHEMA, intake.specs(), mode != "none"),
@@ -713,14 +717,24 @@ class Harness:
             pass
         return time.monotonic() - start
 
-    def redeliver(self, command_type: str = "ExecuteStep") -> list[CommandReply]:
-        """Entrega otra vez, con su `command_id` original, los comandos que la saga ya entregó."""
+    def redeliver(self, command_type: str = "ExecuteStep", *, idempotency: str | None = None) -> list[CommandReply]:
+        """Entrega otra vez, con su `command_id` original, los comandos que la saga ya entregó. `idempotency`:
+        modo de los sistemas que los atienden (por defecto, el de la ejecución). Otro modo es definitivo para el
+        resto de la ejecución: quita las restricciones de unicidad de negocio (control de E21)."""
+        commands = self.commands
+        if idempotency is not None and idempotency != self.config.idempotency:
+            if idempotency not in IDEMPOTENCY_MODES:
+                raise ValueError(f"modo de idempotencia desconocido: {idempotency}")
+            self._set_idempotency(idempotency)
+            commands = InProcessCommands(self._connect(), {target_url(self.settings, t): v for t, v in
+                                                           self._targets(idempotency).items()},
+                                         self.config.faults, self._crashed)
         rows = self.conn.execute(
             "SELECT command_id, incident_id, command_type, target, causation_id, payload"
             " FROM orchestrator.command_outbox WHERE command_type = %s AND status IN ('delivered', 'rejected')"
             " ORDER BY command_id", (command_type,)).fetchall()
         self.conn.commit()
-        return [self.commands(target_url(self.settings, r["target"]), r["command_type"], command_id=r["command_id"],
+        return [commands(target_url(self.settings, r["target"]), r["command_type"], command_id=r["command_id"],
                               correlation_id=r["incident_id"], causation_id=r["causation_id"], payload=r["payload"],
                               timeout=self.settings.command_http_timeout_s) for r in rows]
 
