@@ -21,7 +21,9 @@ FAILED_TAIL = 20  # líneas del final del log que se citan de una ejecución fal
 MAX_VALUE = 300  # caracteres de un valor citado antes de recortarlo
 # Líneas del log que respaldan el resultado: avisos, errores, resultado de la hipótesis y lo que anotó
 # el propio expexecutor (comando, parámetros y su origen, código de salida).
-EVIDENCE_LINE = re.compile(r"WARNING|ERROR|CRITICAL|Traceback|Exception|^H\d+: |^informe: |^expexecutor: ")
+EVIDENCE_LINE = re.compile(
+    r"WARNING|ERROR|CRITICAL|Traceback|Exception|^%[0-4]\||^H\d+: |^informe: |^expexecutor: "
+)
 EXIT_LINE = re.compile(r"^expexecutor: eda-experiment terminó con código (-?\d+)$")
 
 

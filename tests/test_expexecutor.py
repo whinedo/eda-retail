@@ -326,6 +326,19 @@ def test_log_errors_as_evidence(tmp_path):
     assert "el broker no responde" in evidence
 
 
+def test_librdkafka_warnings_as_evidence(tmp_path):
+    """Errores del log como evidencia: los avisos de librdkafka (%0-%4) cuentan como avisos"""
+    log = (
+        "inicio\n"
+        "%4|1794868414.229|GETPID|rdkafka#producer-7| [thrd:main]: Coordinator load in progress\n"
+        "%6|1794868414.300|INFO|rdkafka#producer-7| [thrd:main]: connected\n"
+        "H1: cumplida\n"
+    )
+    evidence = section(write_results(make_run(tmp_path, log=log)).read_text(), "Evidencias")
+    assert "`experiment.log`, línea 2" in evidence
+    assert "`experiment.log`, línea 3" not in evidence
+
+
 # --- Borrado ------------------------------------------------------------------------------------
 
 
