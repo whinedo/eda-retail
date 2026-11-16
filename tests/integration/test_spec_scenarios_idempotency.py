@@ -57,10 +57,6 @@ def test_plan_revision_after_a_notice_was_sent(database_url, conn):
     assert events[3]["payload"]["result"] == events[2]["payload"]["result"]
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "file_claim solo deduplica por idempotency_key: otro ExecuteStep de file_claim para el mismo pedido con otro "
-    "step_id (otra clave) crea una segunda reclamación; executor_file_claim.claims no es única por "
-    "(incident_id, order_id) ni el ejecutor busca una reclamación existente"))
 def test_claim_requested_twice(database_url, conn):
     """Reclamación solicitada dos veces"""
     order, incident = _order(conn), _incident()
@@ -82,6 +78,9 @@ def test_claim_requested_twice(database_url, conn):
     assert [e["event_type"] for e in events].count("ClaimFiled") == 1  # no crea otra reclamación
     assert _count(conn, "executor_file_claim.claims", incident) == 1
     assert claims.executed == 1
+    stored = conn.execute("SELECT status, result FROM executor_file_claim.effect_keys WHERE idempotency_key = %s",
+                          (again["idempotency_key"],)).fetchone()
+    assert (stored["status"], stored["result"]) == ("completed", {"claim_id": claim_id})  # la clave nueva queda cerrada
 
 
 def test_log_replay_with_active_executors(database_url, conn):

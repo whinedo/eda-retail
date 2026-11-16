@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from eda_retail.experiments.harness import RunConfig, run
+from eda_retail.experiments.harness import Harness, RunConfig, run
 from eda_retail.synthetic.faults import FaultPlan
 
 pytestmark = pytest.mark.slow
@@ -24,6 +24,19 @@ def test_e1_with_idempotency(base_settings):
     result = run(base_settings, RunConfig(seed=8, incidents=6, faults=FaultPlan(duplicates=3)))
     assert result.closed == 6
     assert result.duplicates == {}
+
+
+def _claims_index(harness) -> bool:
+    return harness.conn.execute(
+        "SELECT to_regclass('executor_file_claim.claims_incident_order_key') IS NOT NULL AS present"
+    ).fetchone()["present"]
+
+
+@pytest.mark.parametrize(("mode", "present"), [("full", True), ("no_effect_keys", False), ("none", False)])
+def test_e1_drops_the_business_uniques_without_idempotency(base_settings, mode, present):
+    """Sin idempotencia, E1 elimina también las restricciones de unicidad de negocio (design.md §8)"""
+    with Harness(base_settings, RunConfig(seed=8, incidents=1, idempotency=mode)) as harness:
+        assert _claims_index(harness) is present
 
 
 def test_e1_without_idempotency(base_settings):

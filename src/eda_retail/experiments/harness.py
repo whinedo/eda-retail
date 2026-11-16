@@ -132,6 +132,17 @@ def isolated_database(base: Settings, name: str) -> Iterator[str]:
             admin.execute(f"DROP DATABASE IF EXISTS {name} WITH (FORCE)")
 
 
+# Restricciones de unicidad de negocio de las tablas de efectos (design.md §8): la variante «sin idempotencia»
+# de E1 las elimina en su base de pruebas, junto con INBOX_ENABLED y EFFECT_KEYS_ENABLED.
+BUSINESS_UNIQUES = ("executor_file_claim.claims_incident_order_key",)
+
+
+def drop_business_uniques(conn: psycopg.Connection) -> None:
+    for index in BUSINESS_UNIQUES:
+        conn.execute(f"DROP INDEX IF EXISTS {index}")
+    conn.commit()
+
+
 def service_duplicates(services: Services) -> Counter[str]:
     """Ejecuciones externas repetidas del mismo paso, por servicio simulado."""
     out: Counter[str] = Counter()
@@ -372,6 +383,8 @@ class Harness:
                                 step_backoff_base_seconds=0.01, step_backoff_max_seconds=0.05,
                                 pending_notice_timeout_s=PENDING_NOTICE_TIMEOUT_S, **saga_deadlines(self.config))
         self.conn = connect(url)
+        if self.config.idempotency != "full":
+            drop_business_uniques(self.conn)
         for service in (self.services.mail, self.services.claims, self.services.carrier, self.services.payments):
             service.idempotent = self.config.idempotency == "full"
         self._build()
