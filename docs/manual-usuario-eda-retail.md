@@ -103,6 +103,10 @@ Entre el mapa y el panel de eventos hay un **separador** que se puede arrastrar 
 
 ![Cabecera](capturas-manual-eda/14-cabecera-analitica.png)
 
+Con la versión 2, la cabecera lo indica junto al título y el contador de procesos sube a 15 (§13):
+
+![Cabecera con la versión 2](capturas-manual-eda/16-cabecera-v2.png)
+
 De izquierda a derecha:
 
 | Elemento | Qué hace |
@@ -628,7 +632,7 @@ Los **eventos** son hechos que ya ocurrieron y no se modifican. Los que verás e
 
 ## 13. Versión 2: MCP y A2A
 
-La versión 2 está construida y se activa al arrancar con `scripts/start-all.sh --version 2`. Necesita `A2A_CARRIER_TOKEN` en `.env` (lo genera `scripts/init-env.sh`, §2.1); sin él, los scripts terminan con error antes de arrancar nada. Está especificada en `specs/mcp-mail/spec.md`, `specs/a2a-carrier/spec.md` y `design.md` §15. Las capturas de este manual son de la versión 1.
+La versión 2 está construida y se activa al arrancar con `scripts/start-all.sh --version 2`. Necesita `A2A_CARRIER_TOKEN` en `.env` (lo genera `scripts/init-env.sh`, §2.1); sin él, los scripts terminan con error antes de arrancar nada. Está especificada en `specs/mcp-mail/spec.md`, `specs/a2a-carrier/spec.md` y `design.md` §15. Las capturas de este manual son de la versión 1, salvo la segunda de §4 y las de esta sección.
 
 **Todo lo de esta sección se ejecuta solo en la versión 2.** La versión se elige al arrancar con `--version 1|2` en los scripts o con la variable `POC_VERSION`: con `POC_VERSION=1` (el valor por defecto) la PoC se comporta como se describe en el resto del manual, y con `POC_VERSION=2` arrancan además el servidor de correo (`eda-mail-server`) y el agente del transportista (`eda-carrier-agent`). Con la versión 1 no existen ni la consulta al transportista ni el evento `CarrierConsulted`, y el correo lo envía el servicio simulado interno.
 
@@ -640,6 +644,10 @@ La versión 1 comunica sus sistemas con **eventos** (Kafka) y **comandos REST**.
 | Comando REST | Una orden a un sistema dueño de su estado, que la acepta o la rechaza al momento | `CreatePlan`, `ExecuteStep`… (versiones 1 y 2) |
 | MCP | Usar una herramienta que no razona, solo expone operaciones | Servidor de correo simulado para avisar al cliente |
 | A2A | Hablar con otro agente autónomo, de otra organización y opaco por dentro | Agente del transportista, consultado por el planificador |
+
+En el mapa de la versión 2 aparecen los dos nodos nuevos: el **Servidor de correo (MCP)**, al que llama `notify_customer`, y el **Agente del transportista (A2A)**, al que consulta el planificador. Los dos tienen su punto de estado, como el resto de procesos.
+
+![Mapa de sistemas con la versión 2](capturas-manual-eda/17-mapa-v2.png)
 
 ### 13.1 Servidor de correo (MCP)
 
@@ -656,3 +664,7 @@ El recorrido es el de siempre, con tres diferencias que solo aparecen con `POC_V
 1. Al crear el plan, el planificador consulta al agente del transportista. Si el agente pide el número de seguimiento (`input-required`), el planificador se lo da y vuelve a preguntar (como máximo 2 rondas). Después aparece `CarrierConsulted`, justo antes de `PlanCreated`.
 2. Si el agente responde a tiempo y su respuesta cumple el esquema, el LLM propone el plan teniendo en cuenta sus opciones, como contenido no confiable; el código valida el plan igual que en la versión 1. Si no responde, falla o no pasa los guardrails, el plan se hace sin sus opciones.
 3. En el paso `notify_customer`, el ejecutor envía el correo al servidor MCP y `CustomerNotified` lleva el `message_id` que devuelve. Si el paso se reintenta, no se envía un segundo correo. Las reclamaciones siguen presentándose por comando REST, no por A2A.
+
+La captura muestra una incidencia de retraso con la versión 2, filtrada en el panel de eventos (§8.3) y leída de abajo arriba: el intérprete emite `ShipmentDelayed`, el planificador registra `CarrierConsulted` justo antes de `PlanCreated`, `CustomerNotified` sale del ejecutor de `notify_customer` después de enviar el correo por MCP, y la incidencia termina con `IncidentResolved`. En la columna de payload, a la derecha, `CarrierConsulted` muestra el resultado (`answered`), las rondas y la latencia, y `CustomerNotified` el `message_id` que devolvió el servidor de correo.
+
+![Eventos de una incidencia con la versión 2](capturas-manual-eda/18-eventos-v2.png)
