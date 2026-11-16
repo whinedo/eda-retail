@@ -18,7 +18,7 @@ Guía para lanzar avisos de transportistas, ver cómo los agentes se reparten el
 10. Recorridos típicos
 11. Problemas frecuentes
 12. Glosario de eventos
-13. Segunda versión: MCP y A2A (en desarrollo)
+13. Versión 2: MCP y A2A
 
 ## 1. Qué es
 
@@ -38,10 +38,10 @@ La regla de diseño de la PoC es que **el LLM propone y el código dispone**: lo
 
 - **El log de eventos está en Kafka.** Todos los eventos se publican en el topic `eda.events`, que los conserva para siempre. Es lo que ves en el panel inferior.
 - **Cada sistema tiene sus propios datos.** Cada componente (el intérprete, el planificador, el orquestador, cada ejecutor, el inventario…) guarda su estado en su propio esquema de la base de datos y no lee ni escribe los de otro. Para saber algo de otro dominio, consulta una *proyección* (un modelo de lectura que se construye consumiendo Kafka).
-- **Los comandos no viajan por Kafka.** El orquestador (la saga) pide cada paso a un sistema por una llamada REST; el sistema responde si lo acepta, y el resultado llega después como un **evento**.
+- **Los comandos no viajan por Kafka.** El orquestador (la saga) pide cada paso a un sistema por una llamada REST; el sistema responde al momento si lo acepta (202) o lo rechaza (422), hace el trabajo después (por ejemplo, la llamada al LLM) y el resultado llega como un **evento**.
 - **Todo va con un pequeño retraso.** Una proyección, y el propio panel de eventos, van por detrás de lo que acaba de ocurrir (consistencia eventual). Un evento nuevo tarda un instante en aparecer en la tabla.
 
-> **Estado.** El código implementa el modelo descrito arriba (cada sistema con su esquema, comandos REST y proyecciones sobre Kafka). La **segunda versión**, con un servidor de correo MCP y un agente del transportista A2A, está especificada y en desarrollo: solo se ejecuta si arrancas la PoC con `POC_VERSION=2` y todavía no se ve en la aplicación (§13).
+> **Versiones.** El código implementa el modelo descrito arriba (cada sistema con su esquema, comandos REST y proyecciones sobre Kafka). La **versión 2** añade un servidor de correo MCP y un agente del transportista A2A; se activa con `scripts/start-all.sh --version 2` y la cabecera muestra la versión activa (§4, §13).
 
 ## 2. Antes de empezar
 
@@ -61,7 +61,7 @@ scripts/run-agents.sh       # los procesos de la PoC
 scripts/run-web.sh          # el backend (127.0.0.1:8000) y el front (http://localhost:5173)
 ```
 
-La primera vez, copia `.env.example` a `.env` (los scripts lo cargan si existe). Abre **http://localhost:5173** en el navegador. El backend solo escucha en `127.0.0.1`: el front no es accesible desde otras máquinas.
+La primera vez, crea la configuración con `scripts/init-env.sh`: copia `.env.example` a `.env` y genera `A2A_CARRIER_TOKEN`, que necesita la versión 2. Revisa después que `LLM_MODEL` sea un modelo descargado en Ollama. Para arrancar la versión 2, `scripts/start-all.sh --version 2`. Abre **http://localhost:5173** en el navegador. El backend solo escucha en `127.0.0.1`: el front no es accesible desde otras máquinas.
 
 Para parar: `Ctrl+C` en la terminal, o `scripts/stop-all.sh` (procesos y contenedores; no borra el volumen de PostgreSQL). Para empezar de cero, `docker compose down -v` borra también los datos de PostgreSQL y de Kafka; el esquema se vuelve a crear en el siguiente arranque.
 
@@ -108,13 +108,14 @@ De izquierda a derecha:
 | Elemento | Qué hace |
 | --- | --- |
 | **EDA Retail · Incidencias logísticas · PoC académica** | Título de la aplicación. |
+| **Versión 1** / **Versión 2 (MCP + A2A)** | La versión de la PoC con la que arrancó el backend (`--version` de los scripts o `POC_VERSION`). |
 | **Analítica** | Abre la vista de analítica con el estado de los pedidos (§9). Allí, el enlace **← Vista principal** vuelve a esta pantalla. |
 | **Resetear simulación** | Vacía la vista y vuelve a empezar: borra del panel los eventos mostrados, quita los filtros de incidencia y de nodo, cierra el detalle del nodo y, a partir de ahí, solo muestra los eventos **nuevos**. **No borra datos**: ni los eventos de Kafka ni lo que hay en PostgreSQL se tocan. Está deshabilitado mientras se ejecuta un comando («Espera a que termine el comando»). |
 | **Jaeger** | Enlace que abre la interfaz de Jaeger en otra pestaña (por defecto `http://localhost:16686`; se cambia con `JAEGER_UI_URL`). Allí se ven las trazas distribuidas. |
 | **Kafka: healthy** | Estado de Kafka. |
 | **PostgreSQL: healthy** | Estado de la base de datos. |
 | **Ollama: healthy** | Estado del servidor de LLM local. |
-| **Procesos: 13 de 13** | Cuántos de los procesos que vigila el front (relay, proyector, `event_log`, orquestador, los tres agentes y los seis ejecutores) están en marcha. No incluye `intake` ni `inventory`. Si `event_log` está parado, el contador baja a 12 de 13 y el panel de eventos deja de actualizarse. |
+| **Procesos: 13 de 13** | Cuántos de los procesos que vigila el front (relay, proyector, `event_log`, orquestador, los tres agentes y los seis ejecutores) están en marcha. No incluye `intake` ni `inventory`. Con la versión 2 son 15: se suman el servidor de correo (`eda-mail-server`) y el agente del transportista (`eda-carrier-agent`). Si `event_log` está parado, el contador baja a 12 de 13 y el panel de eventos deja de actualizarse. |
 
 **Aviso de avisos aparcados.** Si el intérprete ha aparcado un aviso porque su pedido aún no existe (por ejemplo, porque no has ejecutado **seed**), aparece bajo la cabecera, en las dos vistas, una advertencia con cuántos avisos esperan y, por cada uno, el pedido, la incidencia abreviada y la hora local a la que vence su plazo; por ejemplo: «⚠ 2 avisos aparcados esperan pedidos que aún no existen: P-1001 (I-3f2a9c1b, vence 20:13:36)…». Desaparece sola cuando el aviso se reanuda (llega el pedido) o vence (la incidencia se escala con `no_valid_orders`). Si la ves, pulsa **seed**.
 
@@ -622,30 +623,31 @@ Los **eventos** son hechos que ya ocurrieron y no se modifican. Los que verás e
 | `RefundIssued` | `issue_refund` | Se reembolsó (el único paso que no se puede deshacer). |
 | `IncidentResolved` | Orquestador | La incidencia se cerró. |
 | `IncidentEscalated` | Orquestador / replanificador / intérprete / planificador | No se pudo resolver sola y pasa a una persona. El motivo viaja en el payload: `no_valid_orders` (ningún pedido del aviso existe), `llm_output_invalid` (tres salidas del LLM rechazadas seguidas), `budget_exhausted` (se agotó el presupuesto de tokens, llamadas o revisiones), `max_revisions` (demasiadas revisiones del plan), `refund_limit` (reembolso por encima del tope), `compensation_failed` (falló una compensación), `step_timeout` o `plan_timeout` (un comando no respondió a tiempo) y `command_rejected` (un sistema rechazó el comando). Al escalar, la saga cancela los pasos pendientes y compensa las reservas hechas, y nunca emite el reembolso. |
+| `CarrierConsulted` | Planificador (solo versión 2) | Resultado de la consulta al agente del transportista por A2A: `answered`, `timeout`, `failed` o `rejected_by_guardrail`, con las rondas y la latencia; sin datos personales. |
 | `LlmCallRecorded` | Agentes con LLM | Registro de una llamada al LLM: agente, modelo, tokens, latencia y si superó la validación. |
 
-## 13. Segunda versión: MCP y A2A (en desarrollo)
+## 13. Versión 2: MCP y A2A
 
-Esta sección explica lo que **vendrá**; todavía no está en la aplicación, y los nombres exactos pueden cambiar cuando se implemente. Está especificada en `specs/mcp-mail/spec.md`, `specs/a2a-carrier/spec.md` y `design.md` §15.
+La versión 2 está construida y se activa al arrancar con `scripts/start-all.sh --version 2`. Necesita `A2A_CARRIER_TOKEN` en `.env` (lo genera `scripts/init-env.sh`, §2.1); sin él, los scripts terminan con error antes de arrancar nada. Está especificada en `specs/mcp-mail/spec.md`, `specs/a2a-carrier/spec.md` y `design.md` §15. Las capturas de este manual son de la versión 1.
 
-**Todo lo de esta sección se ejecuta solo en la versión 2.** La versión se elige al arrancar con la variable `POC_VERSION`: con `POC_VERSION=1` (el valor por defecto) la PoC se comporta como se describe en el resto del manual, y con `POC_VERSION=2` arrancan además el servidor de correo (`eda-mail-server`) y el agente del transportista (`eda-carrier-agent`). Con la versión 1 no existen ni la consulta al transportista ni el evento `CarrierConsulted`, y el correo lo envía el servicio simulado interno.
+**Todo lo de esta sección se ejecuta solo en la versión 2.** La versión se elige al arrancar con `--version 1|2` en los scripts o con la variable `POC_VERSION`: con `POC_VERSION=1` (el valor por defecto) la PoC se comporta como se describe en el resto del manual, y con `POC_VERSION=2` arrancan además el servidor de correo (`eda-mail-server`) y el agente del transportista (`eda-carrier-agent`). Con la versión 1 no existen ni la consulta al transportista ni el evento `CarrierConsulted`, y el correo lo envía el servicio simulado interno.
 
-La PoC actual comunica sus sistemas con **eventos** (Kafka) y **comandos REST**. La segunda versión añade los dos modos que faltan, para que se vea cuándo conviene cada uno:
+La versión 1 comunica sus sistemas con **eventos** (Kafka) y **comandos REST**. La versión 2 añade los dos modos que faltan, para que se vea cuándo conviene cada uno:
 
 | Modo | Cuándo usarlo | En la PoC |
 | --- | --- | --- |
-| Evento (Kafka) | Un hecho ya ocurrido que interesa a varios, sin esperar respuesta | `ShipmentDelayed`, `StepCompleted`… (ya disponible) |
-| Comando REST | Una orden a un sistema dueño de su estado, que la acepta o la rechaza al momento | `CreatePlan`, `ExecuteStep`… (ya disponible) |
+| Evento (Kafka) | Un hecho ya ocurrido que interesa a varios, sin esperar respuesta | `ShipmentDelayed`, `StepCompleted`… (versiones 1 y 2) |
+| Comando REST | Una orden a un sistema dueño de su estado, que la acepta o la rechaza al momento | `CreatePlan`, `ExecuteStep`… (versiones 1 y 2) |
 | MCP | Usar una herramienta que no razona, solo expone operaciones | Servidor de correo simulado para avisar al cliente |
 | A2A | Hablar con otro agente autónomo, de otra organización y opaco por dentro | Agente del transportista, consultado por el planificador |
 
 ### 13.1 Servidor de correo (MCP)
 
-*Solo con `POC_VERSION=2`.* El paso `notify_customer` dejará de usar el servicio de correo simulado interno: su ejecutor enviará el correo a un servidor MCP (`mail-server`) con una única herramienta, `send_email`. El agente redactor solo escribe el texto; quien llama al servidor es el ejecutor (código). El servidor resuelve la dirección del cliente por su referencia, así que ni los eventos ni el panel mostrarán direcciones de correo. Qué cambiará en pantalla: `CustomerNotified` llevará el `message_id` que devuelve el servidor, y un fallo del servidor se verá como `StepFailed` en el paso de notificación. Guardrails: solo se admite la herramienta de envío, se valida lo que entra y lo que vuelve, y hay un máximo de correos por incidencia (por defecto 3; al superarlo, `StepFailed` con `mail_limit_exceeded`).
+*Solo con `POC_VERSION=2`.* El paso `notify_customer` no usa el servicio de correo simulado interno: su ejecutor envía el correo a un servidor MCP (`eda-mail-server`) con una única herramienta, `send_email`. El agente redactor solo escribe el texto; quien llama al servidor es el ejecutor (código). El servidor resuelve la dirección del cliente por su referencia, así que ni los eventos ni el panel muestran direcciones de correo. Qué cambia en pantalla: el mapa muestra el **servidor de correo (MCP)** en lugar del servicio de correo interno, `CustomerNotified` lleva el `message_id` que devuelve el servidor, y un fallo del servidor se ve como `StepFailed` en el paso de notificación. Guardrails: solo se admite la herramienta de envío, se valida lo que entra y lo que vuelve, y hay un máximo de correos por incidencia (por defecto 3; al superarlo, `StepFailed` con `mail_limit_exceeded`).
 
 ### 13.2 Agente del transportista (A2A)
 
-*Solo con `POC_VERSION=2`.* Antes de proponer el plan, el planificador consultará por A2A a un **agente del transportista** (simulado con reglas deterministas, no con un LLM): le preguntará por las opciones de entrega de un pedido (nueva fecha, si puede reenviar, si aceptaría una reclamación). La consulta puede pedir datos extra (`input-required`, p. ej. un número de seguimiento). La respuesta es solo contexto para el plan, que se valida igual que siempre; **los efectos siguen yendo por comandos REST** (la reclamación la presenta el ejecutor de `file_claim`). Qué cambiará en pantalla: un evento nuevo, `CarrierConsulted`, con el resultado de cada consulta (`answered`, `timeout`, `failed` o `rejected_by_guardrail`), el número de rondas y la latencia, sin datos personales. Si el agente no responde o no pasa los guardrails, el plan se hace sin sus opciones, como hoy. Guardrails: autenticación y comprobación de la Agent Card, solo referencias en la petición (nunca nombres ni correos), respuesta validada, plazo y máximo de rondas (`A2A_MAX_ROUNDS`, por defecto 2), y respuesta tratada como posible prompt injection.
+*Solo con `POC_VERSION=2`.* Antes de proponer el plan, el planificador consulta por A2A a un **agente del transportista** (simulado con reglas deterministas, no con un LLM): le pregunta por las opciones de entrega de un pedido (nueva fecha, si puede reenviar, si aceptaría una reclamación). La consulta puede pedir datos extra (`input-required`, p. ej. un número de seguimiento). La respuesta es solo contexto para el plan, que se valida igual que siempre; **los efectos siguen yendo por comandos REST** (la reclamación la presenta el ejecutor de `file_claim`). Qué cambia en pantalla: el mapa muestra el nodo **Agente del transportista (A2A)** y aparece un evento nuevo, `CarrierConsulted`, con el resultado de cada consulta (`answered`, `timeout`, `failed` o `rejected_by_guardrail`), el número de rondas y la latencia, sin datos personales. Si el agente no responde o no pasa los guardrails, el plan se hace sin sus opciones, como en la versión 1. Guardrails: autenticación y comprobación de la Agent Card, solo referencias en la petición (nunca nombres ni correos), respuesta validada, plazo y máximo de rondas (`A2A_MAX_ROUNDS`, por defecto 2), y respuesta tratada como posible prompt injection.
 
 ### 13.3 Qué ocurre con un aviso en la versión 2
 

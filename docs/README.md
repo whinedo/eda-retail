@@ -238,7 +238,17 @@ El orquestador no recibe comandos: es el process manager de la saga, consume eve
 
 ### Puesta en marcha
 
-Con Docker y Ollama instalados, y `.env` creado a partir de `.env.example` (fija `LLM_MODEL` a un modelo descargado, p. ej. `qwen2.5:7b-instruct`):
+Requisitos: Docker, Ollama con un modelo descargado (p. ej. `ollama pull qwen2.5:7b-instruct`), [uv](https://docs.astral.sh/uv/) y Node 24 para el front.
+
+**Configuración (`.env`).** Todos los scripts y comandos `eda-*` leen `.env` en la raíz del proyecto. Para crearlo:
+
+```bash
+scripts/init-env.sh            # crea .env a partir de .env.example y genera A2A_CARRIER_TOKEN
+```
+
+`init-env.sh` copia `.env.example` (con las credenciales locales de Docker, la URL de Ollama y los valores por defecto de la PoC) y genera un `A2A_CARRIER_TOKEN` aleatorio, que solo hace falta en la versión 2. Nunca sobrescribe un `.env` que ya exista ni un token ya definido, y no muestra el token. Después, revisa que `LLM_MODEL` sea un modelo que tengas en Ollama. `A2A_CARRIER_TOKEN` no tiene un valor fijo: es un secreto local que comparten el planificador (cliente A2A) y el agente del transportista, y los dos lo leen del mismo `.env`. Si prefieres crearlo a mano: `cp .env.example .env` y `A2A_CARRIER_TOKEN=$(openssl rand -hex 32)`. `.env` está en `.gitignore`: no se sube nunca al repositorio.
+
+Después:
 
 ```bash
 scripts/start-all.sh           # terminal 1: contenedores, migraciones, todos los procesos y el front web
@@ -260,6 +270,7 @@ El front web (`scripts/run-web.sh`, spec `web-front`) hace lo mismo desde el nav
 
 | Script | Qué hace |
 | --- | --- |
+| `scripts/init-env.sh` | Crea `.env` a partir de `.env.example` si no existe y genera `A2A_CARRIER_TOKEN` si falta o está vacío (64 caracteres hexadecimales); no sobrescribe nada ni muestra el token |
 | `scripts/start-all.sh [--version 1\|2] [--logs DIR] [--no-web]` | Arranca todo: `docker compose up -d`, espera a que postgres y kafka estén healthy, aplica las migraciones y lanza `run-agents.sh` y `run-web.sh` (sin el front con `--no-web`), los dos con la versión de `--version` (por defecto, `POC_VERSION` de `.env` o 1; otro valor termina con error y el uso). Ctrl+C para los procesos y el front y deja los contenedores; si uno de los dos scripts termina, para el otro |
 | `scripts/run-agents.sh [--version 1\|2] [--logs DIR] [--no-migrate]` | Comprueba que kafka y postgres están en marcha y que Ollama tiene `LLM_MODEL`, aplica las migraciones y arranca todos los procesos cargando `.env`; deja un log por proceso en `logs/` y los para todos con Ctrl+C o si alguno termina. `--version` gana a `POC_VERSION` de `.env`; una versión no válida termina con error sin arrancar nada. Solo con la versión 2 arranca además los procesos de la segunda versión: `eda-mail-server` (servidor de correo MCP) y `eda-carrier-agent` (agente A2A del transportista) |
 | `scripts/notice.sh [argumentos de eda-notice]` | Abre `eda-notice` (por defecto, el modo interactivo) con la misma configuración (`.env`) |
@@ -372,7 +383,7 @@ Para activarla:
 scripts/start-all.sh --version 2   # o POC_VERSION=2 en .env y scripts/start-all.sh
 ```
 
-Con la versión 2, `.env` debe tener `A2A_CARRIER_TOKEN` (un valor propio, nunca en el repositorio); sin él, `run-agents.sh` termina con error antes de arrancar nada. `--version` también existe en `scripts/run-agents.sh` y `scripts/run-web.sh` si se lanzan por separado (con la misma versión en los dos). La cabecera del front muestra «Versión 2 (MCP + A2A)» y el mapa, el servidor de correo MCP y el agente del transportista como procesos vigilados. `scripts/stop-all.sh` también para `eda-mail-server` y `eda-carrier-agent`.
+Con la versión 2, `.env` debe tener `A2A_CARRIER_TOKEN` (un valor propio, nunca en el repositorio; `scripts/init-env.sh` lo genera); sin él, `run-agents.sh` termina con error antes de arrancar nada. `--version` también existe en `scripts/run-agents.sh` y `scripts/run-web.sh` si se lanzan por separado (con la misma versión en los dos). La cabecera del front muestra «Versión 2 (MCP + A2A)» y el mapa, el servidor de correo MCP y el agente del transportista como procesos vigilados. `scripts/stop-all.sh` también para `eda-mail-server` y `eda-carrier-agent`.
 
 ### Cuándo usar cada modo de comunicación
 
