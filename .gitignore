@@ -10,3 +10,6 @@ logs/
 # Front web (web/)
 web/node_modules/
 web/dist/
+
+# Caché del registro de skills
+.atl/
