@@ -256,6 +256,25 @@ describe("Reinicio de la vista", () => {
     expect(api.runCommand).toHaveBeenCalledTimes(writes);
     expect(api.sendInput).not.toHaveBeenCalled();
   });
+
+  it("Reinicio con un comando en ejecución", async () => {
+    FakeStream.all = [];
+    const api = client({
+      runCommand: vi.fn(async () => ({ run_id: "run-2", argv: ["scripts/notice.sh", "seed"] })),
+    });
+    const user = userEvent.setup();
+    render(<App client={api} openStream={openStream} />);
+    const reset = screen.getByRole("button", { name: "Resetear simulación" });
+    expect(reset).toBeEnabled();
+
+    // GIVEN un comando en ejecución (lanzado y sin `exit` todavía)
+    await user.click(await screen.findByRole("button", { name: /^seed/ }));
+    await waitFor(() => expect(FakeStream.all.some((stream) => stream.url === "/api/commands/run-2/stream")).toBe(true));
+
+    // WHEN el usuario mira la cabecera / THEN «Resetear simulación» está desactivado
+    const header = screen.getByRole("banner");
+    expect(within(header).getByRole("button", { name: "Resetear simulación" })).toBeDisabled();
+  });
 });
 
 describe("Altura del panel de eventos", () => {
