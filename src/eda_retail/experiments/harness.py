@@ -24,6 +24,9 @@ Fallos (spec experiments; L55):
   (`interpreter`, `orchestrator`), cae el consumidor sin confirmar el offset y se crea otro.
 - Pasos que fallan (`fail_probability`): el `ExecuteStep` elegido responde `StepFailed`
   `injected_failure` sin preparar ni ejecutar el efecto.
+- E21: `replay` para el sistema, lleva al principio los offsets de los grupos de Kafka, rebobina el lado de
+  lectura y arranca otra vez hasta que el lag sea 0; `redeliver` entrega de nuevo los comandos ya atendidos
+  con su `command_id` original.
 
 Modos de idempotencia (E1, supuesto A3):
 - `full`: inbox en los consumidores y en los comandos, `effect_keys` y servicios con clave.
@@ -46,7 +49,7 @@ import threading
 import time
 import uuid
 from collections import Counter
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, field, replace
 from decimal import Decimal
 from typing import Any, Self
@@ -94,6 +97,8 @@ from eda_retail.synthetic.faults import (
     ConsumerCrashed,
     FaultPlan,
     FaultyDelivery,
+    group_lag,
+    reset_group_offsets,
     should_fail,
 )
 from eda_retail.synthetic.generator import Dataset, generate
@@ -358,6 +363,8 @@ class Harness:
         self._closables: list[Any] = []
         self.consumer_crashes = 0
         self.poison_messages = 0
+        self.outcomes: Counter[tuple[str, str]] = Counter()  # (consumidor, resultado) de cada mensaje
+        self._inbox_off: frozenset[str] = frozenset()  # consumidores sin inbox (control de E21)
         self._init_threads()
 
     def _init_threads(self) -> None:
@@ -396,9 +403,7 @@ class Harness:
 
     def __exit__(self, *exc: object) -> None:
         self._stop_threads()
-        for delivery, _ in self._deliveries:
-            with contextlib.suppress(Exception):
-                delivery.consumer.close()
+        self._close_deliveries()
         for closable in self._closables:
             with contextlib.suppress(Exception):
                 closable.close()
@@ -453,18 +458,36 @@ class Harness:
         self._relays = [ComponentRelay.from_settings(s, schema) for schema in PUBLISHERS]
         self._readers = [event_log.build(s), *(consumer_for(p, s, self._connect()) for p in build_all())]
         self._closables += [*self._relays, *self._readers]
-        factories: dict[str, Callable[[], EventConsumer]] = {
+        self._build_deliveries()
+
+    def _factories(self) -> dict[str, Callable[[], EventConsumer]]:
+        """Consumidores de Kafka por `group.id`; los de `_inbox_off`, sin inbox."""
+        s = self.settings
+
+        def settings_for(group: str) -> Settings:
+            return replace(s, inbox_enabled=False) if group in self._inbox_off else s
+
+        return {
             interpreter.SCHEMA: lambda: interpreter.build_consumer(
-                self._connect(), make_consumer(s.kafka_bootstrap_servers, interpreter.SCHEMA), s, self.llm,
-                self.rules),
+                self._connect(), make_consumer(s.kafka_bootstrap_servers, interpreter.SCHEMA),
+                settings_for(interpreter.SCHEMA), self.llm, self.rules),
             orchestrator.SCHEMA: lambda: orchestrator.build_consumer(
-                self._connect(), make_consumer(s.kafka_bootstrap_servers, orchestrator.SCHEMA), s, self.rules),
+                self._connect(), make_consumer(s.kafka_bootstrap_servers, orchestrator.SCHEMA),
+                settings_for(orchestrator.SCHEMA), self.rules),
         }
-        for name, factory in factories.items():
+
+    def _build_deliveries(self) -> None:
+        self._deliveries = []
+        for name, factory in self._factories().items():
             if name in self._threaded:
                 factory = self._tracked_factory(factory)
             delivery = FaultyDelivery(factory(), self.config.faults, crashed=self._crashed)
             self._deliveries.append((delivery, factory))
+
+    def _close_deliveries(self) -> None:
+        for delivery, _ in self._deliveries:
+            with contextlib.suppress(Exception):
+                delivery.consumer.close()
 
     # -- hilos -------------------------------------------------------------------------------
     def _tracked(self, consumer: Any) -> TrackedConsumer:
@@ -504,7 +527,7 @@ class Harness:
         delivery, factory = self._deliveries[i]
         while not self._stop.is_set():
             try:
-                delivery.run_once(CONSUMER_POLL_S)
+                self._record(delivery, delivery.run_once(CONSUMER_POLL_S))
             except Exception as exc:  # noqa: BLE001 — una caída de un proceso, a propósito o no
                 self._on_crash(i, delivery, factory, exc)
 
@@ -555,8 +578,10 @@ class Harness:
                 continue  # tiene su propio hilo
             for _ in range(20):
                 try:
-                    if delivery.run_once(0.01) is None:
+                    outcome = delivery.run_once(0.01)
+                    if outcome is None:
                         break
+                    self._record(delivery, outcome)
                     progressed += 1
                 except Exception as exc:  # noqa: BLE001 — una caída de un proceso, a propósito o no
                     progressed += 1
@@ -570,6 +595,12 @@ class Harness:
         progressed += expire_once(self._timer_conn, self.settings, self.rules)
         progressed += interpreter.expire_parked(self._timer_conn)
         return progressed
+
+    def _record(self, delivery: FaultyDelivery, outcome: Any) -> None:
+        if outcome is None:
+            return
+        with self._crash_lock:  # también lo llaman los consumidores con hilo propio
+            self.outcomes[(delivery.consumer.name, getattr(outcome, "value", str(outcome)))] += 1
 
     def _on_crash(self, i: int, delivery: FaultyDelivery, factory: Callable[[], EventConsumer], exc: Exception) -> None:
         with self._crash_lock:  # los consumidores con hilo propio caen a la vez que el resto
@@ -638,6 +669,60 @@ class Harness:
         while (self.step() or self._working()) and time.monotonic() < end:
             pass
         return time.monotonic() - start
+
+    # -- reproducción del log (E21) ------------------------------------------------------------
+    def consumers(self) -> list[tuple[str, str]]:
+        """Nombre y esquema (su inbox) de cada consumidor de Kafka con inbox."""
+        return [(d.consumer.name, d.consumer.schema) for d, _ in self._deliveries]
+
+    def messages(self) -> int:
+        """Mensajes que hay ahora en el topic de la ejecución."""
+        return sum(self._readers[0].high_watermarks().values())
+
+    def lag(self) -> int:
+        """Lo que les falta por leer a los grupos de Kafka y al lado de lectura."""
+        highs = self._readers[0].high_watermarks()
+        topic = self.settings.events_topic
+        return (sum(group_lag(self._admin, group, topic, highs) for group in self._factories())
+                + sum(reader.lag() for reader in self._readers))
+
+    def replay(self, inbox_off: Iterable[str] = ()) -> float:
+        """Con el sistema parado, lleva al principio los offsets de los grupos de Kafka (spec synthetic-data,
+        «Reinicio de offsets de un grupo») y rebobina el lado de lectura, que guarda su posición en PostgreSQL;
+        arranca otra vez hasta que el lag sea 0. `inbox_off`: grupos que se arrancan sin inbox (control)."""
+        self._stop_threads()
+        self._close_deliveries()
+        self._inbox_off = frozenset(inbox_off)
+        reset_group_offsets(self._admin, self._factories(), self.settings.events_topic,
+                            self._readers[0].partitions())
+        for reader in self._readers:
+            reader.rewind()
+        self._init_threads()
+        self._build_deliveries()
+        self._start_threads()
+        return self.run_until_caught_up()
+
+    def run_until_caught_up(self) -> float:
+        """Turnos hasta que nadie avance y el lag sea 0, o `timeout_seconds`; después, un último repaso."""
+        start = time.monotonic()
+        while time.monotonic() - start < self.config.timeout_seconds:
+            if not self._advance() and self.lag() == 0:
+                break
+        end = time.monotonic() + self.config.idle_seconds
+        while (self.step() or self._working()) and time.monotonic() < end:
+            pass
+        return time.monotonic() - start
+
+    def redeliver(self, command_type: str = "ExecuteStep") -> list[CommandReply]:
+        """Entrega otra vez, con su `command_id` original, los comandos que la saga ya entregó."""
+        rows = self.conn.execute(
+            "SELECT command_id, incident_id, command_type, target, causation_id, payload"
+            " FROM orchestrator.command_outbox WHERE command_type = %s AND status IN ('delivered', 'rejected')"
+            " ORDER BY command_id", (command_type,)).fetchall()
+        self.conn.commit()
+        return [self.commands(target_url(self.settings, r["target"]), r["command_type"], command_id=r["command_id"],
+                              correlation_id=r["incident_id"], causation_id=r["causation_id"], payload=r["payload"],
+                              timeout=self.settings.command_http_timeout_s) for r in rows]
 
     # -- métricas ----------------------------------------------------------------------------
     @property

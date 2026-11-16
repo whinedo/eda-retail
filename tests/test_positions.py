@@ -7,6 +7,8 @@ transacción con la vista y el offset está en tests/integration/test_positions.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 from confluent_kafka import OFFSET_BEGINNING
 
 from eda_retail.infra import positions
@@ -66,3 +68,33 @@ def test_caught_up_when_every_partition_reached_its_high_watermark():
     assert not positions.caught_up({1: 4, 2: 1}, highs)
     assert not positions.caught_up({}, highs)
     assert positions.caught_up({}, {0: 0})
+
+
+def test_pending_messages_until_the_high_watermarks():
+    """Grupo reiniciado al principio: el lag es lo que falta por leer hasta las marcas de agua altas"""
+    highs = {0: 0, 1: 5, 2: 3}
+    assert positions.pending_messages({}, highs) == 8
+    assert positions.pending_messages({1: 4, 2: 0}, highs) == 2
+    assert positions.pending_messages({1: 4, 2: 2}, highs) == 0
+
+
+class FakeKafka:
+    def __init__(self, partitions):
+        self._partitions = partitions
+        self.assigned = None
+
+    def list_topics(self, topic, timeout):
+        partitions = SimpleNamespace(partitions=dict.fromkeys(self._partitions))
+        return SimpleNamespace(topics={topic: partitions})
+
+    def assign(self, tps):
+        self.assigned = [(tp.topic, tp.partition, tp.offset) for tp in tps]
+
+
+def test_rewind_reads_every_partition_from_offset_zero():
+    """Grupo reiniciado al principio: el lado de lectura vuelve a recibir el topic desde el offset 0"""
+    kafka = FakeKafka([0, 1, 2])
+    consumer = positions.PositionedConsumer(None, kafka, "eda.events", schema="views", consumer="v",
+                                            apply=lambda conn, msg: None)
+    consumer.rewind()
+    assert kafka.assigned == [("eda.events", 0, 0), ("eda.events", 1, 0), ("eda.events", 2, 0)]
