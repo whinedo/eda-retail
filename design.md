@@ -382,7 +382,7 @@ Interfaz local para operar y observar la PoC (spec `web-front`): un backend Fast
 
 ## 15. Segunda versión: MCP y A2A
 
-Se activa con `scripts/start-all.sh --version 2` (también `run-agents.sh` y `run-web.sh`; la opción exporta `POC_VERSION`, que gana a la de `.env` porque ni `uv run --env-file` ni `load_env_file` pisan una variable ya definida) o con `POC_VERSION=2` en `.env` (por defecto `1`, la primera versión sin cambios). Un valor distinto de 1 o 2 detiene el proceso (`poc_version_from_env`, también en `Settings()`). Están construidos el servidor de correo MCP (esta tabla) y el agente del transportista A2A (§15.1). El resumen y cuándo usar cada modo de comunicación están en `docs/README.md`, «Segunda versión», y los requisitos en `specs/mcp-mail/spec.md` y `specs/a2a-carrier/spec.md`. Lo que cambia en el diseño:
+Se activa con `scripts/start-all.sh --version 2` (también `run-agents.sh` y `run-web.sh`; la opción exporta `POC_VERSION`, que gana a la de `.env` porque ni `uv run --env-file` ni `load_env_file` pisan una variable ya definida) o con `POC_VERSION=2` en `.env` (por defecto `1`, la primera versión sin cambios). Un valor distinto de 1 o 2 detiene el proceso (`poc_version_from_env`, también en `Settings()`). Están construidos el servidor de correo MCP (esta tabla) y el agente del transportista A2A (§15.1). El resumen y cuándo usar cada modo de comunicación están en `docs/README.md`, «Versión 2» («Cuándo usar cada modo de comunicación»), y los requisitos en `specs/mcp-mail/spec.md` y `specs/a2a-carrier/spec.md`. Lo que cambia en el diseño:
 
 | Parte | Cómo |
 | --- | --- |

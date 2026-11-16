@@ -8,17 +8,21 @@ Una tienda online recibe avisos de retraso de los transportistas, en texto libre
 
 Regla de diseño: **el LLM propone y el código dispone**. Ningún LLM ejecuta efectos ni escribe directamente en el log.
 
-## Diagrama de agentes
+## Versión 1
+
+La arquitectura de la primera versión (`POC_VERSION=1`, por defecto): un agregado por sistema, solo eventos por Kafka, comandos REST desde la saga y el lado de lectura consumiendo Kafka. La versión 2 la amplía (ver «Versión 2»).
+
+### Diagrama de agentes
 
 ```mermaid
 flowchart LR
   IN["Aviso del transportista<br/>eda-notice o front"]
   INK["intake<br/>(agregado)"]
   BUS[("Kafka eda.events<br/>solo eventos")]
-  INT["Intérprete<br/>(LLM)"]
+  INT["Intérprete<br/>(agregado con LLM)"]
   ORQ["Saga<br/>orquestador"]
-  PLN["Planificador<br/>(LLM)"]
-  RPL["Replanificador<br/>(LLM)"]
+  PLN["Planificador<br/>(agregado con LLM)"]
+  RPL["Replanificador<br/>(agregado con LLM)"]
   EXE["Ejecutores e inventory<br/>(agregados)"]
   RED["Agente redactor<br/>aviso y reclamación"]
   IDS[("effect_keys<br/>de cada ejecutor")]
@@ -58,7 +62,7 @@ flowchart LR
   class IN,WEB ext
 ```
 
-Azul: agentes con LLM (proponen). Verde: código determinista (dispone). Gris: datos. Naranja: entrada y front. Flecha gruesa: comando REST síncrono e idempotente (`command_id`), que el sistema que lo recibe acepta o rechaza. Flecha fina: evento por Kafka. Punteada: consulta de solo lectura a una proyección. Los pasos (1) a (11) siguen una incidencia: la saga invoca un comando, el sistema escribe su estado y su evento en su outbox en una transacción, y la saga reacciona al evento cuando le llega. (a) a (c) son el lado de lectura. Cada sistema solo escribe en su esquema; los agentes con LLM nunca escriben eventos ni ejecutan efectos.
+Azul: agregados con un agente LLM (el LLM propone y su command handler dispone). Verde: código determinista. Gris: datos. Naranja: entrada y front. Flecha gruesa: comando REST síncrono e idempotente (`command_id`), que el sistema que lo recibe acepta o rechaza. Flecha fina: evento por Kafka. Punteada: consulta de solo lectura a una proyección. Los pasos (1) a (11) siguen una incidencia: la saga invoca un comando, el sistema escribe su estado y su evento en su outbox en una transacción, y la saga reacciona al evento cuando le llega. Cada agregado es un command handler (REST, idempotente por su inbox) con su esquema y su outbox. Los comandos con trabajo largo (`CreatePlan`, `RevisePlan` y el `ExecuteStep` de los cuatro ejecutores) responden 202 o 422 al momento y dejan el trabajo en `command_jobs`, en la misma transacción que la inbox; un worker del sistema lo hace después (el LLM o el servicio externo, fuera de la transacción) y emite el evento de resultado al terminar. `inventory` atiende su `ExecuteStep` dentro de la petición, porque no tiene E/S externa. (a) a (c) son el lado de lectura. Cada sistema solo escribe en su esquema; los agentes con LLM nunca escriben eventos ni ejecutan efectos.
 
 ### Secuencia de la saga
 
@@ -72,21 +76,25 @@ sequenceDiagram
   participant En as Ejecutor<br/>envío
   participant Rf as Ejecutor<br/>reembolso
   participant Rp as Replanificador<br/>(LLM)
-  Note over Orq,Rp: Flecha continua: comando REST síncrono con command_id (idempotente). La respuesta 202 solo confirma que el sistema lo acepta.<br/>Flecha abierta: evento por Kafka. La saga solo cambia de estado al consumir un evento, y cada comando tiene un plazo.
+  Note over Orq,Rp: Flecha continua: comando REST síncrono con command_id (idempotente). La respuesta 202 llega al momento y solo confirma que el sistema lo acepta:<br/>el trabajo (LLM o servicio externo) sigue en segundo plano. Flecha abierta: evento por Kafka.<br/>La saga solo cambia de estado al consumir un evento, y cada comando tiene un plazo que empieza en su primer envío.
   Orq->>Pl: (1) CreatePlan
   Pl-->>Orq: 202
   Pl-)Orq: (2) PlanCreated v1 (validado por código):<br/>notify_customer, file_claim, reserve_stock, reissue_shipment
   par pasos independientes en paralelo
     Orq->>Av: (3.a) ExecuteStep notify_customer
+    Av-->>Orq: 202
   and
     Orq->>Rc: (3.b) ExecuteStep file_claim
+    Rc-->>Orq: 202
   and
     Orq->>St: (3.c) ExecuteStep reserve_stock
+    St-->>Orq: 202
   end
   Av-)Orq: (4.a) StepCompleted (CustomerNotified)
   Rc-)Orq: (4.b) StepCompleted (ClaimFiled)
   St-)Orq: (4.c) StepCompleted (StockReserved)
   Orq->>En: (5) ExecuteStep reissue_shipment<br/>(depende de reserve_stock)
+  En-->>Orq: 202
   alt Camino feliz
     En-)Orq: (6) StepCompleted (ShipmentReissued)
     Orq->>Orq: (7) IncidentResolved, outcome resolved
@@ -97,9 +105,11 @@ sequenceDiagram
     Rp-)Orq: (8) PlanRevised v2: reembolso en lugar de reenvío<br/>(validado por código: sin compensaciones, importe dentro del máximo)
     Note over Orq,St: (9) El código de la saga deriva la compensación de reserve_stock<br/>y retiene issue_refund hasta que termine
     Orq->>St: (10) ExecuteStep release_stock<br/>(step_id reserve_stock-comp)
+    St-->>Orq: 202
     alt La compensación termina bien
       St-)Orq: (11) StepCompleted (StockReleased)
       Orq->>Rf: (12) ExecuteStep issue_refund<br/>(paso pivote, sin compensación)
+      Rf-->>Orq: 202
       alt El reembolso termina bien
         Rf-)Orq: (13) StepCompleted (RefundIssued)
         Orq->>Orq: (14) IncidentResolved, outcome refunded
@@ -114,7 +124,7 @@ sequenceDiagram
   end
 ```
 
-Operaciones y compensaciones de una pérdida de paquete, con los caminos de éxito, de reembolso tras compensar y de escalado. Si vence el plazo de un comando, la saga lo trata como un fallo no reintentable del paso (y pide su compensación si es compensable); si vence el de `CreatePlan`, `RevisePlan` o `issue_refund`, escala. Al escalar cancela los pasos pendientes y compensa las reservas cuyo dependiente no se completó.
+Operaciones y compensaciones de una pérdida de paquete, con los caminos de éxito, de reembolso tras compensar y de escalado. Cada comando responde 202 al momento, y su resultado llega después como evento. Si vence el plazo de un comando, la saga lo trata como un fallo no reintentable del paso (y pide su compensación si es compensable); si vence el de `CreatePlan`, `RevisePlan` o `issue_refund`, escala. Al escalar cancela los pasos pendientes y compensa las reservas cuyo dependiente no se completó. Un segundo `StepFailed` de la misma versión del plan mientras su `RevisePlan` está pendiente no pide otra revisión: espera a la que está en curso.
 
 ### CQRS
 
@@ -123,7 +133,8 @@ flowchart LR
   subgraph CMD["Lado de comandos (escritura)"]
     SG["Saga<br/>(orquestador)"]
     AG["Agregado<br/>POST /commands/#lt;Comando#gt;"]
-    TX[("PostgreSQL, esquema del sistema<br/>inbox, estado y outbox<br/>en una transacción")]
+    TX[("PostgreSQL, esquema del sistema<br/>inbox, command_jobs, estado y outbox")]
+    W["Worker de trabajos<br/>(comandos largos)"]
   end
   K["Kafka<br/>eda.events<br/>solo eventos"]
   subgraph QRY["Lado de consultas (lectura)"]
@@ -134,7 +145,8 @@ flowchart LR
     Q["Consultas<br/>front, CLI, experimentos<br/>y otros sistemas"]
   end
   SG -- "(1) comando con command_id<br/>(idempotente, con reintentos)" --> AG
-  AG -- "(2) inbox, estado y eventos" --> TX
+  AG -- "(2) en una transacción: inbox y trabajo<br/>(o inbox, estado y eventos si es corto)" --> TX
+  W -- "(2.1) toma el trabajo; LLM o servicio fuera<br/>de la transacción; estado y eventos en una" --> TX
   AG -. "202 aceptado<br/>o 422 rechazado" .-> SG
   TX -- "(3) relay de su outbox" --> K
   K -- "(4) evento de resultado" --> SG
@@ -147,12 +159,12 @@ flowchart LR
   classDef code fill:#E6F6EC,stroke:#2E9E5B,color:#1d1d1f
   classDef data fill:#F1F1EE,stroke:#8A8A80,color:#1d1d1f
   classDef ext fill:#FFF3E0,stroke:#E08A2B,color:#1d1d1f
-  class SG,AG,P,EL code
+  class SG,AG,W,P,EL code
   class TX,V,K,EV data
   class Q ext
 ```
 
-Lado de comandos (escritura) y lado de consultas (lectura). Los pasos (1) a (4) son el camino de escritura: la saga invoca el comando, el sistema lo acepta o lo rechaza, y el resultado vuelve como evento. Los pasos (5) a (7) son el de lectura: los componentes de consulta consumen Kafka, y las personas y los sistemas consultan sus proyecciones, que van con retraso (consistencia eventual).
+Lado de comandos (escritura) y lado de consultas (lectura). Los pasos (1) a (4) son el camino de escritura: la saga invoca el comando, el sistema lo acepta o lo rechaza al momento, y el resultado vuelve como evento. En los comandos largos, la petición solo guarda el trabajo junto a la inbox; el worker (2.1) lo hace y escribe el estado y los eventos en el outbox en una sola transacción, con un lease para retomarlo si cae y un máximo de intentos (`JOB_MAX_ATTEMPTS`). Los pasos (5) a (7) son el de lectura: los componentes de consulta consumen Kafka, y las personas y los sistemas consultan sus proyecciones, que van con retraso (consistencia eventual).
 
 ## Patrones de la guía que se ejercitan
 
@@ -266,16 +278,16 @@ Cada componente es un proceso independiente; los scripts anteriores los lanzan, 
 | `uv run eda-projector` | Mantiene las vistas `views.view_*` (`orders`, `incident_status`, `cost_per_incident`, `audit_trail`, `carrier_dashboard`, `order_status`, `parked_notices`) consumiendo `eda.events` de Kafka, cada proyector con su offset por partición en `views.offsets` |
 | `uv run eda-projector rebuild <vista>` | Vacía una vista y su posición, vuelve a consumir `eda.events` desde el principio e imprime la huella antes y después, si son idénticas y el tiempo de reconstrucción (sale con código 1 si difieren). Se lanza con `eda-projector` parado |
 | `uv run eda-interpreter` | Sistema `interpreter` (LLM + su command handler): consume `CarrierNoticeReceived` y publica `ShipmentDelayed` o `IncidentEscalated` y un `LlmCallRecorded` por llamada desde `interpreter.outbox`. Consulta el presupuesto en `view_cost_per_incident` y los pedidos en `view_orders`; si la vista aún no tiene ninguno, aparca el aviso en `interpreter.pending_notices` y publica `NoticeParked` en la misma transacción, hasta su `OrderRegistered` o hasta `PENDING_NOTICE_TIMEOUT_S` (300 s por defecto). |
-| `uv run eda-planner` | Sistema `planner` (LLM + su command handler): atiende `CreatePlan` en `POST /commands/CreatePlan` (escucha en `PLANNER_URL`, por defecto `http://127.0.0.1:8103`) con la incidencia (pedidos, causa, retraso y gravedad). Consulta el presupuesto en `view_cost_per_incident` y los importes en `view_orders`, valida el plan en código (acciones, compensaciones, dependencias, tope de reembolso e importe del pedido) y publica `PlanCreated` o `IncidentEscalated` y un `LlmCallRecorded` por llamada desde `planner.outbox`; una incidencia con plan rechaza otro `CreatePlan` con `plan_exists`. Lo invoca la saga. Con `POC_VERSION=2` y gravedad `medium` o `high`, antes del LLM consulta al agente del transportista por A2A y publica `CarrierConsulted`; la gravedad `low` usa el plan fijo y no consulta. |
+| `uv run eda-planner` | Sistema `planner` (LLM + su command handler): atiende `CreatePlan` en `POST /commands/CreatePlan` (escucha en `PLANNER_URL`, por defecto `http://127.0.0.1:8103`) con la incidencia (pedidos, causa, retraso y gravedad). Consulta el presupuesto en `view_cost_per_incident` y los importes en `view_orders`, responde 202 al momento y su worker llama al LLM, valida el plan en código (acciones, compensaciones, dependencias, tope de reembolso e importe del pedido) y publica `PlanCreated` o `IncidentEscalated` y un `LlmCallRecorded` por llamada desde `planner.outbox`; una incidencia con plan rechaza otro `CreatePlan` con `plan_exists`. Lo invoca la saga. Con `POC_VERSION=2` y gravedad `medium` o `high`, antes del LLM consulta al agente del transportista por A2A y publica `CarrierConsulted`; la gravedad `low` usa el plan fijo y no consulta. |
 | `uv run eda-carrier-agent` | Solo con `POC_VERSION=2`. Agente del transportista simulado (A2A, spec `a2a-carrier`): publica su Agent Card en `/.well-known/agent-card.json` y atiende la skill `delivery_options` por JSON-RPC sobre HTTP en `127.0.0.1:CARRIER_AGENT_PORT`, con bearer token (`A2A_CARRIER_TOKEN`). Decide con reglas deterministas por causa y semilla (`CARRIER_AGENT_SEED`; tabla en `src/eda_retail/carrier_agent/rules.py`) y pide `tracking_ref` (`input-required`) en `loss` y `damage`. Sin base de datos ni datos personales |
-| `uv run eda-replanner` | Sistema `replanner` (LLM + su command handler): atiende `RevisePlan` en `POST /commands/RevisePlan` (escucha en `REPLANNER_URL`, por defecto `http://127.0.0.1:8104`) con el plan vigente (cada paso con su estado), el paso fallido, su error y las revisiones hechas; no lee el estado del orquestador. Consulta el presupuesto en `view_cost_per_incident` y los importes en `view_orders`, valida la revisión en código (las reglas del plan, pasos completados, acción de los pasos mantenidos y estabilidad de los `step_id`) y publica `PlanRevised` o `IncidentEscalated` (`max_revisions` sin LLM cuando no quedan revisiones) y un `LlmCallRecorded` por llamada desde `replanner.outbox`; una versión ya revisada rechaza otro `RevisePlan` con `revision_exists`. |
-| `uv run eda-orchestrator` | Sistema `orchestrator`, la saga reactiva (sin command handler): consume `ShipmentDelayed`, `PlanCreated`, `PlanRevised`, `StepCompleted`, `StepFailed` e `IncidentEscalated`, guarda su estado en `orchestrator.incidents` y `plan_steps`, e invoca por REST desde su `command_outbox` `CreatePlan` (`PLANNER_URL`), `RevisePlan` (`REPLANNER_URL`, por defecto `http://127.0.0.1:8104`) y `ExecuteStep` (`INVENTORY_URL` para `reserve_stock` y `release_stock`; `EXECUTOR_<ACCIÓN>_URL`, por defecto `8111`–`8114`, para el resto), reintentando con el mismo `command_id` si el sistema no responde. Cada comando lleva un plazo (`SAGA_PLAN_TIMEOUT_S`, 300 s; `SAGA_STEP_TIMEOUT_S`, 60 s). Publica `StepRequested` (notificación para la auditoría y el front), `StepCancelled`, `IncidentResolved` e `IncidentEscalated` desde `orchestrator.outbox`. Los ejecutores de `notify_customer`, `file_claim`, `reissue_shipment` e `issue_refund` son `eda-step-executor <acción>` |
+| `uv run eda-replanner` | Sistema `replanner` (LLM + su command handler): atiende `RevisePlan` en `POST /commands/RevisePlan` (escucha en `REPLANNER_URL`, por defecto `http://127.0.0.1:8104`) con el plan vigente (cada paso con su estado), el paso fallido, su error y las revisiones hechas; no lee el estado del orquestador. Consulta el presupuesto en `view_cost_per_incident` y los importes en `view_orders`, responde 202 al momento y su worker llama al LLM, valida la revisión en código (las reglas del plan, pasos completados, acción de los pasos mantenidos y estabilidad de los `step_id`) y publica `PlanRevised` o `IncidentEscalated` (`max_revisions` sin LLM cuando no quedan revisiones) y un `LlmCallRecorded` por llamada desde `replanner.outbox`; una versión ya revisada rechaza otro `RevisePlan` con `revision_exists`. |
+| `uv run eda-orchestrator` | Sistema `orchestrator`, la saga reactiva (sin command handler): consume `ShipmentDelayed`, `PlanCreated`, `PlanRevised`, `StepCompleted`, `StepFailed` e `IncidentEscalated`, guarda su estado en `orchestrator.incidents` y `plan_steps`, e invoca por REST desde su `command_outbox` `CreatePlan` (`PLANNER_URL`), `RevisePlan` (`REPLANNER_URL`, por defecto `http://127.0.0.1:8104`) y `ExecuteStep` (`INVENTORY_URL` para `reserve_stock` y `release_stock`; `EXECUTOR_<ACCIÓN>_URL`, por defecto `8111`–`8114`, para el resto), reintentando con el mismo `command_id` si el sistema no responde. Cada comando lleva un plazo (`SAGA_PLAN_TIMEOUT_S`, 300 s; `SAGA_STEP_TIMEOUT_S`, 60 s) que empieza cuando lo envía por primera vez. Publica `StepRequested` (notificación para la auditoría y el front), `StepCancelled`, `IncidentResolved` e `IncidentEscalated` desde `orchestrator.outbox`. Los ejecutores de `notify_customer`, `file_claim`, `reissue_shipment` e `issue_refund` son `eda-step-executor <acción>` |
 | `uv run eda-notice [interactive --timeout N --no-free-text]` | Modo interactivo: menú para enviar avisos (de ejemplo o texto libre) y seguir cada incidencia en la vista `incident_status` hasta que se cierra; `--no-free-text` quita el texto libre del menú |
 | `uv run eda-notice seed` | Envía `SeedSampleData` a `inventory` (`INVENTORY_URL`) con los pedidos (`P-1001`…`P-1005`) y el stock de ejemplo; repetirlo no duplica nada |
 | `uv run eda-notice send [--example delay\|loss\|out_of_stock\|injection] [--text "…"]` | Envía `RegisterCarrierNotice` a `intake` (`INTAKE_URL`): la entrada que pone en marcha el flujo. Si `intake` o `inventory` no responden en `COMMAND_HTTP_TIMEOUT_S`, termina con error |
 | `uv run eda-web [--port N]` | Backend del front web (API y streams SSE) en `127.0.0.1`, puerto `WEB_PORT` (8000 por defecto); nunca escucha en otra interfaz |
-| `uv run eda-mail-server [--no-seed]` | Segunda versión (`POC_VERSION=2`, spec `mcp-mail`): servidor de correo simulado con MCP por Streamable HTTP en `127.0.0.1:MAIL_SERVER_PORT` (8120 por defecto), ruta `/mcp`. Expone una sola herramienta, `send_email(customer_ref, subject, body, idempotency_key)`, que devuelve `message_id` y `accepted_at`: resuelve la dirección en su directorio (`mail_server.customers`), guarda el correo en su buzón simulado (`mail_server.mailbox`, un correo por clave) y responde `unknown_customer` si el cliente no está. Al arrancar siembra el directorio con una dirección sintética `<customer_ref>@example.test` para cada cliente del generador y de los datos de ejemplo (`--no-seed` lo omite). La dirección no sale nunca del servidor |
-| `uv run eda-step-executor <acción>` | Ejecutor de `notify_customer`, `file_claim`, `reissue_shipment` o `issue_refund`, un proceso por acción: atiende el `ExecuteStep` de la saga en `POST /commands/ExecuteStep` (escucha en `EXECUTOR_<ACCIÓN>_URL`, por defecto `8111`–`8114`). Comprueba el pedido en `view_orders`, redacta el aviso o la reclamación con el redactor (la causa y el retraso llegan en el comando; presupuesto de `view_cost_per_incident`), llama al servicio simulado con la `idempotency_key` reintentando los errores transitorios (`STEP_MAX_ATTEMPTS`) y, en una transacción, registra la clave en `executor_<acción>.effect_keys`, el efecto en su tabla y publica el evento del efecto y `StepCompleted`, o `StepFailed` (con `IncidentEscalated` `refund_limit` antes si el reembolso supera el máximo). Una clave ya completada devuelve el resultado guardado sin repetir el efecto. Con `POC_VERSION=2`, el de `notify_customer` envía el correo como cliente MCP de `eda-mail-server` (`MAIL_SERVER_URL`) en lugar del servicio simulado en proceso |
+| `uv run eda-mail-server [--no-seed]` | Versión 2 (`POC_VERSION=2`, spec `mcp-mail`): servidor de correo simulado con MCP por Streamable HTTP en `127.0.0.1:MAIL_SERVER_PORT` (8120 por defecto), ruta `/mcp`. Expone una sola herramienta, `send_email(customer_ref, subject, body, idempotency_key)`, que devuelve `message_id` y `accepted_at`: resuelve la dirección en su directorio (`mail_server.customers`), guarda el correo en su buzón simulado (`mail_server.mailbox`, un correo por clave) y responde `unknown_customer` si el cliente no está. Al arrancar siembra el directorio con una dirección sintética `<customer_ref>@example.test` para cada cliente del generador y de los datos de ejemplo (`--no-seed` lo omite). La dirección no sale nunca del servidor |
+| `uv run eda-step-executor <acción>` | Ejecutor de `notify_customer`, `file_claim`, `reissue_shipment` o `issue_refund`, un proceso por acción: atiende el `ExecuteStep` de la saga en `POST /commands/ExecuteStep` (escucha en `EXECUTOR_<ACCIÓN>_URL`, por defecto `8111`–`8114`). Responde 202 al momento (o 422 si el comando no es válido) y su worker hace el resto: comprueba el pedido en `view_orders`, redacta el aviso o la reclamación con el redactor (la causa y el retraso llegan en el comando; presupuesto de `view_cost_per_incident`), llama al servicio simulado con la `idempotency_key` reintentando los errores transitorios (`STEP_MAX_ATTEMPTS`) y, en una transacción, registra la clave en `executor_<acción>.effect_keys`, el efecto en su tabla y publica el evento del efecto y `StepCompleted`, o `StepFailed` (con `IncidentEscalated` `refund_limit` antes si el reembolso supera el máximo). Una clave ya completada devuelve el resultado guardado sin repetir el efecto. Con `POC_VERSION=2`, el de `notify_customer` envía el correo como cliente MCP de `eda-mail-server` (`MAIL_SERVER_URL`) en lugar del servicio simulado en proceso |
 
 Cada proceso escribe en stdout una línea por evento recibido, por comando (aceptado o rechazado, con los eventos que produce) y por reintento (`LOG_LEVEL`, por defecto `INFO`); el detalle completo está en las trazas de Jaeger (`http://localhost:16686`).
 
@@ -326,9 +338,9 @@ Cada experimento se lanza con un solo comando y escribe su informe en `experimen
 uv run eda-experiment e1 --seed 42 --incidents 50
 ```
 
-El arnés (`experiments/harness.py`) monta el sistema completo en un solo proceso, con los componentes de `scripts/run-agents.sh` (los command handlers se ejecutan en el proceso, sin HTTP; el intérprete y la saga consumen Kafka; cada componente publica su outbox; `event_log` y los proyectores mantienen el lado de lectura), contra una base de datos y un topic propios de cada ejecución que se borran al terminar. Los avisos salen del generador con semilla (`synthetic/generator.py`) y los fallos se inyectan con `synthetic/faults.py`. E1–E4 y E7 usan un LLM oráculo que responde con las etiquetas del generador, así miden la arquitectura y no el modelo; E5 y E6 usan Ollama.
+El harness (`experiments/harness.py`) monta el sistema completo en un solo proceso, con los componentes de `scripts/run-agents.sh` (los command handlers se ejecutan en el proceso, sin HTTP; los workers de trabajos y el intérprete corren cada uno en su hilo, como lo harían procesos separados; el intérprete y la saga consumen Kafka; cada componente publica su outbox; `event_log` y los proyectores mantienen el lado de lectura), contra una base de datos y un topic propios de cada ejecución que se borran al terminar. Los avisos salen del generador con semilla (`synthetic/generator.py`) y los fallos se inyectan con `synthetic/faults.py`. E1–E4 y E7 usan un LLM oráculo que responde con las etiquetas del generador, así miden la arquitectura y no el modelo; E5 y E6 usan Ollama.
 
-E1 compara tres modos de idempotencia: `full` (todo activo), `no_effect_keys` (los ejecutores sin inbox, sin `effect_keys` y con servicios que no reconocen la clave) y `none` (todo desactivado). H1 se evalúa con los dos primeros; `none` se informa como observación: sin inbox, un evento repetido vuelve a llegar al planificador y la incidencia se escala antes de ejecutar ningún paso. Sin la idempotencia de los efectos, la segunda ejecución de un paso choca con la restricción UNIQUE de su tabla, el ejecutor cae y Kafka vuelve a entregar el mensaje: el efecto externo se repite hasta que el arnés salta el mensaje tras tres caídas.
+E1 compara tres modos de idempotencia: `full` (todo activo), `no_effect_keys` (los ejecutores sin inbox, sin `effect_keys` y con servicios que no reconocen la clave) y `none` (todo desactivado). H1 se evalúa con los dos primeros; `none` se informa como observación: sin inbox, un evento repetido vuelve a llegar al planificador y la incidencia se escala antes de ejecutar ningún paso. Sin la idempotencia de los efectos, la segunda ejecución de un paso choca con la restricción UNIQUE de su tabla, el ejecutor cae y Kafka vuelve a entregar el mensaje: el efecto externo se repite hasta que el harness salta el mensaje tras tres caídas.
 
 | Comando | Qué hace |
 | --- | --- |
@@ -346,32 +358,13 @@ La base síncrona de referencia (`baseline_sync/runner.py`) atiende cada aviso d
 
 E5 y E6 repiten 3 veces con Ollama. Cada repetición usa su propia semilla (`--seed` + número de repetición) y temperatura 0,7 (`--temperature`): con temperatura 0 y la misma semilla las repeticiones salen idénticas y no muestran ninguna variación. El sistema sigue con temperatura 0 por defecto (`LLM_TEMPERATURE`).
 
-La latencia de E6 se lee con cuidado: el arnés atiende los consumidores por turnos en un solo proceso, con esperas cortas en cada consumidor, así que la latencia de la versión de eventos incluye ese reparto de turnos y no es la de un despliegue con un proceso por componente. Con el oráculo la diferencia la marca el arnés; con Ollama la domina el LLM.
+La latencia de E6 se lee con cuidado: el harness atiende el resto de consumidores por turnos en un solo proceso, así que con el oráculo la diferencia la marca el harness. Con Ollama la domina el LLM: la versión de eventos acepta todas las incidencias a la vez y todas esperan en la cola de un único Ollama, mientras que la base síncrona atiende cada una de principio a fin; por eso su latencia por incidencia es mucho mayor aunque resuelva lo mismo (E6 completo del 2026-11-16 en `experiments/results/e6-20261116T050531`).
 
 E6 escala los plazos de la saga (`SAGA_PLAN_TIMEOUT_S`, `SAGA_STEP_TIMEOUT_S`) con el número de incidencias, 30 s por incidencia y nunca por debajo de los valores por defecto, porque la base síncrona no tiene plazos y el LLM es una sola cola compartida: un plazo empieza en el primer envío e incluye la espera del trabajo en esa cola. El informe guarda los plazos usados en `config.saga_deadlines`. Fuera de E6 los plazos no cambian.
 
-## Segunda versión
-
-La segunda versión de la PoC añade los dos modos de comunicación que faltan, MCP y A2A, para cubrir todos los de un sistema distribuido con agentes y mostrar cuándo conviene cada uno. Sus requisitos están en `specs/mcp-mail/spec.md` y `specs/a2a-carrier/spec.md`. Están construidos los dos: el servidor de correo MCP y el agente del transportista (A2A).
-
-Se activa con `scripts/start-all.sh --version 2` o con `POC_VERSION=2` en `.env` (la opción gana a `.env`); sin ninguna de las dos, o con la versión 1, la PoC es la primera versión. Cómo activarla, en «Versión 2».
-
-| Modo | Cuándo usarlo | En la PoC |
-| --- | --- | --- |
-| Evento (Kafka) | Un hecho ya ocurrido que interesa a varios, sin esperar respuesta | `ShipmentDelayed`, `StepCompleted`… (versión actual) |
-| Comando REST | Una orden a un sistema dueño de su estado, que la acepta o la rechaza al momento; idempotente (`command_id`) | `CreatePlan`, `ExecuteStep`… (versión actual) |
-| MCP | Usar una herramienta o un recurso: la herramienta no razona, solo expone operaciones | Servidor de correo simulado para las notificaciones al cliente |
-| A2A | Hablar con otro agente autónomo, a menudo de otra organización y opaco por dentro, en una tarea larga que se negocia | Agente del transportista, consultado por el planificador |
-
-- **Servidor de correo simulado (MCP, construido).** `eda-mail-server` expone la herramienta de envío de correo, `send_email`; el ejecutor de `notify_customer` se conecta como cliente MCP y la invoca con el texto que redactó el agente redactor. El cliente MCP es el ejecutor (código), no el agente: el LLM sigue sin herramientas con efectos (regla 1). El servidor resuelve el destinatario a partir de `customer_ref`, así que ni el log ni el plan llevan correos (regla 10).
-- **Agente del transportista (A2A).** Construido (`eda-carrier-agent`, activo con `POC_VERSION=2`). Un agente externo, de la empresa de transporte, opaco y con sus propias reglas; en la PoC, reglas deterministas con semilla en lugar de un LLM, para que los experimentos sean repetibles. Antes de proponer el plan, el planificador le pide por A2A las opciones que ofrece: nueva fecha de entrega, si puede reenviar y si aceptaría una reclamación. La tarea A2A puede pasar por `input-required`, por ejemplo si el transportista pide el número de seguimiento. La consulta no tiene efectos y su respuesta es contenido no confiable, como el texto de los avisos (regla 11): el planificador solo la usa como contexto y el plan se valida igual que hoy. La reclamación real la sigue presentando el ejecutor de `file_claim` con un comando REST. Así se ve el contraste con el mismo interlocutor: con su agente se negocia por A2A y los efectos van por comandos.
-- **Guardrails en MCP y A2A.** Los dos se usan con guardrails, porque abren el sistema a un servidor de herramientas y a un agente que no controlamos:
-  - MCP (construidos): lista blanca de herramientas (solo `send_email` con la entrada esperada), validación con esquema de la entrada y la salida (`mcp_output_invalid`), límite de envíos por incidencia (`MCP_MAX_EMAILS_PER_INCIDENT`, `mail_limit_exceeded`) y ningún dato personal en lo que el servidor devuelve (una salida con algo que parece una dirección de correo se descarta). Cada fallo se registra en el log con su motivo y su `trace_id`.
-  - A2A: autenticación del agente remoto y comprobación de su Agent Card, validación con esquema de la respuesta, plazo y número máximo de rondas (`input-required`), solo referencias en lo que se le envía (`order_id`, nunca nombres, correos ni direcciones) y su respuesta tratada como posible prompt injection.
-
 ## Versión 2
 
-La versión 2 añade a la PoC los dos modos de comunicación que faltaban: **MCP**, con un servidor de correo simulado, y **A2A**, con un agente del transportista simulado. Se elige al arrancar: con `POC_VERSION=1` (por defecto) la PoC se comporta como la primera versión; con `POC_VERSION=2` arrancan `eda-mail-server` y `eda-carrier-agent`, el ejecutor de `notify_customer` envía el correo por MCP y el planificador consulta al transportista por A2A. Los requisitos están en `specs/mcp-mail/spec.md` y `specs/a2a-carrier/spec.md`, y cuándo conviene cada modo, en «Segunda versión».
+La versión 2 añade a la PoC los dos modos de comunicación que faltaban: **MCP**, con un servidor de correo simulado, y **A2A**, con un agente del transportista simulado. Se elige al arrancar: con `POC_VERSION=1` (por defecto) la PoC se comporta como la primera versión; con `POC_VERSION=2` arrancan `eda-mail-server` y `eda-carrier-agent`, el ejecutor de `notify_customer` envía el correo por MCP y el planificador consulta al transportista por A2A. Los requisitos están en `specs/mcp-mail/spec.md` y `specs/a2a-carrier/spec.md`.
 
 Para activarla:
 
@@ -381,6 +374,21 @@ scripts/start-all.sh --version 2   # o POC_VERSION=2 en .env y scripts/start-all
 
 Con la versión 2, `.env` debe tener `A2A_CARRIER_TOKEN` (un valor propio, nunca en el repositorio); sin él, `run-agents.sh` termina con error antes de arrancar nada. `--version` también existe en `scripts/run-agents.sh` y `scripts/run-web.sh` si se lanzan por separado (con la misma versión en los dos). La cabecera del front muestra «Versión 2 (MCP + A2A)» y el mapa, el servidor de correo MCP y el agente del transportista como procesos vigilados. `scripts/stop-all.sh` también para `eda-mail-server` y `eda-carrier-agent`.
 
+### Cuándo usar cada modo de comunicación
+
+| Modo | Cuándo usarlo | En la PoC |
+| --- | --- | --- |
+| Evento (Kafka) | Un hecho ya ocurrido que interesa a varios, sin esperar respuesta | `ShipmentDelayed`, `StepCompleted`… (versión 1) |
+| Comando REST | Una orden a un sistema dueño de su estado, que la acepta o la rechaza al momento; idempotente (`command_id`) | `CreatePlan`, `ExecuteStep`… (versión 1) |
+| MCP | Usar una herramienta o un recurso: la herramienta no razona, solo expone operaciones | Servidor de correo simulado para las notificaciones al cliente |
+| A2A | Hablar con otro agente autónomo, a menudo de otra organización y opaco por dentro, en una tarea larga que se negocia | Agente del transportista, consultado por el planificador |
+
+- **Servidor de correo simulado (MCP).** `eda-mail-server` expone la herramienta de envío de correo, `send_email`; el ejecutor de `notify_customer` se conecta como cliente MCP y la invoca con el texto que redactó el agente redactor. El cliente MCP es el ejecutor (código), no el agente: el LLM sigue sin herramientas con efectos (regla 1). El servidor resuelve el destinatario a partir de `customer_ref`, así que ni el log ni el plan llevan correos (regla 10).
+- **Agente del transportista (A2A).** `eda-carrier-agent`, activo con `POC_VERSION=2`. Un agente externo, de la empresa de transporte, opaco y con sus propias reglas; en la PoC, reglas deterministas con semilla en lugar de un LLM, para que los experimentos sean repetibles. Antes de proponer el plan, el planificador le pide por A2A las opciones que ofrece: nueva fecha de entrega, si puede reenviar y si aceptaría una reclamación. La tarea A2A puede pasar por `input-required`, por ejemplo si el transportista pide el número de seguimiento. La consulta no tiene efectos y su respuesta es contenido no confiable, como el texto de los avisos (regla 11): el planificador solo la usa como contexto y el plan se valida igual que en la versión 1. La reclamación real la sigue presentando el ejecutor de `file_claim` con un comando REST. Así se ve el contraste con el mismo interlocutor: con su agente se negocia por A2A y los efectos van por comandos.
+- **Guardrails en MCP y A2A.** Los dos se usan con guardrails, porque abren el sistema a un servidor de herramientas y a un agente que no controlamos:
+  - MCP: lista blanca de herramientas (solo `send_email` con la entrada esperada), validación con esquema de la entrada y la salida (`mcp_output_invalid`), límite de envíos por incidencia (`MCP_MAX_EMAILS_PER_INCIDENT`, `mail_limit_exceeded`) y ningún dato personal en lo que el servidor devuelve (una salida con algo que parece una dirección de correo se descarta). Cada fallo se registra en el log con su motivo y su `trace_id`.
+  - A2A: autenticación del agente remoto y comprobación de su Agent Card, validación con esquema de la respuesta, plazo y número máximo de rondas (`input-required`), solo referencias en lo que se le envía (`order_id`, nunca nombres, correos ni direcciones) y su respuesta tratada como posible prompt injection.
+
 ### Diagrama de agentes (versión 2)
 
 ```mermaid
@@ -388,10 +396,10 @@ flowchart LR
   IN["Aviso del transportista<br/>eda-notice o front"]
   INK["intake<br/>(agregado)"]
   BUS[("Kafka eda.events<br/>solo eventos")]
-  INT["Intérprete<br/>(LLM)"]
+  INT["Intérprete<br/>(agregado con LLM)"]
   ORQ["Saga<br/>orquestador"]
-  PLN["Planificador<br/>(LLM)"]
-  RPL["Replanificador<br/>(LLM)"]
+  PLN["Planificador<br/>(agregado con LLM)"]
+  RPL["Replanificador<br/>(agregado con LLM)"]
   EXE["Ejecutores e inventory<br/>(agregados)"]
   RED["Agente redactor<br/>aviso y reclamación"]
   IDS[("effect_keys<br/>de cada ejecutor")]
