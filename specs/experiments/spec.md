@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Definir las hipótesis, los experimentos y las métricas de la PoC académica. La arquitectura orientada a eventos se compara con una base síncrona equivalente. Los umbrales indicados son valores iniciales ajustables.
+Definir las hipótesis, los experimentos y las métricas de la PoC académica. La arquitectura orientada a eventos se compara con una base síncrona equivalente. Los umbrales indicados son valores iniciales ajustables. Los experimentos de resiliencia (E11 en adelante) comprueban además que la arquitectura mantiene sus garantías (una resolución por incidencia, sin efectos duplicados, vistas reconstruibles) cuando fallan la entrega, los consumidores, los ejecutores, las proyecciones y los mensajes, y que la idempotencia de comandos y eventos se cumple también bajo concurrencia y reproducción del log.
 
 ## Requirements
 
@@ -128,3 +128,321 @@ Los experimentos que dependen del LLM (E5, E6) MUST repetirse al menos tres vece
 - **GIVEN** E5 configurado con tres repeticiones
 - **WHEN** termina
 - **THEN** el informe muestra el acierto de cada repetición y su rango
+
+### Requirement: Invariantes comunes de resiliencia
+
+Todo experimento de resiliencia (E11 en adelante) MUST comprobar al terminar los invariantes siguientes y MUST incluirlos en el informe, con su recuento, aunque la hipótesis del experimento hable solo de algunos:
+
+- I1: toda incidencia termina en `IncidentResolved` o `IncidentEscalated` (ninguna queda abierta tras el tiempo máximo del experimento).
+- I2: ningún efecto externo se ejecuta dos veces para la misma `idempotency_key` (`repeated_steps` = 0).
+- I3: como máximo un `issue_refund` por incidencia y pedido, y nunca con compensaciones pendientes de esa incidencia.
+- I4: toda fila de `outbox` de cada componente está publicada o pendiente; ninguna se pierde.
+- I5: la huella de cada vista reconstruida desde `eda.events` coincide con la de la vista mantenida durante el experimento.
+
+#### Scenario: Informe con invariantes
+
+- **GIVEN** cualquier experimento de resiliencia terminado
+- **WHEN** se escribe el informe
+- **THEN** `report.json` contiene `invariants` con I1 a I5 y su recuento de violaciones
+- **AND** la hipótesis del experimento no se da por cumplida si I1 o I2 tienen alguna violación
+
+### Requirement: Convención de ejecución y de informe
+
+Cada experimento nuevo SHALL ejecutarse con `uv run eda-experiment <exp> --seed N`, usar el generador de avisos y la inyección de fallos con la misma semilla y escribir `experiments/results/<exp>-<fecha>/report.json` y `report.md` con semilla, configuración, modelo y versión de los prompts. Salvo que el experimento diga otra cosa, MUST usar `--llm oracle` (sin coste), porque mide la arquitectura y no el LLM.
+
+#### Scenario: Reproducibilidad
+
+- **GIVEN** la semilla 42 y la misma configuración
+- **WHEN** se ejecuta dos veces un experimento nuevo
+- **THEN** los pasos que fallan y los mensajes retrasados o inyectados son los mismos en las dos ejecuciones
+
+### Requirement: Modo multiproceso del harness
+
+El harness SHALL ofrecer un modo multiproceso (`--mode multiprocess`) que arranque cada componente como proceso propio contra PostgreSQL y Kafka reales (los mismos procesos que `scripts/run-agents.sh`), con una base de datos y un topic propios por ejecución. Los experimentos E12 y E16 MUST usar ese modo; el modo en proceso actual sigue siendo el de E1 a E7 y el de los demás experimentos que no exijan procesos aparte.
+
+#### Scenario: Aislamiento de la ejecución
+
+- **GIVEN** una ejecución multiproceso
+- **WHEN** termina o se aborta
+- **THEN** sus procesos están parados y su base de datos y su topic se han borrado
+
+### Requirement: E11 Entrega retrasada y planes revisados (H11)
+
+El sistema SHALL cumplir la hipótesis H11: con revisiones forzadas del plan y resultados de pasos que llegan tarde, ningún resultado obsoleto cambia el estado de la saga y se mantienen los invariantes I1 a I5. El escenario son 50 incidencias con un 50 % de fallos en `reserve_stock` (`fail_probability`), planes con pasos en paralelo y `step_delay_seconds` en `reserve_stock`, `reissue_shipment` y `file_claim` para que haya resultados de una `plan_version` anterior después de un `PlanRevised`. El informe MUST dar: `PlanRevised` por incidencia, resultados registrados como obsoletos (`StepCompleted` y `StepFailed` con `plan_version` anterior a la vigente), resultados tardíos tras el plazo, compensaciones pedidas y completadas, y el número de incidencias escaladas por motivo.
+
+#### Scenario: Resultado de una versión antigua tras una revisión
+
+- **GIVEN** un plan v1 con `reserve_stock` y `file_claim` en paralelo, y la reserva falla
+- **WHEN** la saga aplica `PlanRevised` v2 y después llega el `StepCompleted` de `file_claim` de la v1
+- **THEN** el orquestador lo registra como obsoleto sin cambiar el estado de la saga
+- **AND** el paso `file_claim` no se ejecuta otra vez
+
+#### Scenario: Resultado después del plazo
+
+- **GIVEN** un `ExecuteStep` cuyo plazo vence mientras su ejecutor tarda más de lo previsto
+- **WHEN** el resultado llega después del plazo
+- **THEN** la saga ya ha tratado el paso como `StepFailed` con `error` `timeout` y registra el resultado como obsoleto
+- **AND** si el paso era `reserve_stock`, su compensación se ejecuta una sola vez
+
+#### Scenario: Reembolso con compensaciones pendientes
+
+- **GIVEN** una incidencia con un `reserve_stock` completado cuya compensación sigue pendiente
+- **WHEN** el plan revisado propone `issue_refund`
+- **THEN** la saga no invoca `issue_refund` hasta que la compensación termine (I3)
+
+#### Scenario: Cumplimiento de H11
+
+- **GIVEN** la ejecución completa de E11
+- **WHEN** se evalúa la hipótesis
+- **THEN** H11 se cumple si I1 a I5 no tienen violaciones y ningún resultado obsoleto modificó una fila de `orchestrator.plan_steps`
+
+### Requirement: E12 Ejecutor caído y ejecutor colgado (H12)
+
+El sistema SHALL cumplir la hipótesis H12, que tiene dos partes: H12a (vivacidad) toda incidencia que usa el ejecutor afectado termina escalada o resuelta dentro de `SAGA_STEP_TIMEOUT_S` más un margen, y las que no lo usan terminan como siempre; H12b (aislamiento) la latencia p95 de las incidencias que no usan el ejecutor afectado no supera el doble de la de una ejecución sin fallo. El experimento SHALL ejecutarse en modo multiproceso con `file_claim` en `down`, en `hang` y en `hang` con recuperación al cabo de un intervalo, con 50 incidencias de las que aproximadamente la mitad llevan `file_claim`. La parte H12b se declara exploratoria: se parte de la hipótesis de que el dispatcher, que invoca un comando por turno (`LIMIT 1`), sufre bloqueo de cabeza de línea con el modo `hang` (cada intento ocupa `COMMAND_HTTP_TIMEOUT_S`); un resultado negativo de H12b es un hallazgo y no un fallo del experimento, y el informe lo MUST decir.
+
+#### Scenario: Ejecutor caído para siempre
+
+- **GIVEN** el ejecutor de `file_claim` en modo `down` durante toda la ejecución
+- **WHEN** vence el plazo de cada `ExecuteStep` de `file_claim`
+- **THEN** cada paso pasa a `failed` con `error` `timeout` y la saga revisa el plan o escala
+- **AND** las incidencias sin `file_claim` terminan en `IncidentResolved`
+
+#### Scenario: Ejecutor colgado
+
+- **GIVEN** el ejecutor de `file_claim` en modo `hang`
+- **WHEN** el dispatcher lo invoca repetidamente
+- **THEN** el informe da cuántos intentos hizo el dispatcher por comando, el tiempo que el dispatcher pasó esperando a este ejecutor y la latencia p95 de las incidencias que no lo usan
+- **AND** el plazo del paso empieza a contar en el primer envío, no en el encolado
+
+#### Scenario: Recuperación del ejecutor
+
+- **GIVEN** un ejecutor `hang` que se recupera cuando algunos plazos ya han vencido
+- **WHEN** responde a los comandos pendientes
+- **THEN** los resultados llegan como obsoletos o a pasos aún vigentes y no se ejecuta ningún efecto dos veces (I2)
+
+#### Scenario: Compensación de un paso con plazo vencido
+
+- **GIVEN** un `reserve_stock` cuyo ejecutor está caído al vencer el plazo
+- **WHEN** la saga pide su compensación
+- **THEN** la compensación se invoca con el sufijo `-comp` y se completa cuando el ejecutor vuelve, sin liberar dos veces
+
+### Requirement: E16 Consumidor zombie y rebalanceo (H16)
+
+El sistema SHALL cumplir la hipótesis H16: cuando una instancia del orquestador se congela más que el timeout de sesión, otra toma sus particiones y la primera reanuda, no se produce ninguna transición de saga inválida ni ningún comando duplicado con `command_id` distinto para el mismo paso, y se mantienen I1 a I5. El experimento SHALL ejecutarse en modo multiproceso con dos instancias del orquestador en el mismo grupo, 50 incidencias en curso y un `SIGSTOP` a la instancia que posee más particiones durante un tiempo mayor que `session.timeout.ms`; después `SIGCONT`. El experimento sondea el supuesto de «único dueño sin concurrencia optimista» del diseño: el informe MUST dar, por incidencia, si dos instancias procesaron mensajes de ella solapados en el tiempo y qué transacciones esperaron al bloqueo de la incidencia.
+
+#### Scenario: Rebalanceo mientras la instancia está congelada
+
+- **GIVEN** la instancia A del orquestador congelada con mensajes en curso
+- **WHEN** vence su sesión y Kafka reasigna sus particiones a la instancia B
+- **THEN** B procesa los mensajes pendientes de esas particiones
+- **AND** el informe registra el instante del rebalanceo
+
+#### Scenario: Reanudación del zombie
+
+- **GIVEN** la instancia A reanudada tras el rebalanceo con un mensaje a medio procesar
+- **WHEN** A termina su transacción o intenta confirmar su offset
+- **THEN** el inbox descarta el mensaje si B ya lo registró, o la confirmación falla sin dejar estado a medias
+- **AND** `orchestrator.plan_steps` no retrocede ningún paso de `completed` a otro estado
+
+#### Scenario: Cumplimiento de H16
+
+- **GIVEN** la ejecución completa de E16
+- **WHEN** se evalúa la hipótesis
+- **THEN** H16 se cumple si no hay dos comandos con `command_id` distinto para el mismo paso y la misma versión del plan, ni transiciones inválidas, y I1 a I5 no tienen violaciones
+
+### Requirement: E17 Proyección atrasada y avisos aparcados (H17)
+
+El sistema SHALL cumplir la hipótesis H17: con los proyectores parados, los avisos sobre pedidos aún no proyectados se aparcan, y al reanudar los proyectores se reanudan todos antes de su plazo sin escalar, y los que vencen su plazo con el pedido sin proyectar escalan con `no_valid_orders`; ningún aviso queda aparcado al terminar. El escenario son 50 avisos y tres variantes con `PENDING_NOTICE_TIMEOUT_S` acortado (30 s): (a) proyectores reanudados antes del plazo, (b) reanudados después del plazo, (c) reanudados en el instante del plazo con el pedido ya proyectado. El informe MUST dar avisos aparcados, reanudados por `OrderRegistered`, reanudados por el plazo con el pedido proyectado y escalados, el tiempo en aparcamiento, y comprobar que el intérprete no consulta `view_orders` en bucle (el aviso se aparca y se confirma el offset).
+
+#### Scenario: Reanudación antes del plazo
+
+- **GIVEN** 50 avisos sobre pedidos que aún no están en `view_orders` y los proyectores parados
+- **WHEN** se reanudan los proyectores antes de que venza el plazo
+- **THEN** el intérprete publica un `ShipmentDelayed` por aviso al consumir su `OrderRegistered`
+- **AND** `parked_notices` queda vacía y ningún aviso escala
+
+#### Scenario: Plazo vencido sin proyección
+
+- **GIVEN** avisos aparcados y los proyectores parados más tiempo que el plazo
+- **WHEN** vence el plazo
+- **THEN** el intérprete publica `IncidentEscalated` con `no_valid_orders` para cada aviso
+- **AND** `parked_notices` los borra al consumir el escalado
+
+#### Scenario: Pedido proyectado en el instante del plazo
+
+- **GIVEN** un aviso aparcado cuyo `OrderRegistered` el intérprete consumió antes de aparcarlo
+- **WHEN** vence su plazo y la vista ya tiene el pedido
+- **THEN** publica `ShipmentDelayed` y no escala
+
+#### Scenario: Aviso aparcado y repetido
+
+- **GIVEN** un aviso aparcado
+- **WHEN** el transportista lo reenvía mientras está aparcado
+- **THEN** se descarta con `duplicate_notice` y no hay un segundo aparcamiento
+
+### Requirement: E18 Mensajes veneno en mitad de la partición (H18)
+
+El sistema SHALL cumplir la hipótesis H18: un mensaje inválido en mitad de una partición no detiene a ningún grupo de consumidores ni se descarta en silencio. El escenario son 100 incidencias con una inyección de cada tipo de veneno, repartidas en distintas posiciones y particiones. El informe MUST dar, por tipo de veneno y por consumidor: si llegó a `<componente>.dead_letters` y a `eda.dlq`, el motivo, el lag de cada grupo al final y cuántos reintentos hizo antes de saltarlo. Cuando el veneno lleva un `correlation_id` identificable, su incidencia SHALL escalarse; en los demás casos queda solo en la dead letter.
+
+#### Scenario: JSON inválido
+
+- **GIVEN** un mensaje que no es JSON en la posición 50 de una partición
+- **WHEN** lo recibe cada grupo
+- **THEN** cada consumidor lo guarda en su `dead_letters` con el motivo `invalid_schema` y confirma el offset
+- **AND** los mensajes siguientes de la partición se procesan
+
+#### Scenario: Evento de un tipo o versión desconocidos
+
+- **GIVEN** un evento con `event_type` desconocido y otro con `event_version` sin upcaster
+- **WHEN** los reciben los consumidores
+- **THEN** van a la dead letter queue y no bloquean la partición
+
+#### Scenario: Evento con datos personales
+
+- **GIVEN** un evento cuyo payload incluye datos personales no permitidos
+- **WHEN** lo recibe un consumidor
+- **THEN** va a la dead letter queue y no se escribe en las vistas ni en el log
+
+#### Scenario: Payload muy grande
+
+- **GIVEN** un payload de 900 KB, por debajo de `message.max.bytes`
+- **WHEN** lo reciben los consumidores
+- **THEN** se procesa o se rechaza por schema sin retrasar a las demás incidencias de la partición
+
+#### Scenario: Reconciliación de la DLQ
+
+- **GIVEN** el final de la ejecución
+- **WHEN** se compara lo inyectado con lo que hay en `eda.dlq` y en los `dead_letters`
+- **THEN** cada veneno aparece exactamente una vez por consumidor y la ejecución no tiene ningún otro mensaje en la DLQ
+
+#### Scenario: Cumplimiento de H18
+
+- **GIVEN** la ejecución completa de E18
+- **WHEN** se evalúa la hipótesis
+- **THEN** H18 se cumple si el lag final de todos los grupos es 0, todo veneno está en su DLQ y las 100 incidencias terminan (I1)
+
+### Requirement: E21 Reproducción total del log (H21)
+
+El sistema SHALL cumplir la hipótesis H21: reproducir el log completo ante todos los consumidores y los ejecutores no produce ningún efecto nuevo, ningún evento nuevo y ningún cambio de estado. El escenario son 50 incidencias cerradas con un 30 % de fallos en `reserve_stock` (para que haya revisiones y compensaciones); con el sistema parado se llevan los offsets de todos los grupos al principio de `eda.events` y se arranca de nuevo hasta que el lag sea 0. Como control, una variante `inbox_off` desactiva el inbox de un consumidor (el orquestador, y después el intérprete) y MUST producir efectos o eventos nuevos, para demostrar que el experimento detecta la ausencia de idempotencia. El informe MUST comparar, antes y después, las ejecuciones del servicio simulado por `idempotency_key`, el número de filas de cada `outbox`, `inbox` y `command_outbox`, la huella de `orchestrator.plan_steps` y de cada vista, y el número de mensajes descartados por el inbox.
+
+#### Scenario: Reproducción con inbox activo
+
+- **GIVEN** 50 incidencias cerradas y los offsets de todos los grupos al principio
+- **WHEN** los consumidores reprocesan todo el topic
+- **THEN** el número de ejecuciones de cada servicio simulado no cambia
+- **AND** ningún `outbox` recibe filas nuevas y `command_outbox` no recibe comandos nuevos
+
+#### Scenario: Estado intacto
+
+- **GIVEN** el mismo escenario
+- **WHEN** termina la reproducción
+- **THEN** la huella de `orchestrator.plan_steps` y las de las vistas coinciden con las de antes
+- **AND** el inbox descartó tantos mensajes como tenía registrados cada consumidor
+
+#### Scenario: Ejecutores activos ante comandos antiguos
+
+- **GIVEN** los ejecutores activos y los `ExecuteStep` antiguos entregados de nuevo con su `command_id` original
+- **WHEN** los atienden
+- **THEN** devuelven la respuesta guardada y no se crea ninguna reserva ni reembolso nuevo, también tras vencer los plazos de la saga («Duplicado tardío» de la spec `idempotency`)
+
+#### Scenario: Control sin inbox
+
+- **GIVEN** la variante `inbox_off` en el orquestador
+- **WHEN** se reproduce el log
+- **THEN** el experimento detecta comandos o eventos nuevos y lo informa como observación, fuera de H21
+
+#### Scenario: Cumplimiento de H21
+
+- **GIVEN** la variante con inbox activo
+- **WHEN** se evalúa la hipótesis
+- **THEN** H21 se cumple si el recuento de efectos, de filas y de huellas no cambia, y la variante de control produce alguna diferencia
+
+### Requirement: E22 Carreras de comandos y ventana efecto–registro (H22)
+
+El sistema SHALL cumplir la hipótesis H22: el mismo comando entregado a la vez desde varios hilos, la misma clave de idempotencia con distinto `command_id` y la caída entre el efecto y el registro de su clave nunca producen un efecto duplicado. El escenario son 50 incidencias con cuatro variantes: (a) el mismo `ExecuteStep` entregado desde 2, 4 y 8 hilos con conexiones propias; (b) el mismo `CreatePlan`, `RevisePlan`, `RegisterCarrierNotice` y `SeedSampleData` concurrentes con el mismo `command_id`; (c) dos `command_id` distintos con la misma `idempotency_key` (por ejemplo, una reinvocación de la saga tras un plazo) para `notify_customer`, `file_claim`, `reserve_stock` y `issue_refund`; (d) `crash_between_effect_and_record` en `notify_customer` y en `issue_refund`, con reintento. El informe MUST dar, por variante, las ejecuciones del servicio simulado por clave, las respuestas distintas recibidas por un mismo `command_id`, los eventos escritos y las veces que una petición esperó a una clave `in_progress`.
+
+#### Scenario: Dos ejecutores a la vez
+
+- **GIVEN** 8 hilos que entregan el mismo `ExecuteStep` con el mismo `command_id`
+- **WHEN** todos intentan registrar la clave
+- **THEN** solo uno ejecuta el efecto
+- **AND** todos reciben la misma respuesta y se escribe un solo `StepCompleted`
+
+#### Scenario: Comando concurrente con trabajo diferido
+
+- **GIVEN** dos entregas simultáneas del mismo `CreatePlan`
+- **WHEN** ambas pasan por la aceptación
+- **THEN** `planner.command_jobs` tiene una sola fila y se publica un solo `PlanCreated`
+
+#### Scenario: Misma clave, otro command_id
+
+- **GIVEN** un `ExecuteStep` completado con la clave K y `command_id` C1
+- **WHEN** llega otro `ExecuteStep` con la clave K y `command_id` C2
+- **THEN** el ejecutor devuelve el resultado guardado sin repetir el efecto
+
+#### Scenario: Caída tras el efecto y antes de registrar la clave
+
+- **GIVEN** un ejecutor que envía el aviso de un pedido y cae antes de registrar la clave
+- **WHEN** se reentrega el `ExecuteStep`
+- **THEN** el reintento usa la misma clave hacia el servicio de correo
+- **AND** el cliente recibe un solo aviso
+
+#### Scenario: Clave en curso vencida
+
+- **GIVEN** una clave `in_progress` cuyo ejecutor cayó y cuyo `locked_until` ya venció
+- **WHEN** otro ejecutor recibe el mismo paso
+- **THEN** lo toma y lo completa sin duplicar el efecto externo
+
+#### Scenario: Mismo command_id con otro payload
+
+- **GIVEN** un comando registrado con `command_id` C1
+- **WHEN** llega otro con C1 y un payload distinto
+- **THEN** el informe anota la respuesta como observación; la spec no define este caso, así que queda fuera de H22 y el experimento propone cerrarlo
+
+#### Scenario: Cumplimiento de H22
+
+- **GIVEN** las cuatro variantes
+- **WHEN** se evalúa la hipótesis
+- **THEN** H22 se cumple si ninguna variante tiene ejecuciones del servicio por encima de una por clave y todas las entregas de un mismo `command_id` reciben la misma respuesta
+
+### Requirement: E23 Duplicados de negocio: avisos, reclamaciones, avisos al cliente y reembolsos (H23)
+
+El sistema SHALL cumplir la hipótesis H23: los duplicados que nacen del negocio (no solo de la entrega) no producen efectos repetidos. El escenario son 50 incidencias con un 50 % de fallos en `reserve_stock` para forzar replanes y cuatro variantes: (a) cada aviso del transportista reenviado de 1 a 5 veces, en orden y a la vez, con el mismo `carrier_notice_id`; (b) replanes que vuelven a pedir `file_claim` y `notify_customer` de pedidos ya atendidos; (c) un reembolso pedido otra vez tras un replan posterior; (d) el mismo pedido en dos incidencias distintas (dos avisos con distinto `carrier_notice_id`). El informe MUST dar, por variante: `incident_id` por `carrier_notice_id`, descartes con motivo `duplicate_notice`, reclamaciones por (incidencia, pedido), avisos por (pedido, versión del plan), reembolsos por incidencia y pedido, y reservas activas por pedido.
+
+#### Scenario: Aviso repetido
+
+- **GIVEN** un aviso N1 ya interpretado
+- **WHEN** el transportista lo reenvía 5 veces, algunas a la vez
+- **THEN** hay un solo `incident_id` para N1 y un solo `ShipmentDelayed`
+- **AND** cada repetición queda registrada como descarte con `duplicate_notice`
+
+#### Scenario: Reclamación solicitada dos veces
+
+- **GIVEN** una reclamación ya creada para el pedido P1 en la incidencia I1
+- **WHEN** un replan vuelve a solicitar `file_claim` para P1
+- **THEN** el ejecutor devuelve el `claim_id` existente y no crea otra
+
+#### Scenario: Aviso al cliente tras una revisión
+
+- **GIVEN** un `CustomerNotified` ya publicado para P1
+- **WHEN** el replanner mantiene `notify_customer` en la versión nueva
+- **THEN** no se envía otro aviso por ese paso
+
+#### Scenario: Reembolso único
+
+- **GIVEN** una incidencia con un reembolso emitido
+- **WHEN** un plan posterior vuelve a proponer `issue_refund` para el mismo pedido
+- **THEN** no se emite un segundo reembolso (I3) y el total reembolsado no supera el importe del pedido
+
+#### Scenario: Pedido en dos incidencias
+
+- **GIVEN** dos avisos distintos sobre el pedido P1
+- **WHEN** se procesan las dos incidencias
+- **THEN** cada incidencia mantiene sus propias claves de efecto y el informe separa los efectos por incidencia
+- **AND** las comprobaciones de reclamación, reserva y reembolso se hacen por (incidencia, pedido)
+
+#### Scenario: Cumplimiento de H23
+
+- **GIVEN** las cuatro variantes
+- **WHEN** se evalúa la hipótesis
+- **THEN** H23 se cumple si todos los recuentos del informe son los máximos que fijan las specs `idempotency` e `incident-interpretation`
