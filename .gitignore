@@ -13,3 +13,6 @@ web/dist/
 
 # Caché del registro de skills
 .atl/
+
+# Resultados de los experimentos (informes y logs de cada ejecución): se generan en local
+experiments/results/
