@@ -49,6 +49,9 @@ export const POSITIONS: Readonly<Record<string, Box>> = Object.fromEntries([
   service("warehouse", 398, 82),
   service("payments", 488),
   service("jaeger", 586, 52),
+  // Versión 2: agente del transportista (A2A), junto al log de eventos. Más ancho y alto que una casilla
+  // de reserva para que «Agente del transportista (A2A)» quepa en dos líneas sin salirse de la caja.
+  ["carrier_agent", { x: 334, y: 436, w: 170, h: 52 }],
 ]);
 
 // Zona libre (abajo, entre la leyenda y la línea común) para nodos que la tabla no conoce.
