@@ -3,12 +3,12 @@
 - Entrega (`FaultyDelivery`): cada mensaje se entrega `duplicates` veces al consumidor antes
   de confirmar el offset (entrega al menos una vez), puede retenerse `delay_seconds` y el
   consumidor puede caer tras procesar K mensajes, sin confirmar el último offset.
-- Pasos (`FailingAction`): un tipo de paso falla con una probabilidad dada. La elección es
-  una función de la semilla, la acción y la `idempotency_key` del paso (`should_fail`), no
-  de un generador compartido: con la misma semilla fallan los mismos pasos aunque cambie el
-  orden en que se ejecutan. El fallo es de negocio (no reintentable): fuerza la revisión
-  del plan, y el efecto no se ejecuta.
-- Existencias (`empty_warehouses`): deja sin stock los almacenes indicados.
+- Pasos (`should_fail`): un tipo de paso falla con una probabilidad dada. La elección es una
+  función de la semilla, la acción y la `idempotency_key` del paso, no de un generador
+  compartido: con la misma semilla fallan los mismos pasos aunque cambie el orden en que se
+  ejecutan. El fallo es de negocio (no reintentable): fuerza la revisión del plan, y el
+  efecto no se ejecuta (el arnés envuelve el `ExecuteStep` con `experiments.harness.failing`).
+- Existencias (`empty_warehouses` del plan): el arnés siembra a 0 esos almacenes.
 """
 
 from __future__ import annotations
@@ -19,10 +19,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
-import psycopg
-
 from eda_retail.events.catalog import Action
-from eda_retail.executors.base import BusinessError, Effect, Prepared, StepAction, StepRequest
 
 INJECTED_FAILURE = "injected_failure"
 
@@ -57,24 +54,6 @@ def should_fail(seed: int, action: str, key: str, probability: float) -> bool:
         return False
     digest = hashlib.sha256(f"{seed}:{action}:{key}".encode()).digest()
     return int.from_bytes(digest[:8], "big") / 2**64 < probability
-
-
-class FailingAction:
-    """Envuelve una acción: los pasos elegidos por `should_fail` fallan sin ejecutar el efecto."""
-
-    def __init__(self, inner: StepAction, plan: FaultPlan) -> None:
-        self.inner = inner
-        self.action = inner.action
-        self._seed = plan.seed
-        self._probability = plan.fail_probability.get(inner.action, 0.0)
-
-    def prepare(self, conn: psycopg.Connection, request: StepRequest) -> Prepared:
-        return self.inner.prepare(conn, request)
-
-    def execute(self, conn: psycopg.Connection, request: StepRequest, prepared: Prepared) -> Effect:
-        if should_fail(self._seed, self.action, request.idempotency_key, self._probability):
-            raise BusinessError(INJECTED_FAILURE)
-        return self.inner.execute(conn, request, prepared)
 
 
 class ConsumerCrashed(RuntimeError):
@@ -125,11 +104,3 @@ class FaultyDelivery:
             raise ConsumerCrashed(f"{name} cae tras {self._handled} mensajes")
         self.consumer.commit(msg)
         return outcome
-
-
-def empty_warehouses(conn: psycopg.Connection, warehouses: list[str] | tuple[str, ...]) -> int:
-    """Deja sin existencias los almacenes indicados. Devuelve cuántas filas cambió."""
-    with conn.transaction():
-        return conn.execute(
-            "UPDATE stock SET available = 0 WHERE warehouse = ANY(%s)", (list(warehouses),)
-        ).rowcount

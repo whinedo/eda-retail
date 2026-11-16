@@ -38,6 +38,13 @@ El importe máximo de reembolso, las acciones permitidas y los umbrales de grave
 - **THEN** rechaza el plan
 - **AND** registra el motivo `refund_limit`
 
+#### Scenario: Reembolso por encima del importe del pedido
+
+- **GIVEN** un pedido P1 con importe 40 en la proyección `view_orders` y un plan que propone reembolsar 60 de P1
+- **WHEN** el command handler del planificador lo valida
+- **THEN** rechaza el plan con el motivo `refund_limit`, aunque 60 no supere el máximo configurado
+- **AND** no publica `PlanCreated` con ese plan
+
 ### Requirement: Reintentos de generación acotados
 
 Cuando una salida del LLM sea rechazada, el sistema SHALL pedir una nueva como máximo un número configurable de veces. Agotado el límite, MUST publicar `IncidentEscalated` con el motivo `llm_output_invalid`.

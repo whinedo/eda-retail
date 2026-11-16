@@ -11,11 +11,14 @@
 from __future__ import annotations
 
 import argparse
+import sys
 
 from eda_retail.config import load_settings
+from eda_retail.infra.command_client import CommandUnavailable
 from eda_retail.infra.db import connect
+from eda_retail.synthetic.client import NoticeClient, SeedRejected
 from eda_retail.synthetic.interactive import run
-from eda_retail.synthetic.sample import CARRIER, EXAMPLES, seed, send_notice
+from eda_retail.synthetic.sample_data import CARRIER, EXAMPLES
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -33,31 +36,39 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def _client() -> NoticeClient:
+    return NoticeClient(load_settings())
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
-    conn = connect(load_settings().database_url)
+    client = _client()
     try:
         if args.command in (None, "interactive"):
+            conn = connect(load_settings().database_url)
             try:
                 run(
-                    conn, input, print, timeout=getattr(args, "timeout", 180.0),
+                    conn, input, print, client, timeout=getattr(args, "timeout", 180.0),
                     free_text=not getattr(args, "no_free_text", False),
                 )
             except (EOFError, KeyboardInterrupt):
                 print()
+            finally:
+                conn.close()
             return 0
         if args.command == "seed":
-            orders, stock = seed(conn)
+            orders, stock = client.seed()
             print(f"datos de ejemplo: {orders} pedidos y {stock} filas de stock nuevos")
             return 0
-        sent = send_notice(conn, args.text or EXAMPLES[args.example], carrier=args.carrier)
-        if not sent.result.accepted:
-            print(f"aviso rechazado: {sent.result.reason} {sent.result.detail or ''}".rstrip())
+        sent = client.register(args.text or EXAMPLES[args.example], carrier=args.carrier)
+        if not sent.accepted:
+            print(f"aviso rechazado: {sent.reason}")
             return 1
         print(f"aviso {sent.carrier_notice_id} registrado; incidencia {sent.incident_id}")
         return 0
-    finally:
-        conn.close()
+    except (CommandUnavailable, SeedRejected) as error:
+        print(f"error: {error}; ¿están en marcha intake e inventory? (scripts/run-agents.sh)", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":

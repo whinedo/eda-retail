@@ -24,9 +24,10 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-# start-all.sh, run-agents.sh, run-web.sh, el Vite del front y cada proceso de la PoC: tanto `uv run eda-…` como el python que lanza.
+# start-all.sh, run-agents.sh, run-web.sh, el Vite del front y cada proceso de la PoC (también los de la versión 2,
+# eda-mail-server y eda-carrier-agent): tanto `uv run eda-…` como el python que lanza.
 # Todos reciben SIGTERM a la vez; los que sigan vivos a los 10 s, SIGKILL.
-PATTERN='scripts/(start-all|run-agents|run-web)\.sh|eda-retail[^ ]*/web/node_modules/\.bin/vite|(^|/| )eda-(relay|projector|orchestrator|executor|agent|notice|web)( |$)'
+PATTERN='scripts/(start-all|run-agents|run-web)\.sh|eda-retail[^ ]*/web/node_modules/\.bin/vite|(^|/| )eda-(projector|event-log|intake|inventory|interpreter|planner|replanner|orchestrator|step-executor|notice|web|mail-server|carrier-agent)( |$)'
 
 list_pids() {
   pgrep -f "$PATTERN" 2>/dev/null | grep -vx "$$" || true

@@ -158,7 +158,7 @@ def test_limit_out_of_range(client: TestClient, limit: int):
 def test_direct_write_is_rejected(database_url: str):
     """Escritura directa rechazada: la conexión del front no puede escribir"""
     with read_only_connect(database_url) as conn, pytest.raises(psycopg.errors.ReadOnlySqlTransaction):
-        conn.execute("INSERT INTO inbox (consumer, event_id) VALUES ('web', gen_random_uuid())")
+        conn.execute("INSERT INTO views.applied_events (projector, event_id) VALUES ('web', gen_random_uuid())")
 
 
 def _stream(database_url: str, **kwargs) -> list[int]:
@@ -233,7 +233,7 @@ def test_node_detail(conn, database_url: str):
     body = client.get("/api/nodes/interpreter").json()
 
     assert body["id"] == "interpreter" and body["kind"] == "llm" and body["description"]
-    assert body["consumes"] == ["CarrierNoticeReceived"]
+    assert body["consumes"] == ["CarrierNoticeReceived", "OrderRegistered"]  # reanuda avisos aparcados (T5)
     assert "ShipmentDelayed" in body["emits"]
     assert body["llm"]["calls"] >= 0
     assert isinstance(body["up"], bool)

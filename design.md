@@ -26,16 +26,16 @@ Cada sistema que recibe comandos tiene su **propio command handler**, expuesto c
 | --- | --- | --- | --- |
 | `intake` (entrada de avisos: `eda-notice`, front) | `intake` | `carrier_notices`, `outbox` | — |
 | `interpreter` (agente) | `interpreter` | `interpretations`, `pending_notices`, `llm_calls`, `inbox`, `outbox` | `view_orders`, `view_cost_per_incident` (presupuesto) |
-| `planner` (agente) | `planner` | `plans`, `llm_calls`, `inbox`, `outbox` | `view_orders`, `view_cost_per_incident` |
-| `replanner` (agente) | `replanner` | `revisions`, `llm_calls`, `inbox`, `outbox` | `view_cost_per_incident` |
+| `planner` (agente) | `planner` | `plans`, `llm_calls`, `command_jobs`, `inbox`, `outbox` | `view_orders`, `view_cost_per_incident` |
+| `replanner` (agente) | `replanner` | `revisions`, `llm_calls`, `command_jobs`, `inbox`, `outbox` | `view_cost_per_incident` |
 | `orchestrator` (saga) | `orchestrator` | `incidents`, `plan_steps`, `deadlines`, `command_outbox`, `inbox`, `outbox` | — |
-| `executor-<acción>` | `executor_<acción>` | su tabla de efectos (`customer_messages`, `claims`, `shipments`, `refunds`), `effect_keys`, `llm_calls` (redactor), `inbox`, `outbox` | `view_cost_per_incident` (redactor) |
+| `executor-<acción>` | `executor_<acción>` | su tabla de efectos (`customer_messages`, `claims`, `shipments`, `refunds`), `effect_keys`, `llm_calls` (redactor), `command_jobs`, `inbox`, `outbox` | `view_cost_per_incident` (redactor) |
 | `inventory` (pedidos y stock; ejecuta `reserve_stock` y `release_stock`) | `inventory` | `orders`, `stock`, `reservations`, `effect_keys`, `inbox`, `outbox` | — |
 | `event_log` (consulta) | `event_log` | `events` (vista del log), `offsets` | — |
 | `projectors` (consulta) | `views` | `view_*`, `offsets` | — |
 | `baseline_sync` (base síncrona de E6) | `baseline` | sus tablas | — |
 
-Cada esquema tiene también su `dead_letters`. Las consultas al lado de lectura pasan por el módulo `queries` (solo lectura de `views.*`) y se hacen antes de abrir la transacción, como la llamada al LLM. Lo que un comando necesita para ejecutarse viaja en el propio comando (sección 3).
+Cada esquema tiene también su `dead_letters`; `command_jobs` guarda los trabajos de los comandos largos (sección 4.4). Las consultas al lado de lectura pasan por el módulo `queries` (solo lectura de `views.*`) y se hacen antes de abrir la transacción, como la llamada al LLM. Lo que un comando necesita para ejecutarse viaja en el propio comando (sección 3).
 
 ## 3. Componentes, comandos, eventos y grupos de consumidores
 
@@ -45,15 +45,15 @@ Por Kafka **solo viajan eventos**: el topic `eda.events`, con clave `incident_id
 | --- | --- | --- | --- | --- |
 | `intake` | `RegisterCarrierNotice` (de `eda-notice` y del front) | — | `CarrierNoticeReceived` | Código |
 | `inventory` | `SeedSampleData`; `ExecuteStep` de `reserve_stock` y `release_stock` | — | `OrderRegistered`, `StockReserved`, `StockReleased`, `StepCompleted`, `StepFailed` | Código |
-| `interpreter` | — (su handler atiende `OpenIncident`, que deriva de `CarrierNoticeReceived`) | `CarrierNoticeReceived`; `OrderRegistered` (solo para reanudar avisos aparcados) | `ShipmentDelayed` o `IncidentEscalated`, `LlmCallRecorded` | LLM + su command handler |
-| `planner` | `CreatePlan` | — | `PlanCreated` o `IncidentEscalated`, `LlmCallRecorded` | LLM + su command handler |
-| `orchestrator` (saga) | Ninguno; invoca `CreatePlan`, `RevisePlan` y `ExecuteStep` | `ShipmentDelayed`, `PlanCreated`, `PlanRevised`, `StepCompleted`, `StepFailed`, `IncidentEscalated` | `StepCancelled`, `IncidentResolved`, `IncidentEscalated` | Código |
+| `interpreter` | — (su handler atiende `OpenIncident`, que deriva de `CarrierNoticeReceived`) | `CarrierNoticeReceived`; `OrderRegistered` (solo para reanudar avisos aparcados) | `ShipmentDelayed`, `NoticeParked` o `IncidentEscalated`, `LlmCallRecorded` | LLM + su command handler |
+| `planner` | `CreatePlan` | — | `PlanCreated` o `IncidentEscalated`, `LlmCallRecorded`; con `POC_VERSION=2`, `CarrierConsulted` | LLM + su command handler (y cliente A2A, §15.1) |
+| `orchestrator` (saga) | Ninguno; invoca `CreatePlan`, `RevisePlan` y `ExecuteStep` | `ShipmentDelayed`, `PlanCreated`, `PlanRevised`, `StepCompleted`, `StepFailed`, `IncidentEscalated` | `StepRequested`, `StepCancelled`, `IncidentResolved`, `IncidentEscalated` | Código |
 | `replanner` | `RevisePlan` | — | `PlanRevised` o `IncidentEscalated`, `LlmCallRecorded` | LLM + su command handler |
 | `executor-<acción>` | `ExecuteStep` de su acción | — | `StepCompleted`, `StepFailed`, el evento de efecto, `LlmCallRecorded` | Código (el redactor se invoca desde aquí) |
 | `event_log` (consulta) | — | todos | — (mantiene la vista del log para el front) | Código |
 | `projectors` (consulta) | — | los que necesita cada proyección | — (mantienen sus proyecciones) | Código |
 
-Cada comando lleva lo que su destinatario necesita para ejecutarlo: `CreatePlan`, la incidencia (pedidos, causa, gravedad); `RevisePlan`, el plan vigente, el paso fallido y las revisiones hechas; `ExecuteStep`, la acción, el pedido, el importe y la `idempotency_key`. Así nadie consulta el estado del orquestador.
+Cada comando lleva lo que su destinatario necesita para ejecutarlo: `CreatePlan`, la incidencia (pedidos, causa, gravedad); `RevisePlan`, el plan vigente, el paso fallido y las revisiones hechas; `ExecuteStep`, la acción, el pedido, el importe y la `idempotency_key` y, para `notify_customer` y `file_claim`, la causa y el retraso que necesita el redactor. Así nadie consulta el estado del orquestador.
 
 ## 4. Flujo de escritura: un command handler por componente
 
@@ -65,14 +65,15 @@ BEGIN
        -> message_id = event_id del evento o command_id del comando
        -> si no inserta fila: COMMIT y terminar (duplicado; un comando devuelve la respuesta guardada)
   2. el command handler del sistema valida el comando contra su estado (el LLM y las
-     consultas al lado de lectura se hacen antes de la transacción)
+     consultas al lado de lectura se hacen antes de la transacción, en el worker si el
+     comando tiene trabajo largo: sección 4.4)
   3. actualizar su estado (p. ej. inventory.reservations)
   4. INSERT INTO <componente>.outbox (event_id, envelope, trace_context, ...)
 COMMIT
 confirmar el offset en Kafka (evento) o responder a la petición REST (comando)
 ```
 
-La llamada al LLM y las consultas a las proyecciones se hacen **antes** de la transacción. Si el proceso cae entre la llamada y el `COMMIT`, el evento se reentrega y se repite la llamada: cuesta tokens, pero no duplica efectos.
+La llamada al LLM y las consultas a las proyecciones se hacen **antes** de la transacción. Si el proceso cae entre la llamada y el `COMMIT`, el evento se reentrega y se repite la llamada: cuesta tokens, pero no duplica efectos. Un comando cuyo trabajo es largo (LLM o servicio externo) no hace ese trabajo en la petición: la transacción de la petición solo registra el inbox, comprueba los invariantes que no lo necesitan y guarda el trabajo; el worker del sistema lo hace después con este mismo esquema (sección 4.4).
 
 ### 4.1 CQRS: comandos, consistencia y consultas
 
@@ -82,7 +83,7 @@ La llamada al LLM y las consultas a las proyecciones se hacen **antes** de la tr
 - **Presupuesto del LLM:** cada llamada se registra en el `llm_calls` del componente y se publica como `LlmCallRecorded`. El proyector de `cost_per_incident` las suma y cada componente consulta esa proyección antes de llamar al LLM.
 - **Consultas:** las proyecciones (`event_log.events` y `views.view_*`, sección 8) las consultan las personas (el front, `eda-notice interactive` y los experimentos) y los sistemas que necesitan información de otro dominio (pedidos, presupuesto). Cada respuesta incluye la posición aplicada. Nadie lee las tablas de escritura de otro sistema.
 
-Diagrama: «CQRS» en `docs/README.md` (en vector, `docs/diagrama-cqrs.pdf`).
+Diagrama: «CQRS» en `docs/README.md`.
 
 ### 4.3 Consistencia eventual
 
@@ -90,13 +91,13 @@ Cada sistema ve el estado de los demás a través de eventos y proyecciones, as�
 
 | Situación | Ejemplo | Cómo se trata |
 | --- | --- | --- |
-| La proyección aún no tiene un dato | El intérprete recibe un aviso de `P-1007` y `view_orders` aún no tiene ese pedido | Aparca el aviso en `interpreter.pending_notices` con un plazo y confirma el offset. Al consumir el `OrderRegistered` de `P-1007` lo reanuda con los datos de ese evento. Si vence el plazo, publica `IncidentEscalated` con `no_valid_orders`. Nunca sondea la proyección ni lee las tablas de `inventory` |
+| La proyección aún no tiene un dato | El intérprete recibe un aviso de `P-1007` y `view_orders` aún no tiene ese pedido | Aparca el aviso en `interpreter.pending_notices` con un plazo, publica `NoticeParked` (pedidos que espera y `deadline_at`) en la misma transacción y confirma el offset; la vista `parked_notices` lo muestra en el front hasta que se resuelve. Al consumir el `OrderRegistered` de `P-1007` lo reanuda con los datos de ese evento. Al vencer el plazo (`PENDING_NOTICE_TIMEOUT_S`, 300 s por defecto) consulta `view_orders` una sola vez, porque pudo consumir ese `OrderRegistered` antes de aparcar el aviso: si ya tiene el pedido, publica `ShipmentDelayed`; si no, `IncidentEscalated` con `no_valid_orders`. Nunca sondea la proyección ni lee las tablas de `inventory` |
 | Eventos de productores distintos llegan desordenados | `StepCompleted` de un paso de la versión 1 llega después de `PlanRevised` a la versión 2 | El orquestador compara `plan_version` y aplica la regla de "Eventos obsoletos"; el evento se registra en el inbox y no cambia el estado |
 | Duplicados | El relay republica tras una caída | Inbox por componente y `effect_keys` en los ejecutores |
 | Presupuesto atrasado | Dos agentes llaman al LLM a la vez para la misma incidencia | El límite se comprueba con la proyección `cost_per_incident`; el exceso queda acotado a las llamadas en curso, se registra en `LlmCallRecorded` y la siguiente comprobación lo ve. Es una cota blanda documentada, no una garantía fuerte |
 | Vista atrasada respecto a una acción del usuario | El front envía un aviso y la vista `incident_status` aún no lo refleja | Cada consulta devuelve la posición aplicada de la vista; el front y `eda-notice interactive` muestran «actualizando» hasta que la posición incluye el evento esperado, y nunca leen el estado del dueño para «saltarse» el retraso |
 | Decisión con información vieja | El replanificador revisa un plan que el orquestador ya ha cerrado | El dueño (orquestador) valida al consumir `PlanRevised`: si la incidencia está cerrada o la versión no encaja, lo descarta y lo deja en el log como obsoleto |
-| Un sistema no responde a un comando | `inventory` está caído cuando la saga invoca `ExecuteStep` de `reserve_stock` | El despachador reintenta la invocación con el mismo `command_id` (sección 4.4), y la saga guarda un plazo por cada comando. Si vence antes del evento de resultado, sigue la ruta de fallo de la saga (sección 4.2): revisión del plan o escalado, con las compensaciones que correspondan. Lo que llegue después es obsoleto |
+| Un sistema no responde a un comando | `inventory` está caído cuando la saga invoca `ExecuteStep` de `reserve_stock` | El dispatcher reintenta la invocación con el mismo `command_id` (sección 4.4), y la saga guarda un plazo por cada comando. Si vence antes del evento de resultado, sigue la ruta de fallo de la saga (sección 4.2): revisión del plan o escalado, con las compensaciones que correspondan. Lo que llegue después es obsoleto |
 
 Regla general: **quien decide sobre un estado es su dueño**, al consumir el evento. Los demás proponen con lo que saben (lo que trae el comando y lo que consultan en las proyecciones) y aceptan que su propuesta pueda llegar tarde. Ningún sistema espera: aparca lo que no puede hacer aún, lo reanuda al consumir el evento que le faltaba y, si vence su plazo, escala.
 
@@ -112,7 +113,7 @@ La orquestación gobierna la saga y es la única que escribe `orchestrator.plan_
 | `reissue_shipment` | Ninguna | |
 | `issue_refund` | Ninguna | Paso pivote: se emite el último y solo sin compensaciones pendientes |
 
-La saga es **reactiva y orquestada**: es un *process manager* dentro del orquestador. Cada transición ocurre al consumir un evento o al vencer uno de sus plazos, en una transacción que actualiza `orchestrator.plan_steps` y `orchestrator.deadlines`, deja en su `command_outbox` los comandos que invocará y en su outbox los eventos siguientes. El orquestador no recibe comandos ni consulta a nadie: invoca por REST el command handler de cada sistema (sección 4.4), que solo responde si acepta el comando, y reacciona al evento que ese sistema emite. Nadie más escribe el estado de la saga.
+La saga es **reactiva y orquestada**: es un *process manager* dentro del orquestador. Cada transición ocurre al consumir un evento o al vencer uno de sus plazos, en una transacción que actualiza `orchestrator.plan_steps` y `orchestrator.deadlines`, deja en su `command_outbox` los comandos que invocará y en su outbox los eventos siguientes. Cada `ExecuteStep` va acompañado de un `StepRequested` en su outbox, en la misma transacción: es un evento de notificación (event notification) de que la saga pidió el paso (con su `plan_version` e `idempotency_key`), que interesa a la auditoría y, en la PoC, al front (vistas `incident_status` y `audit_trail`); ningún ejecutor lo consume. El orquestador no recibe comandos ni consulta a nadie: invoca por REST el command handler de cada sistema (sección 4.4), que solo responde si acepta el comando, y reacciona al evento que ese sistema emite. Nadie más escribe el estado de la saga.
 
 | Lo que consume | Transición de la saga | Comandos que invoca y eventos que emite |
 | --- | --- | --- |
@@ -121,6 +122,7 @@ La saga es **reactiva y orquestada**: es un *process manager* dentro del orquest
 | `StepCompleted` (versión vigente) | Paso `completed`; desbloquea sus dependientes | `ExecuteStep` de los desbloqueados; `IncidentResolved` si ya no quedan pasos |
 | `StepCompleted` de una compensación | El original pasa a `compensated` | Si no quedan `compensating`, el `ExecuteStep` de `issue_refund` que estaba retenido |
 | `StepFailed` no reintentable (versión vigente) | Paso `failed` | Comando `RevisePlan` al replanificador; si ya no quedan revisiones, escalado con `max_revisions` |
+| `StepFailed` no reintentable (versión vigente) con un `RevisePlan` de esa versión pendiente | Paso `failed` | Ninguno: espera a la revisión pendiente. Al aplicar su `PlanRevised`, si el plan nuevo mantiene el paso, trata ese fallo con las reglas normales en la versión nueva (otro `RevisePlan` o escalado) |
 | `StepFailed` de una compensación | — | Escalado con `compensation_failed`; nunca emite el reembolso |
 | `PlanRevised` (versión vigente + 1) | Cancela los pendientes que el plan nuevo no mantiene y añade los nuevos pasos; para cada paso compensable completado cuyo dependiente se cancela, añade `<original>-comp` y marca el original `compensating` | `StepCancelled`, `ExecuteStep` de compensaciones y de pasos desbloqueados; `issue_refund` queda retenido mientras haya `compensating` |
 | `IncidentEscalated` (de otro componente) | Escalado | Ver «Escalado» |
@@ -131,7 +133,7 @@ La saga es **reactiva y orquestada**: es un *process manager* dentro del orquest
 
 **Escalado.** La incidencia pasa a `escalated`, la saga cancela los pasos pendientes (`StepCancelled`), pide la compensación de cada `reserve_stock` completado cuyo dependiente no se ha completado y publica `IncidentEscalated` con el motivo. Nunca emite `issue_refund`. Un escalado por `compensation_failed` no vuelve a compensar.
 
-**Plazos.** Cada comando que invoca la saga lleva un plazo, guardado en `orchestrator.deadlines` en la misma transacción. Un hilo del orquestador revisa sus propios plazos vencidos (es su tabla, como el relay con su outbox) y trata cada uno como un mensaje más. El plazo de un `ExecuteStep` cubre los reintentos del despachador y los del ejecutor. Configuración: `SAGA_STEP_TIMEOUT_S`, `SAGA_PLAN_TIMEOUT_S` y, para los avisos aparcados del intérprete, `PENDING_NOTICE_TIMEOUT_S`. Una compensación pedida por un plazo vencido es idempotente: si el efecto original nunca ocurrió, no hace nada.
+**Plazos.** Cada comando que invoca la saga lleva un plazo, guardado en `orchestrator.deadlines` en la misma transacción (`timeout_s`). El plazo empieza a contar cuando el dispatcher envía el comando por primera vez (`expires_at`), responda o no el sistema destino: mide el sistema destino, no la cola del dispatcher, así que un comando que espera su turno no vence por estar en cola, y un ejecutor caído sigue venciendo («Paso sin respuesta»). Un hilo del orquestador revisa sus propios plazos vencidos (es su tabla, como el relay con su outbox) y trata cada uno como un mensaje más. El plazo de un `ExecuteStep` cubre los reintentos del dispatcher y los del ejecutor. Configuración: `SAGA_STEP_TIMEOUT_S`, `SAGA_PLAN_TIMEOUT_S` y, para los avisos aparcados del intérprete, `PENDING_NOTICE_TIMEOUT_S`. Una compensación pedida por un plazo vencido es idempotente: si el efecto original nunca ocurrió, no hace nada.
 
 Los reintentos de un paso con fallo transitorio los hace el propio ejecutor (spec `resilience`); a la saga solo le llega el resultado final.
 
@@ -144,20 +146,21 @@ saga, al consumir un evento o vencer un plazo:
 BEGIN
   inbox; transición en orchestrator.plan_steps
   INSERT INTO orchestrator.command_outbox (command_id, command_type, target, payload, trace_context)
-  INSERT INTO orchestrator.deadlines (command_id, expires_at)
+  INSERT INTO orchestrator.deadlines (command_id, timeout_s)        -- expires_at al primer envío
   INSERT INTO orchestrator.outbox (eventos de la saga, si los hay)
 COMMIT
 
-despachador (hilo del orquestador), sobre su propia tabla:
+dispatcher (hilo del orquestador), sobre su propia tabla:
 loop:
   leer command_outbox pendientes (FOR UPDATE SKIP LOCKED)
+  primer envío: expires_at = now() + timeout_s (empieza el plazo)
   POST <URL del target>/commands/<command_type>   (mismo command_id en cada intento)
     202       -> marcar entregado (aceptado; `Idempotent-Replayed: true` si ya lo estaba)
     422       -> marcar rechazado; la saga lo trata como fallo no reintentable
     red o 5xx -> reintentar con backoff y jitter
   si no hay filas: dormir un intervalo corto
 
-command handler del sistema:
+command handler del sistema (comando sin trabajo largo: intake, inventory):
 BEGIN
   INSERT INTO <sistema>.inbox (command_id) ON CONFLICT DO NOTHING
     -> si ya estaba: COMMIT y devolver la respuesta guardada
@@ -165,16 +168,44 @@ BEGIN
   guardar la respuesta en el inbox
 COMMIT
 responder 202 (aceptado) o 422 (rechazado)
+
+command handler con trabajo largo (CreatePlan, RevisePlan, ExecuteStep de los ejecutores):
+BEGIN
+  INSERT INTO <sistema>.inbox (command_id) ON CONFLICT DO NOTHING
+    -> si ya estaba: COMMIT y devolver la respuesta guardada
+  invariantes de aceptación, sin LLM ni servicio (plan_exists, revision_exists, action_not_handled...)
+    -> si no se cumplen: respuesta 422
+  INSERT INTO <sistema>.command_jobs (command_id, payload, trace_context)   -- status pending
+  guardar la respuesta (202) en el inbox
+COMMIT
+responder 202 o 422 al momento
+
+worker del sistema (hilo del mismo proceso), sobre su propia tabla:
+loop:
+  tomar un trabajo pending que toca, o running con el lease vencido (FOR UPDATE SKIP LOCKED):
+    status running, lease_until, attempts + 1                              -- transacción corta
+  prepare: LLM, servicio externo (fuera de toda transacción)
+  BEGIN
+    comprobar que el trabajo sigue siendo suyo (running y mismo intento)
+    validar invariantes; escribir su estado; INSERT INTO <sistema>.outbox (eventos de resultado)
+    trabajo done (o rejected con el motivo, sin eventos)
+  COMMIT
+  si falla: ROLLBACK y el trabajo vuelve a pending con espera exponencial
 ```
 
-- **Todo comando es idempotente.** El despachador reutiliza el `command_id` en cada reintento y el handler lo deduplica con su inbox en la misma transacción que su estado y sus eventos: un comando repetido devuelve la misma respuesta sin repetir estado, eventos ni efectos.
+- **Todo comando es idempotente.** El dispatcher reutiliza el `command_id` en cada reintento y el handler lo deduplica con su inbox en la misma transacción que su estado y sus eventos: un comando repetido devuelve la misma respuesta sin repetir estado, eventos ni efectos.
 - **Ni perdidos ni duplicados.** El `command_outbox` de la saga garantiza que cada comando se invoca al menos una vez aunque el orquestador caiga tras el `COMMIT`; el inbox del sistema garantiza que se aplica una sola vez. Es el mismo par outbox/inbox que en los eventos, con transporte síncrono.
-- **Un comando aceptado no cambia el estado del paso.** Lo cambia el evento de resultado (`StepCompleted`, `PlanCreated`…). Si el handler llama al LLM, lo hace antes de su transacción; una petición repetida mientras la primera está en curso puede repetir la llamada al LLM (cuesta tokens), pero el inbox impide aplicarla dos veces.
-- Configuración: la URL base de cada sistema (`<SISTEMA>_URL`, p. ej. `PLANNER_URL`) y `COMMAND_HTTP_TIMEOUT_S`.
+- **Un comando aceptado no cambia el estado del paso.** Lo cambia el evento de resultado (`StepCompleted`, `PlanCreated`…).
+- **Aceptar no es hacer el trabajo.** Un comando cuyo trabajo llama al LLM o a un servicio externo (`CreatePlan`, `RevisePlan`, `ExecuteStep` de los cuatro ejecutores) responde 202 o 422 al momento: el comportamiento de un Aggregate, que acepta o rechaza y emite al final el evento del cambio de estado. Así el dispatcher de la saga, que invoca los comandos de uno en uno, nunca espera a un LLM. El 202 es durable: el trabajo se confirma con el inbox, así que una caída tras responder no lo pierde; un `command_id` repetido devuelve el 202 guardado sin otro trabajo.
+- **Un trabajo a medias se retoma.** Si el worker cae, el trabajo queda `running` con su lease (`JOB_LEASE_SECONDS`) y se vuelve a tomar cuando vence; la comprobación de que sigue siendo suyo impide que dos workers escriban su resultado, y el `handle` protege los efectos (`effect_keys`, `ON CONFLICT`). Un trabajo que falla vuelve a `pending` con espera exponencial (`JOB_RETRY_BASE_SECONDS`, `JOB_RETRY_MAX_SECONDS`). Tras `JOB_MAX_ATTEMPTS` intentos (o si se retoma más veces porque su worker cae siempre a mitad) queda `failed` con `job_attempts_exhausted`, sin eventos, y el plazo de la saga lo trata.
+- **Rechazo tardío.** Una carrera que la aceptación no podía ver (dos `CreatePlan` de la misma incidencia con `command_id` distintos) termina con el trabajo `rejected` y su motivo en el log, sin eventos: el plazo de la saga lo trata.
+- **Incidencia ya cerrada.** Antes del LLM, el `prepare` de `CreatePlan` y `RevisePlan` consulta `view_incident_status`: si la incidencia ya está `resolved` o `escalated` (p. ej. la saga la escaló por `plan_timeout` mientras el trabajo esperaba el LLM), el trabajo termina `rejected` con `incident_closed`, sin LLM ni eventos; sin fila o con la incidencia abierta, sigue como siempre.
+- `inventory` responde a su `ExecuteStep` con el resultado en la petición: decide dentro de su transacción y no hace E/S externa.
+- Configuración: la URL base de cada sistema (`<SISTEMA>_URL`, p. ej. `PLANNER_URL`), `COMMAND_HTTP_TIMEOUT_S` y, para el worker, `JOB_LEASE_SECONDS`, `JOB_POLL_INTERVAL_S`, `JOB_RETRY_BASE_SECONDS`, `JOB_RETRY_MAX_SECONDS` y `JOB_MAX_ATTEMPTS`.
 
 Las compensaciones se ejecutan en orden inverso a los pasos originales y usan la misma idempotencia (`effect_keys` del ejecutor) que cualquier otro paso. Si una compensación agota sus reintentos, la incidencia se escala con `compensation_failed`.
 
-Diagrama: «Secuencia de la saga» en `docs/README.md` (en vector, `docs/diagrama-saga.pdf`).
+Diagrama: «Secuencia de la saga» en `docs/README.md`.
 
 ## 5. Relay del outbox
 
@@ -229,7 +260,9 @@ BEGIN
 COMMIT
 ```
 
-Restricciones de unicidad que refuerzan la idempotencia incluso sin `effect_keys`, cada una en la tabla de su ejecutor: `claims (incident_id, order_id)`, `refunds (incident_id, step_id)`, `customer_messages (incident_id, step_id)`. Para la variante «sin idempotencia» del experimento E1 se desactivan `INBOX_ENABLED` y `EFFECT_KEYS_ENABLED` y, en la base de pruebas, se eliminan también estas restricciones.
+Restricciones de unicidad que refuerzan la idempotencia incluso sin `effect_keys`, cada una en la tabla de su ejecutor: `claims (incident_id, order_id)`, `refunds (incident_id, step_id)`, `customer_messages (incident_id, step_id)`. Cada ejecutor (y `inventory`, que ejecuta `reserve_stock` y `release_stock`) atiende como mucho `EXECUTOR_MAX_CONCURRENCY` peticiones a la vez (uvicorn `limit_concurrency`, por defecto 5): por encima responde 503 y el dispatcher de la saga reintenta el mismo comando, con el mismo `command_id`, tras una espera (§4.4).
+
+Para la variante «sin idempotencia» del experimento E1 se desactivan `INBOX_ENABLED` y `EFFECT_KEYS_ENABLED` y, en la base de pruebas, se eliminan también estas restricciones.
 
 ## 8. Lado de consultas: vista del log y proyectores
 
@@ -238,7 +271,7 @@ El lado de lectura (CQRS) son componentes que consumen Kafka y mantienen **sus p
 | Componente | Esquema | Mantiene | Lo usan |
 | --- | --- | --- | --- |
 | `event_log` | `event_log` | `events`: la vista del log de eventos completo, ordenada, con la partición, el offset y el contexto de traza de cada mensaje | El front (panel de eventos, mapa, detalle de nodo), que hace polling sobre ella, y la auditoría |
-| `projectors` (uno por vista) | `views` | `view_orders`, `view_incident_status`, `view_cost_per_incident`, `view_audit_trail`, `view_carrier_dashboard` | El front, `eda-notice interactive`, los experimentos y los sistemas que necesitan datos de otro dominio (`view_orders`, `view_cost_per_incident`) |
+| `projectors` (uno por vista) | `views` | `view_orders`, `view_incident_status`, `view_cost_per_incident`, `view_audit_trail`, `view_carrier_dashboard`, `view_order_status`, `view_parked_notices` | El front, `eda-notice interactive`, los experimentos y los sistemas que necesitan datos de otro dominio (`view_orders`, `view_cost_per_incident`; el planificador y el replanificador, `view_incident_status`, para no planificar una incidencia ya cerrada) |
 
 Cada uno guarda su posición en Kafka (`offsets`: partición y offset por consumidor) en la misma transacción que su vista, así que aplica cada mensaje exactamente una vez a la vista aunque Kafka lo reentregue. Al arrancar asigna todas las particiones en el offset guardado + 1; no confirma offsets en Kafka. Los proyectores anotan además cada `event_id` aplicado en `views.applied_events`: un evento que se vuelve a publicar con otro offset (p. ej. al reproducir un outbox) tampoco se aplica dos veces. Las consultas leen `views.view_*` y responden con `applied` (offset aplicado por partición).
 
@@ -308,7 +341,7 @@ El proyecto de compose se llama siempre `eda-retail` (`name:` en `docker-compose
 
 ## 12. Estado de la verificación
 
-- El esquema SQL se ha ejecutado contra PostgreSQL 16 (incluida la columna `version` y los estados de compensación): las tablas se crean, `UPDATE`, `DELETE` y `TRUNCATE` sobre `events` se rechazan, y el inbox y `effect_keys` ignoran las inserciones duplicadas.
+- El esquema SQL inicial (`db/init/001_schema.sql`, modelo compartido) se ejecutó contra PostgreSQL 16; hoy es solo la base histórica de Alembic 0001: la migración 0017 borra esas tablas públicas y cada componente vive en su esquema (0008–0016).
 - `docker-compose.yml` se ha ejecutado (2026-11-13): `kafka` y `postgres` quedan `healthy` y `kafka-init` crea `eda.events` (3 particiones) y `eda.dlq` (1 partición) con retención infinita. En el primer arranque falló la creación de topics porque el broker solo anunciaba `localhost:9092`, que dentro de otro contenedor apunta a sí mismo; ahora hay dos listeners: `INTERNAL` (`kafka:19092`, para contenedores) y `EXTERNAL` (`localhost:9092`, para los procesos del host).
 
 ## 13. Observabilidad: OpenTelemetry y Jaeger
@@ -320,14 +353,13 @@ Trazas distribuidas con OpenTelemetry (OpenTracing está archivado y se fusionó
 | Asíncrono | Escritura del evento → relay → Kafka → consumidor → eventos derivados, en una sola traza por incidencia | Span `<event_type> create` al escribir; su contexto W3C (`traceparent`) se guarda en el outbox del componente (`trace_context`); el relay abre `<event_type> publish` como hijo y lo pone en las cabeceras del mensaje; el consumidor abre `<event_type> process` como hijo de esas cabeceras |
 | Síncrono | Cada sentencia SQL y las operaciones en proceso | Instrumentación de psycopg en `infra/db.connect` y decorador `@traced` |
 
-- En los comandos, el despachador pone `traceparent` en la cabecera HTTP y el handler abre `<command_type> handle` como hijo.
+- En los comandos, el dispatcher pone `traceparent` en la cabecera HTTP y el handler abre `<command_type> handle` como hijo.
 - El contexto va en el outbox de cada componente y en las cabeceras del mensaje; `event_log` lo guarda junto al evento, y la republicación (`--replay-from`) conserva la traza original.
 - Atributos de cada span: `eda.incident_id` (= `correlation_id`), `eda.event_id`, `eda.causation_id`, `eda.event_type`, `eda.producer`; los de consumo añaden `eda.outcome` (`processed`, `duplicate`) y los datos de Kafka. En Jaeger se busca una incidencia con el tag `eda.incident_id`.
 - Las sentencias SQL sin operación en curso (el polling del relay) no se trazan: el sampler descarta los spans CLIENT sin padre.
 - Configuración: `TRACING_ENABLED` (por defecto `true`) y `OTEL_EXPORTER_OTLP_ENDPOINT` (por defecto `http://localhost:4318`). Sin Jaeger el sistema funciona; solo se pierden las trazas.
 - Cada proceso llama a `setup_tracing("<componente>", settings)` al arrancar; el componente es el `service.name` en Jaeger.
 - Esquema: cada outbox tiene su columna `trace_context`. Tras `docker compose up -d`, aplicar las migraciones con `uv run alembic upgrade head`.
-- Demo: `uv run python scripts/trace_demo.py` lanza aviso → intérprete → planificador en procesos separados (base `eda_demo`, topic `eda.trace-demo`) e imprime la URL de la traza.
 
 ## 14. Front web
 
@@ -337,10 +369,47 @@ Interfaz local para operar y observar la PoC (spec `web-front`): un backend Fast
 | --- | --- |
 | Acceso | `eda-web` escucha solo en `127.0.0.1`; `LocalOriginGuard` rechaza Host y Origin que no sean de localhost (DNS rebinding). Lee PostgreSQL con `default_transaction_read_only=on` y solo el log de `event_log` y las vistas: nunca escribe ni lee las tablas de otros componentes. Los comandos los envía por `intake` (`scripts/notice.sh`) |
 | Eventos | `GET /api/events` pagina `event_log.events` por `seq`, con el contexto de traza y la partición y el offset de Kafka que `event_log` guarda al consumir cada mensaje. `GET /api/events/stream` es SSE: sondea cada 0,5 s tras el último `seq` enviado y reanuda con `Last-Event-ID` |
-| Emisor y destino | Emisor = `producer`. Destino = los componentes que declaran ese tipo de evento (`agents.cli.AGENTS`, `orchestrator.runner.EVENT_TYPES`), con los proyectores siempre al final |
+| Analítica de pedidos | Enlace «Analítica» en la cabecera (`#/analytics`). `GET /api/analytics/orders?status=&incident_id=` lee solo `views.view_order_status` (proyector `order_status`): contadores por estado (con el filtro de incidencia, no el de estado) y los pedidos cambiados más recientemente primero, con `applied`. El front la consulta cada segundo mientras está abierta y no en pausa; la vista principal sigue montada para conservar sus filtros |
+| Avisos aparcados | `GET /api/parked-notices` lee solo `views.view_parked_notices` (proyector `parked_notices`, alimentado por `NoticeParked` y vaciado por el `ShipmentDelayed` o el `IncidentEscalated` de la incidencia), por plazo, con `applied`. El front la consulta cada segundo en las dos vistas y, si hay alguno, muestra bajo la cabecera un aviso con sus pedidos, su incidencia y la hora local a la que vence |
+| Emisor y destino | Emisor = `producer`. Destino = los componentes que declaran ese tipo de evento (`interpreter.consumer.EVENT_TYPES`, `orchestrator.consumer.EVENT_TYPES`; `web/routing.py`), con los proyectores siempre al final |
 | Mapa | Topología estática (`web/topology.py`, con las invocaciones REST de la saga como aristas) más el estado de cada proceso (`pgrep -f`, mismos patrones que `run-agents.sh`) y de PostgreSQL, Kafka y Ollama, con 2 s como máximo por comprobación |
 | Comandos | `POST /api/commands` lanza `scripts/notice.sh` con una lista blanca de argumentos y sin shell; una ejecución a la vez, 15 minutos como máximo, salida por SSE. `interactive` corre en una pseudoterminal y recibe líneas por `POST /api/commands/{run_id}/input`. Al parar el backend se termina el grupo de procesos en curso |
 | Trazas | Enlace a Jaeger en la cabecera y por evento (`<JAEGER_UI_URL>/trace/<trace_id>`, con `trace_id` del contexto de traza que guarda `event_log`) |
+| Versión de la PoC | `eda-web` toma `settings.poc_version` después de cargar `.env` (`load_settings`) y con ella elige el mapa (`topology.nodes/edges(version)`), los procesos vigilados (`topology.monitored(version)`) y el detalle de nodo (`topology.node(id, version)`). `GET /api/config` la devuelve en `poc_version` y la cabecera muestra la insignia «Versión 1» o «Versión 2 (MCP + A2A)» (`useConfig` → `Header`) |
 
 - Configuración: `WEB_PORT` (backend; Vite reenvía `/api` al mismo puerto), `WEB_FREE_TEXT` y `WEB_INTERACTIVE` (`true` para ofrecer `send --text` e `interactive`; por defecto deshabilitados, porque la PoC es un ejemplo académico) y `JAEGER_UI_URL` (por defecto `http://localhost:16686`; si no es http(s) se usa el valor por defecto).
 - Tests: pytest para el backend (los de `tests/integration/test_web_events.py`, contra PostgreSQL) y Vitest + Testing Library para el front, con un `EventSource` falso. El hook `web` de pre-commit lanza `npm test` y `npm run typecheck`.
+
+## 15. Segunda versión: MCP y A2A
+
+Se activa con `scripts/start-all.sh --version 2` (también `run-agents.sh` y `run-web.sh`; la opción exporta `POC_VERSION`, que gana a la de `.env` porque ni `uv run --env-file` ni `load_env_file` pisan una variable ya definida) o con `POC_VERSION=2` en `.env` (por defecto `1`, la primera versión sin cambios). Un valor distinto de 1 o 2 detiene el proceso (`poc_version_from_env`, también en `Settings()`). Están construidos el servidor de correo MCP (esta tabla) y el agente del transportista A2A (§15.1). El resumen y cuándo usar cada modo de comunicación están en `docs/README.md`, «Segunda versión», y los requisitos en `specs/mcp-mail/spec.md` y `specs/a2a-carrier/spec.md`. Lo que cambia en el diseño:
+
+| Parte | Cómo |
+| --- | --- |
+| Servidor de correo simulado (MCP) | `eda-mail-server` (`mail_server/`, SDK oficial `mcp`, Streamable HTTP en `MAIL_SERVER_PORT`, ruta `/mcp`) con una sola herramienta, `send_email`, y su propio esquema `mail_server` (migración 0021): `customers` (directorio sintético `<customer_ref>@example.test`, que siembra al arrancar) y `mailbox` (buzón simulado, `idempotency_key` única: la misma clave devuelve el mismo `message_id`). El ejecutor de `notify_customer` es el cliente MCP (`executor_notify_customer/mail_client.py`): en el `prepare` de su worker, fuera de la transacción, resuelve `customer_ref` en `view_orders` y envía el texto ya validado con la `idempotency_key` del paso; guarda la clave en `effect_keys` como antes, así que un reintento no envía dos correos. `CustomerNotified` lleva el `message_id` del servidor. Un servidor caído es un error transitorio (`mail_unavailable`, reintentos hasta `STEP_MAX_ATTEMPTS`); `unknown_customer`, no reintentable. Con `POC_VERSION=1` el ejecutor usa el servicio simulado en proceso y no conecta con MCP; el arnés de experimentos, con la versión 2, usa un servidor MCP en proceso respaldado por el servicio simulado, así E1 sigue contando los envíos repetidos |
+| Agente del transportista (A2A) | Un proceso aparte que publica su Agent Card y atiende tareas A2A. El planificador le envía una tarea en el `prepare` de `CreatePlan`, en su worker, antes de la llamada al LLM y fuera de la transacción (regla 6), con un plazo; si no responde o falla, planifica sin esas opciones. La respuesta entra en el prompt como contenido no confiable y no cambia la validación del plan ni la lista de acciones permitidas. Cada consulta se registra con el evento nuevo `CarrierConsulted` (sin datos personales), para la auditoría y el front |
+| Guardrails | MCP: al conectar, el cliente solo registra `send_email` si su entrada es la esperada (lista blanca; sin ella, `mcp_tool_not_allowed`) y no tiene otra forma de invocar herramientas; valida entrada y salida con pydantic (`mcp_output_invalid`, no reintentable, también si la salida trae algo que parece una dirección de correo, que no se registra) y limita los envíos por incidencia (`MCP_MAX_EMAILS_PER_INCIDENT`, contados en `executor_notify_customer.customer_messages`; se comprueba antes de redactar, `mail_limit_exceeded`). Cada fallo se registra con su motivo y su `trace_id`. A2A: autenticación del agente y Agent Card verificada, respuesta validada con pydantic antes de llegar al prompt, plazo y máximo de rondas `input-required`, solo referencias en la petición y la respuesta delimitada como contenido no confiable (prompt injection). Un fallo de un guardrail se registra y el planificador sigue sin las opciones del transportista |
+
+### 15.1 Agente del transportista (A2A), construido
+
+Se activa con `POC_VERSION=2`; con la versión 1 el planificador no consulta y su prompt y sus eventos son los de siempre.
+
+| Concepto | Cómo lo materializa la pila |
+| --- | --- |
+| Protocolo | SDK oficial `a2a-sdk` 1.3.0 (A2A 1.0): Agent Card en `/.well-known/agent-card.json` y JSON-RPC sobre HTTP en `/`, sin streaming. La card declara un esquema bearer; el servidor responde 401 a toda petición JSON-RPC sin `Authorization: Bearer <A2A_CARRIER_TOKEN>` |
+| Proceso | `eda-carrier-agent` (`src/eda_retail/carrier_agent/`) en `127.0.0.1:CARRIER_AGENT_PORT`; publica `CARRIER_AGENT_URL` en su card. Tareas en memoria: sin base de datos ni datos personales |
+| Reglas | Deterministas, por causa y semilla `CARRIER_AGENT_SEED` (supuesto A1), tabla de abajo. Los días dentro de cada rango salen de un SHA-256 de (semilla, pedido, causa) |
+| `input-required` | `loss` y `damage` exigen el `tracking_ref` sintético del pedido (`synthetic/tracking.py`, supuesto A4); sin él o con otro, la tarea queda en `input-required` con `{"needs": ["tracking_ref"]}` |
+| Cliente | `planner/carrier.py`, código (no el LLM), llamado en `PlanPreparer` dentro del worker de `CreatePlan`, fuera de la transacción y antes del LLM, solo para gravedad `medium` o `high` (la `low` usa el plan fijo sin LLM y no consulta). Con varios pedidos se consulta el primero |
+| Guardrails | Card comprobada antes de la primera tarea (nombre `carrier-agent`, todas sus URL JSON-RPC iguales a `CARRIER_AGENT_URL`, skill `delivery_options`, esquema bearer) y guardada en el proceso; la tarea solo lleva `order_id` y `cause`, y una ronda solo `tracking_ref`; respuesta validada con `DeliveryOptions` (pydantic, `extra="forbid"`, `notes` ≤ 500); `A2A_MAX_ROUNDS` rondas y plazo total `A2A_TIMEOUT_S`, con envío sin bloquear (`return_immediately`) y sondeo, para conocer la tarea y cancelarla (`CancelTask`) al superarlos; el JSON va al prompt en `<opciones_transportista>` como contenido no confiable, sin `<` ni `>`. Cada fallo se registra con su motivo y su `trace_id` |
+| Evento | `CarrierConsulted` v1 (`answered`, `timeout`, `failed` o `rejected_by_guardrail`, rondas y latencia, sin `notes`), en la transacción de `handle` antes de `LlmCallRecorded` y `PlanCreated`/`IncidentEscalated`. La vista `audit_trail` lo guarda con el `outcome` como motivo |
+| Experimentos | El harness no consulta salvo que un test le inyecte un cliente A2A en proceso: E5 y E6 siguen comparables con la versión 1 |
+
+| Causa | `new_delivery_date` | `can_reship` | `accepts_claim` | Pide `tracking_ref` |
+| --- | --- | --- | --- | --- |
+| `delay` | hoy + 1 a 3 días | no | no | no |
+| `strike` | hoy + 3 a 7 días | no | no | no |
+| `loss` | nula | sí | sí | sí |
+| `damage` | nula | sí | sí | sí |
+| `wrong_address` | hoy + 2 a 4 días | sí | no | no |
+| `unknown` | nula | no | no | no |

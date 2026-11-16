@@ -7,14 +7,11 @@ import pytest
 from eda_retail.projectors.rebuild import fingerprint, rebuild
 from eda_retail.projectors.registry import PROJECTORS
 
-from .command_helpers import open_incident
-from .projection_helpers import catch_up, publish, publish_log
+from .projection_helpers import LOSS_PLAN, History, catch_up, publish
 from .test_audit_view import _refund_instead_of_reissue
 from .test_carrier_view import _incident as _carrier_incident
 from .test_cost_view import _effects, _llm
 from .test_orders_view import _order
-from .test_plans import LOSS_PLAN, create
-from .test_steps import record, request
 
 
 def _only_this_topic(conn, name: str) -> None:
@@ -26,13 +23,17 @@ def _only_this_topic(conn, name: str) -> None:
 
 def _history(settings, conn) -> None:
     """Un topic con eventos de todas las vistas."""
-    incident, _ = open_incident(conn)
-    create(conn, incident, LOSS_PLAN[:3])
-    assert request(conn, incident, "S1").accepted
-    assert record(conn, incident, "S1", result={"message_id": "M1"},
-                  effect={"order_id": "P1", "message_id": "M1"}).accepted
-    publish_log(settings, conn, incident)
+    history = History()
+    history.delayed()
+    history.plan_created(LOSS_PLAN[:3])
+    history.requested(LOSS_PLAN[0])
+    history.customer_notified()
+    history.completed("S1", {"message_id": "M1"})
+    incident = history.incident
+    parked = History()  # otra incidencia, aún aparcada: deja una fila en view_parked_notices
+    parked.parked(("P-rebuild-parked",))
     publish(settings, [
+        *history.take(), *parked.take(),
         _order("P-rebuild-1"), _order("P-rebuild-2"),
         _llm(incident, "planner", 100, 50), *_effects(incident),
         *_refund_instead_of_reissue(f"{incident}-a"),

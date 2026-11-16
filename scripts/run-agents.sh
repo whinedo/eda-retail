@@ -1,14 +1,21 @@
 #!/usr/bin/env bash
-# Arranca todos los procesos de la PoC (relay, proyector, agentes, orquestador y ejecutores).
+# Arranca todos los procesos de la PoC (componentes, proyector y log de eventos); cada uno publica su outbox.
+# Con la versión 2 de la PoC arranca también el servidor de correo MCP (eda-mail-server) y el agente
+# del transportista (eda-carrier-agent, A2A), que exige A2A_CARRIER_TOKEN.
 #
-# Uso: scripts/run-agents.sh [--logs DIR] [--no-migrate]
+# Uso: scripts/run-agents.sh [--version 1|2] [--logs DIR] [--no-migrate]
+#
+#   --version 1|2  versión de la PoC; gana a POC_VERSION de .env (por defecto, la de .env o 1)
 #
 # Requiere `docker compose up -d` (kafka y postgres) y, para los agentes con LLM, Ollama en
-# OLLAMA_HOST con el modelo LLM_MODEL. Si existe .env, todos los procesos lo cargan. Cada proceso escribe en DIR/<nombre>.log (por defecto logs/). Ctrl+C los para
-# todos. Si un proceso termina, el script para el resto y sale con error.
+# OLLAMA_HOST con el modelo LLM_MODEL. Si existe .env, todos los procesos lo cargan. Cada proceso
+# escribe en DIR/<nombre>.log (por defecto logs/). Ctrl+C los para todos. Si un proceso termina,
+# el script para el resto y sale con error.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
+
+usage() { sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'; }
 
 LOGS_DIR="logs"
 MIGRATE=1
@@ -16,28 +23,31 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --logs) LOGS_DIR="$2"; shift 2 ;;
     --no-migrate) MIGRATE=0; shift ;;
-    -h|--help) sed -n '2,8p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    --version)
+      # Exportada, gana a la de .env: ni `uv run --env-file` ni load_env_file pisan una variable ya definida.
+      case "${2:-}" in
+        1|2) export POC_VERSION="$2"; shift 2 ;;
+        *) echo "error: --version debe ser 1 o 2, no '${2:-}'" >&2; usage >&2; exit 2 ;;
+      esac ;;
+    -h|--help) usage; exit 0 ;;
     *) echo "opción desconocida: $1" >&2; exit 2 ;;
   esac
 done
 
 # Nombre del proceso y comando, en orden de arranque.
 PROCESSES=(
-  "relay|eda-relay"
   "projector|eda-projector"
   "event-log|eda-event-log"
   "intake|eda-intake"
   "inventory|eda-inventory"
   "orchestrator|eda-orchestrator"
-  "executor-notify_customer|eda-executor notify_customer"
-  "executor-file_claim|eda-executor file_claim"
-  "executor-reserve_stock|eda-executor reserve_stock"
-  "executor-release_stock|eda-executor release_stock"
-  "executor-reissue_shipment|eda-executor reissue_shipment"
-  "executor-issue_refund|eda-executor issue_refund"
-  "agent-interpreter|eda-agent interpreter"
-  "agent-planner|eda-agent planner"
-  "agent-replanner|eda-agent replanner"
+  "interpreter|eda-interpreter"
+  "planner|eda-planner"
+  "replanner|eda-replanner"
+  "executor-notify_customer|eda-step-executor notify_customer"
+  "executor-file_claim|eda-step-executor file_claim"
+  "executor-reissue_shipment|eda-step-executor reissue_shipment"
+  "executor-issue_refund|eda-step-executor issue_refund"
 )
 
 for service in kafka postgres; do
@@ -53,9 +63,33 @@ if [[ -f .env ]]; then
 fi
 uvrun() { uv run ${UV_ARGS[@]+"${UV_ARGS[@]}"} "$@"; }
 
-# OLLAMA_HOST y LLM_MODEL tal como los verán los procesos (entorno + .env).
-read -r OLLAMA MODEL < <(uvrun python -c \
-  'import os; print(os.environ.get("OLLAMA_HOST", "http://localhost:11434"), os.environ.get("LLM_MODEL", "llama3.1"))')
+# OLLAMA_HOST, LLM_MODEL, POC_VERSION (validada con poc_version_from_env: 1 por defecto) y si hay
+# A2A_CARRIER_TOKEN, tal como los verán los procesos (entorno + .env). Una versión no válida aborta aquí.
+CONFIG=$(uvrun python -c '
+import os, sys
+from eda_retail.config import poc_version_from_env
+e = os.environ.get
+try:
+    version = poc_version_from_env()
+except ValueError as error:
+    sys.exit(f"error: {error}")
+print(e("OLLAMA_HOST", "http://localhost:11434"), e("LLM_MODEL", "llama3.1"), version,
+      "yes" if e("A2A_CARRIER_TOKEN") else "no")') || exit 1
+read -r OLLAMA MODEL POC_VERSION A2A_TOKEN_SET <<<"$CONFIG"
+# La versión 2 arranca además el servidor de correo MCP y el agente del transportista (A2A).
+case "$POC_VERSION" in
+  1) ;;
+  2)
+    if [[ "$A2A_TOKEN_SET" != "yes" ]]; then
+      echo "error: POC_VERSION=2 necesita A2A_CARRIER_TOKEN (en .env) para el agente del transportista" >&2
+      exit 1
+    fi
+    PROCESSES=("mail-server|eda-mail-server" "${PROCESSES[@]}")
+    PROCESSES+=("carrier-agent|eda-carrier-agent")
+    ;;
+  *) echo "error: POC_VERSION debe ser 1 o 2, no '$POC_VERSION'" >&2; exit 1 ;;
+esac
+echo "PoC: versión $POC_VERSION"
 if ! TAGS=$(curl -fsS --max-time 3 "$OLLAMA/api/tags" 2>/dev/null); then
   echo "aviso: Ollama no responde en $OLLAMA; los agentes con LLM fallarán" >&2
 elif ! grep -q "\"name\":\"$MODEL\"" <<<"$TAGS"; then

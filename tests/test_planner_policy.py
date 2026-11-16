@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from eda_retail.agents import planner
+from eda_retail.llm.prompts import planner
 from eda_retail.synthetic.generator import VARIANTS, expected_plan
 
 

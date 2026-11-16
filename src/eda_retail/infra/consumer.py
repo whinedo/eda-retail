@@ -1,7 +1,7 @@
 """Consumidor genérico de `eda.events` (design.md §6).
 
 Cada mensaje se procesa en una transacción de PostgreSQL que incluye el registro en el
-inbox y lo que escriba el handler (estado, `events`, `outbox`). El offset de Kafka se
+inbox y lo que escriba el handler (su estado y su `outbox`, en el esquema del componente). El offset de Kafka se
 confirma solo después del `COMMIT` (`enable.auto.commit=false`).
 
 Un mensaje que no cumple su esquema (o no es JSON) va a la dead letter queue en una
@@ -114,7 +114,7 @@ class EventConsumer:
         *,
         inbox_enabled: bool = True,
         on_dead_letter: DeadLetterHook | None = None,
-        schema: str | None = None,
+        schema: str,
     ) -> None:
         self.name = name
         self.schema = schema  # esquema del componente: su inbox y sus dead letters
@@ -128,7 +128,7 @@ class EventConsumer:
     @classmethod
     def from_settings(
         cls, settings: Settings, *, name: str, handlers: Mapping[str, Handler],
-        on_dead_letter: DeadLetterHook | None = None, schema: str | None = None,
+        on_dead_letter: DeadLetterHook | None = None, schema: str,
     ) -> EventConsumer:
         """`name` es a la vez el `group.id` de Kafka y el nombre del consumidor en el inbox."""
         return cls(
@@ -227,7 +227,7 @@ class EventConsumer:
 
 def write_dead_letter(
     conn: psycopg.Connection, consumer: str, bad: InvalidMessage, *, inbox_enabled: bool = True,
-    hook: DeadLetterHook | None = None, schema: str | None = None,
+    hook: DeadLetterHook | None = None, schema: str,
 ) -> Outcome:
     """Guarda el mensaje inválido en `dead_letters` (con su fila de inbox) y escala la incidencia."""
     with tracing.tracer().start_as_current_span(

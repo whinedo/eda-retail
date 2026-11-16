@@ -102,7 +102,7 @@ Las consultas de las personas (front, `eda-notice interactive`, experimentos) y 
 
 ### Requirement: Vistas mínimas
 
-El sistema SHALL mantener las vistas `orders` (pedido, importe y `customer_ref`, de `OrderRegistered`), `incident_status` (estado y paso actual por incidencia), `cost_per_incident` (tokens y coste de efectos), `audit_trail` (quién decidió qué y con qué versión del plan) y `carrier_dashboard` (retrasos y reclamaciones por transportista).
+El sistema SHALL mantener las vistas `orders` (pedido, importe y `customer_ref`, de `OrderRegistered`), `incident_status` (estado y paso actual por incidencia), `cost_per_incident` (tokens y coste de efectos), `audit_trail` (quién decidió qué y con qué versión del plan), `carrier_dashboard` (retrasos y reclamaciones por transportista), `order_status` (estado de negocio de cada pedido afectado por una incidencia, requirement «Estado de los pedidos») y `parked_notices` (avisos aparcados por el intérprete, requirement «Avisos aparcados»).
 
 #### Scenario: Incidencia con plan en curso
 
@@ -121,6 +121,67 @@ El sistema SHALL mantener las vistas `orders` (pedido, importe y `customer_ref`,
 - **GIVEN** una incidencia sin `CarrierNoticeReceived`
 - **WHEN** se proyectan sus eventos
 - **THEN** cuentan para el transportista `unknown`
+
+### Requirement: Estado de los pedidos
+
+La vista `order_status` SHALL dar el estado de negocio de cada pedido afectado por una incidencia, para la analítica del front (spec `web-front`, «Vista de analítica de pedidos»). Tiene una fila por pedido e incidencia (`order_id`, `incident_id`, `status` y, del último evento que lo cambió, su tipo, su `event_id`, su timestamp y su posición en Kafka: partición y offset; no guarda el `seq` de la vista del log, que asigna otro consumidor) y la mantiene un proyector que consume Kafka, como el resto de vistas. Los estados y los eventos reales que los producen SHALL ser:
+
+| Estado | Etiqueta | Evento |
+| --- | --- | --- |
+| `delayed` | Envío retrasado | `ShipmentDelayed` (uno por cada pedido de su `order_ids`) |
+| `in_resolution` | En proceso de solución | `PlanCreated` o `PlanRevised` de la incidencia |
+| `resolved` | Solucionada | `IncidentResolved` con `outcome` `resolved` |
+| `refunded` | Reembolsada | `IncidentResolved` con `outcome` `refunded` |
+| `escalated` | Escalada | `IncidentEscalated` (supuesto: sin este estado, un pedido de una incidencia escalada se quedaría «en proceso» para siempre) |
+
+`PlanCreated`, `PlanRevised`, `IncidentResolved` e `IncidentEscalated` no llevan pedidos: el proyector SHALL aplicar el estado a los pedidos que esa incidencia registró con su `ShipmentDelayed`. Un estado final (`resolved`, `refunded`, `escalated`) MUST NOT volver a `in_resolution` por un evento posterior de la misma incidencia. Una incidencia escalada antes de su `ShipmentDelayed` no tiene pedidos y no aparece.
+
+#### Scenario: Pedido con envío retrasado
+
+- **GIVEN** un `ShipmentDelayed` de la incidencia I-1 con los pedidos P-1001 y P-1002
+- **WHEN** el proyector lo consume
+- **THEN** `order_status` tiene P-1001 y P-1002 en `delayed` para I-1
+
+#### Scenario: Pedido en proceso de solución
+
+- **GIVEN** P-1001 en `delayed` para I-1
+- **WHEN** se proyecta el `PlanCreated` de I-1
+- **THEN** P-1001 pasa a `in_resolution`
+
+#### Scenario: Pedido solucionado o reembolsado
+
+- **GIVEN** P-1001 en `in_resolution` para I-1
+- **WHEN** se proyecta el `IncidentResolved` de I-1 con `outcome` `refunded`
+- **THEN** P-1001 pasa a `refunded`, y con `outcome` `resolved` pasaría a `resolved`
+
+#### Scenario: Pedido de una incidencia escalada
+
+- **GIVEN** P-1001 en `in_resolution` para I-1
+- **WHEN** se proyecta el `IncidentEscalated` de I-1
+- **THEN** P-1001 pasa a `escalated`
+- **AND** un `PlanRevised` posterior de I-1 no lo devuelve a `in_resolution`
+
+### Requirement: Avisos aparcados
+
+La vista `parked_notices` SHALL listar los avisos que el intérprete aparcó porque `view_orders` aún no tenía ninguno de sus pedidos (requirement «Consistencia eventual declarada», «Proyección atrasada»), para el aviso del front (spec `web-front`, «Aviso de avisos aparcados»). Tiene una fila por incidencia (`incident_id`, `order_ids` que espera, `deadline_at`, `parked_at` y el `event_id`, la partición y el offset del `NoticeParked`) y la mantiene un proyector que consume Kafka. `NoticeParked` SHALL crear la fila; el `ShipmentDelayed` (reanudado por el `OrderRegistered` o por el plazo con el pedido ya proyectado) y el `IncidentEscalated` de esa incidencia SHALL borrarla. La consulta devuelve los avisos por plazo, el que vence antes primero, con `applied`.
+
+#### Scenario: Aviso aparcado visible
+
+- **GIVEN** un aviso sobre P-1007 que el intérprete aparca con un plazo y publica como `NoticeParked`
+- **WHEN** el proyector `parked_notices` lo consume
+- **THEN** la vista tiene la incidencia con P-1007, su plazo y la posición del evento en Kafka
+
+#### Scenario: Aviso aparcado reanudado
+
+- **GIVEN** un aviso aparcado por P-1007 en `parked_notices`
+- **WHEN** se proyecta el `ShipmentDelayed` de su incidencia
+- **THEN** el aviso desaparece de la vista
+
+#### Scenario: Aviso aparcado vencido
+
+- **GIVEN** un aviso aparcado por P-1007 en `parked_notices`
+- **WHEN** se proyecta el `IncidentEscalated` de su incidencia con `no_valid_orders`
+- **THEN** el aviso desaparece de la vista
 
 ### Requirement: Proyectores idempotentes
 
@@ -191,6 +252,7 @@ Las proyecciones SHALL ser eventualmente consistentes: van por detrás de los du
 - **GIVEN** un aviso sobre el pedido P-1007 que llega al intérprete cuando `view_orders` aún no tiene P-1007
 - **WHEN** el intérprete consulta los pedidos
 - **THEN** aparca el aviso en `interpreter.pending_notices` con un plazo y confirma el offset, sin sondear la vista ni leer las tablas de `inventory`
+- **AND** publica `NoticeParked` con P-1007 y el plazo en la misma transacción
 - **AND** al consumir el `OrderRegistered` de P-1007 reanuda el aviso con los datos de ese evento
 
 #### Scenario: Plazo vencido de un aviso aparcado
@@ -198,6 +260,12 @@ Las proyecciones SHALL ser eventualmente consistentes: van por detrás de los du
 - **GIVEN** un aviso aparcado por el pedido P-1007
 - **WHEN** vence su plazo sin que llegue el `OrderRegistered` de P-1007
 - **THEN** el intérprete publica `IncidentEscalated` con `no_valid_orders`
+
+#### Scenario: Pedido proyectado al vencer el plazo
+
+- **GIVEN** un aviso aparcado por el pedido P-1007 cuyo `OrderRegistered` el intérprete consumió antes de aparcarlo
+- **WHEN** vence su plazo y `view_orders` ya tiene P-1007
+- **THEN** el intérprete publica `ShipmentDelayed` con P-1007 en lugar de escalar
 
 ### Requirement: Nueva vista sin tocar la escritura
 

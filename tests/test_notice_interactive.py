@@ -12,7 +12,7 @@ from eda_retail.synthetic.interactive import run
 def _run(answers: list[str], **kwargs) -> list[str]:
     replies = iter(answers)
     out: list[str] = []
-    run(None, lambda _prompt: next(replies), out.append, **kwargs)  # type: ignore[arg-type]
+    run(None, lambda _prompt: next(replies), out.append, None, **kwargs)  # type: ignore[arg-type]
     return out
 
 

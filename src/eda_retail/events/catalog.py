@@ -9,6 +9,7 @@ from __future__ import annotations
 import re
 import uuid
 from dataclasses import dataclass
+from datetime import datetime
 from decimal import Decimal
 from enum import StrEnum
 from typing import Any, Literal
@@ -156,6 +157,17 @@ class OrderRegistered(_Payload):
     amount: Decimal = Field(gt=0)
 
 
+class NoticeParked(_Payload):
+    """Aviso aparcado por el intérprete hasta que `view_orders` tenga alguno de sus pedidos (design.md §4.3).
+
+    `order_ids` son las referencias de pedido que espera; `deadline_at`, cuándo vence su plazo.
+    """
+
+    incident_id: str
+    order_ids: list[str] = Field(min_length=1)
+    deadline_at: datetime
+
+
 class IncidentResolved(_Payload):
     incident_id: str
     outcome: Literal["resolved", "refunded"]
@@ -179,6 +191,18 @@ class LlmCallRecorded(_Payload):
     attempt: int = Field(ge=1)
 
 
+class CarrierConsulted(_Payload):
+    """Una consulta del planificador al agente del transportista por A2A (spec a2a-carrier).
+
+    Solo el resultado, las rondas `input-required` atendidas y la latencia: ni `notes` ni datos personales.
+    """
+
+    incident_id: str
+    outcome: Literal["answered", "timeout", "failed", "rejected_by_guardrail"]
+    rounds: int = Field(ge=0)
+    latency_ms: int = Field(ge=0)
+
+
 @dataclass(frozen=True)
 class EventSpec:
     version: int
@@ -193,7 +217,7 @@ CATALOG: dict[str, EventSpec] = {
         CarrierNoticeReceived, ShipmentDelayed, PlanCreated, PlanRevised, StepRequested,
         StepCompleted, StepFailed, StepCancelled, CustomerNotified, ClaimFiled, StockReserved,
         StockReleased, ShipmentReissued, RefundIssued, IncidentResolved, IncidentEscalated,
-        LlmCallRecorded, OrderRegistered,
+        LlmCallRecorded, OrderRegistered, NoticeParked, CarrierConsulted,
     )
 }
 

@@ -31,6 +31,24 @@ describe("API client", () => {
     expect(fetchFn.mock.calls[1][0]).toBe("/api/events?node=executor-notify_customer");
   });
 
+  it("builds the order analytics query and leaves out empty filters", async () => {
+    const fetchFn = fakeFetch(200, { counts: {}, orders: [], applied: {} });
+
+    await createApiClient(fetchFn).getOrderAnalytics({ status: "delayed", incidentId: "INC-0007" });
+    await createApiClient(fetchFn).getOrderAnalytics();
+
+    expect(fetchFn.mock.calls[0][0]).toBe("/api/analytics/orders?status=delayed&incident_id=INC-0007");
+    expect(fetchFn.mock.calls[1][0]).toBe("/api/analytics/orders");
+  });
+
+  it("reads the parked notices", async () => {
+    const body = { notices: [], applied: {} };
+    const fetchFn = fakeFetch(200, body);
+
+    expect(await createApiClient(fetchFn).getParkedNotices()).toEqual(body);
+    expect(fetchFn).toHaveBeenCalledWith("/api/parked-notices", expect.objectContaining({ method: "GET" }));
+  });
+
   it("encodes the node id", async () => {
     const fetchFn = fakeFetch(200, {});
 

@@ -1,52 +1,37 @@
-"""synthetic-data: existencias simuladas y almacenes sin stock."""
+"""synthetic-data: almacenes sin existencias en la siembra de `inventory` («Dejar sin stock un almacén»).
+
+«Reserva de stock simulada» la cubre `test_inventory.py` (3 unidades, se piden 4, `out_of_stock`).
+"""
 
 from __future__ import annotations
 
 import uuid
 
-import pytest
+from eda_retail.config import Settings
+from eda_retail.experiments.harness import seed_payload
+from eda_retail.inventory.handler import SAMPLE_DATA_CORRELATION, specs
+from eda_retail.synthetic.generator import generate
 
-from eda_retail.events.catalog import build_event
-from eda_retail.executors.actions import OUT_OF_STOCK, ReserveStock
-from eda_retail.executors.base import BusinessError, StepRequest
-from eda_retail.synthetic.faults import empty_warehouses
-
-
-def _order(conn, sku: str, quantity: int) -> str:
-    order_id = f"P-{uuid.uuid4().hex[:8]}"
-    conn.execute(
-        "INSERT INTO orders (order_id, customer_ref, sku, quantity, amount, carrier) "
-        "VALUES (%s, 'CUST-0001', %s, %s, 10, 'demo')",
-        (order_id, sku, quantity),
-    )
-    return order_id
+from .component_helpers import body, client, outbox
 
 
-def _request(order_id: str) -> StepRequest:
-    return StepRequest.of(build_event("StepRequested", {
-        "incident_id": "I1", "plan_version": 1, "step_id": "S3", "action": "reserve_stock",
-        "params": {"order_id": order_id}, "idempotency_key": uuid.uuid4().hex,
-    }, correlation_id="I1", causation_id=None, producer="test"))
-
-
-def test_simulated_stock_reservation(conn):
-    """Reserva de stock simulada"""
-    sku = f"A1-{uuid.uuid4().hex[:6]}"
+def test_empty_warehouse_leaves_no_stock(database_url, conn):
+    """Dejar sin stock un almacén: se siembra a 0 y ninguna reserva sale de él"""
+    data = generate(seed=917, size=1)
+    tag = uuid.uuid4().hex[:8]
+    order = data.orders[0]
+    payload = seed_payload(data, tuple(s.warehouse for s in data.stock))
+    payload["orders"] = [o | {"order_id": f"{o['order_id']}-{tag}", "sku": f"{o['sku']}-{tag}"} for o in payload["orders"]]
+    payload["stock"] = [s | {"sku": f"{s['sku']}-{tag}"} for s in payload["stock"]]
+    incident = f"I-{tag}"
+    with client(database_url, "inventory", specs(Settings())) as api:
+        assert api.post("/commands/SeedSampleData", json=body(SAMPLE_DATA_CORRELATION, payload)).status_code == 202
+        step = {"incident_id": incident, "plan_version": 1, "step_id": "S3", "action": "reserve_stock",
+                "params": {"order_id": f"{order.order_id}-{tag}"}, "idempotency_key": f"k-{tag}"}
+        assert api.post("/commands/ExecuteStep", json=body(incident, step)).status_code == 202
+    [failed] = outbox(conn, "inventory", incident)
+    assert (failed["event_type"], failed["payload"]["error"]) == ("StepFailed", "out_of_stock")
     with conn.transaction():
-        conn.execute("INSERT INTO stock (warehouse, sku, available) VALUES ('W9', %s, 3)", (sku,))
-        order_id = _order(conn, sku, 4)
-    with pytest.raises(BusinessError) as exc, conn.transaction():
-        ReserveStock().execute(conn, _request(order_id), None)
-    assert exc.value.error == OUT_OF_STOCK
-
-
-def test_empty_warehouse_leaves_no_stock(conn):
-    """Dejar sin stock un almacén: ninguna reserva sale de él"""
-    sku = f"A2-{uuid.uuid4().hex[:6]}"
-    with conn.transaction():
-        conn.execute("INSERT INTO stock (warehouse, sku, available) VALUES ('W8', %s, 50)", (sku,))
-        order_id = _order(conn, sku, 1)
-    assert empty_warehouses(conn, ["W8"]) >= 1
-    with pytest.raises(BusinessError) as exc, conn.transaction():
-        ReserveStock().execute(conn, _request(order_id), None)
-    assert exc.value.error == OUT_OF_STOCK
+        rows = conn.execute("SELECT available FROM inventory.stock WHERE sku = ANY(%s)",
+                            ([s["sku"] for s in payload["stock"]],)).fetchall()
+    assert rows and all(r["available"] == 0 for r in rows)

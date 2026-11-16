@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from eda_retail.executors.retry import Backoff
+from eda_retail.infra.backoff import Backoff
 
 
 def test_backoff_is_exponential_capped_and_jittered():

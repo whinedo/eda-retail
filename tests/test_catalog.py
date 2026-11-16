@@ -16,7 +16,7 @@ EXPECTED_TYPES = {
     "CarrierNoticeReceived", "ShipmentDelayed", "PlanCreated", "PlanRevised", "StepRequested",
     "StepCompleted", "StepFailed", "CustomerNotified", "ClaimFiled", "StockReserved",
     "StockReleased", "ShipmentReissued", "RefundIssued", "IncidentResolved", "IncidentEscalated",
-    "LlmCallRecorded", "StepCancelled", "OrderRegistered",
+    "LlmCallRecorded", "StepCancelled", "OrderRegistered", "NoticeParked", "CarrierConsulted",
 }
 VERSION_2 = {"StepCompleted", "StepFailed"}
 
@@ -50,6 +50,20 @@ def test_order_registered_carries_a_reference_not_personal_data():
     with pytest.raises(PersonalDataError):
         build_event("OrderRegistered", {**payload, "customer_ref": "ana@example.com"}, correlation_id="P-1002",
                     causation_id=None, producer="inventory")
+
+
+def test_notice_parked_carries_order_references_and_its_deadline():
+    """NoticeParked lleva la incidencia, los pedidos que espera y su plazo (ISO), sin datos personales"""
+    payload = {"incident_id": "I-1", "order_ids": ["P-1001"], "deadline_at": "2026-11-15T20:13:36+00:00"}
+    ev = build_event("NoticeParked", payload, correlation_id="I-1", causation_id=None, producer="interpreter")
+    assert (ev.event_version, ev.payload["order_ids"]) == (1, ["P-1001"])
+    assert ev.payload["deadline_at"].startswith("2026-11-15T20:13:36")
+    with pytest.raises(PayloadError):
+        build_event("NoticeParked", {**payload, "order_ids": []}, correlation_id="I-1", causation_id=None,
+                    producer="interpreter")
+    with pytest.raises(PayloadError):
+        build_event("NoticeParked", {**payload, "deadline_at": "mañana"}, correlation_id="I-1", causation_id=None,
+                    producer="interpreter")
 
 
 def test_build_event_validates_payload_and_sets_envelope():
@@ -200,3 +214,17 @@ def test_projector_upcasters_reject_shadowing_shared_converter():
     own.register("StepCompleted", 1)(lambda p: p)
     with pytest.raises(ValueError, match="StepCompleted"):
         Projector("test", {}, upcasters=own)
+
+
+def test_carrier_consulted_carries_the_outcome_without_notes():
+    """CarrierConsulted v1 (spec a2a-carrier): incident_id, outcome, rounds y latency_ms; ni notes ni datos personales"""
+    payload = {"incident_id": "I-1", "outcome": "answered", "rounds": 1, "latency_ms": 40}
+    ev = build_event("CarrierConsulted", payload, correlation_id="I-1", causation_id=None, producer="planner")
+    assert (ev.event_version, ev.payload) == (1, payload)
+    for outcome in ("timeout", "failed", "rejected_by_guardrail"):
+        build_event("CarrierConsulted", {**payload, "outcome": outcome}, correlation_id="I-1", causation_id=None,
+                    producer="planner")
+    for bad in ({"outcome": "maybe"}, {"rounds": -1}, {"notes": "texto libre"}):
+        with pytest.raises(PayloadError):
+            build_event("CarrierConsulted", {**payload, **bad}, correlation_id="I-1", causation_id=None,
+                        producer="planner")

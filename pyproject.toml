@@ -4,9 +4,11 @@ version = "0.1.0"
 description = "PoC académica de EDA con agentes para incidencias logísticas"
 requires-python = ">=3.12,<3.13"
 dependencies = [
+    "a2a-sdk[http-server]==1.3.0",
     "alembic>=1.20.1",
     "confluent-kafka>=2.5",
     "fastapi>=0.115",
+    "mcp>=2.3.0,<3",
     "opentelemetry-api>=1.45.2",
     "opentelemetry-exporter-otlp-proto-http>=1.45.2",
     "opentelemetry-instrumentation-psycopg>=0.66b2",
@@ -18,17 +20,20 @@ dependencies = [
 ]
 
 [project.scripts]
-eda-relay = "eda_retail.infra.relay:main"
-eda-agent = "eda_retail.agents.cli:main"
 eda-projector = "eda_retail.projectors.cli:main"
 eda-event-log = "eda_retail.event_log.cli:main"
 eda-intake = "eda_retail.intake.cli:main"
+eda-interpreter = "eda_retail.interpreter.cli:main"
 eda-inventory = "eda_retail.inventory.cli:main"
+eda-planner = "eda_retail.planner.cli:main"
+eda-replanner = "eda_retail.replanner.cli:main"
+eda-step-executor = "eda_retail.step_executors.cli:main"
 eda-experiment = "eda_retail.experiments.cli:main"
 eda-orchestrator = "eda_retail.orchestrator.cli:main"
-eda-executor = "eda_retail.executors.cli:main"
 eda-notice = "eda_retail.synthetic.cli:main"
 eda-web = "eda_retail.web.cli:main"
+eda-mail-server = "eda_retail.mail_server.cli:main"
+eda-carrier-agent = "eda_retail.carrier_agent.cli:main"
 
 [dependency-groups]
 dev = [
@@ -55,3 +60,7 @@ markers = [
 [tool.ruff]
 line-length = 120
 target-version = "py312"
+
+[tool.uv]
+# Transitive dependencies must be at least two weeks old (packages uploaded on or before 2026-11-01).
+constraint-dependencies = ["sse-starlette<3.7", "google-auth<2.62.1", "google-api-core<2.44"]

@@ -1,8 +1,9 @@
 """E1 Duplicados en el bus (hipótesis H1, spec experiments).
 
-Entrega cada evento 2 y 3 veces y compara el sistema con idempotencia (`full`) y sin la
-idempotencia de los efectos (`no_effect_keys`: los ejecutores sin inbox, `effect_keys` ni
-servicios con clave; supuesto A3). H1: con idempotencia, 0 efectos duplicados en todas las
+Entrega cada evento a cada consumidor y cada comando de la saga 2 y 3 veces (el mismo
+`command_id`) y compara el sistema con idempotencia (`full`) y sin la idempotencia de los efectos
+(`no_effect_keys`: los ejecutores e `inventory` sin inbox de comandos, `effect_keys` ni servicios con
+clave; supuesto A3). H1: con idempotencia, 0 efectos duplicados en todas las
 ejecuciones; sin ella, más de 0. El modo `none` (todo desactivado) se informa como
 observación y no entra en H1.
 """

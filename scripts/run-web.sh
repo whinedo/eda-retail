@@ -2,7 +2,10 @@
 # Arranca el front web: el backend (eda-web, en 127.0.0.1:WEB_PORT) y el servidor de Vite
 # (http://localhost:5173), que reenvía /api al backend.
 #
-# Uso: scripts/run-web.sh [--logs DIR]
+# Uso: scripts/run-web.sh [--version 1|2] [--logs DIR]
+#
+#   --version 1|2  versión de la PoC que muestra el front (mapa, procesos vigilados e insignia de la
+#                  cabecera); gana a POC_VERSION de .env (por defecto, la de .env o 1)
 #
 # Requiere postgres en marcha (docker compose up -d) y Node 24 con npm; la primera vez instala
 # las dependencias de web/ (npm ci). Carga .env si existe (WEB_PORT, JAEGER_UI_URL). Cada proceso
@@ -11,11 +14,19 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
+usage() { sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'; }
+
 LOGS_DIR="logs"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --logs) LOGS_DIR="$2"; shift 2 ;;
-    -h|--help) sed -n '2,9p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    --version)
+      # Exportada, gana a la de .env: ni `uv run --env-file` ni load_env_file pisan una variable ya definida.
+      case "${2:-}" in
+        1|2) export POC_VERSION="$2"; shift 2 ;;
+        *) echo "error: --version debe ser 1 o 2, no '${2:-}'" >&2; usage >&2; exit 2 ;;
+      esac ;;
+    -h|--help) usage; exit 0 ;;
     *) echo "opción desconocida: $1" >&2; exit 2 ;;
   esac
 done

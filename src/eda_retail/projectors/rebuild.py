@@ -8,7 +8,7 @@ de reconstrucción.
 
 Se lanza con el proceso `eda-projector` parado, para que nadie más escriba en la vista.
 
-La huella es el sha256 de las filas de las tablas de la vista ordenadas por su clave, sin las
+La huella es el sha256 de las filas de las tablas de la vista, serializadas y ordenadas, sin las
 columnas que no salen del log (`updated_at`).
 """
 
@@ -48,9 +48,14 @@ def fingerprint(conn: psycopg.Connection, view: str) -> str:
     with conn.transaction():
         for table in spec.tables:
             digest.update(table.encode())
-            for row in conn.execute(f"SELECT * FROM {table} ORDER BY 1"):  # la clave es la primera columna
-                kept = {k: v for k, v in row.items() if k not in spec.volatile}
-                digest.update(json.dumps(kept, sort_keys=True, default=str).encode())
+            # Filas serializadas y ordenadas: la huella no depende de la clave (puede tener varias
+            # columnas, como en `view_order_status`) ni del orden en que PostgreSQL las devuelva.
+            rows = sorted(
+                json.dumps({k: v for k, v in row.items() if k not in spec.volatile}, sort_keys=True, default=str)
+                for row in conn.execute(f"SELECT * FROM {table}")
+            )
+            for row in rows:
+                digest.update(row.encode())
     return digest.hexdigest()
 
 

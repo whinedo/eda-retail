@@ -20,7 +20,7 @@ def test_harness_closes_every_incident(base_settings):
 
 
 def test_e1_with_idempotency(base_settings):
-    """Con idempotencia"""
+    """Con idempotencia: cada evento y cada comando entregados 3 veces, 0 efectos duplicados"""
     result = run(base_settings, RunConfig(seed=8, incidents=6, faults=FaultPlan(duplicates=3)))
     assert result.closed == 6
     assert result.duplicates == {}
@@ -32,4 +32,5 @@ def test_e1_without_idempotency(base_settings):
                                           idempotency="no_effect_keys"))
     assert result.closed == 6
     assert sum(result.duplicates.values()) > 0
-    assert set(result.duplicates) <= {"customer_messages", "claims", "reservations", "shipments", "refunds"}
+    assert set(result.duplicates) <= {"notify_customer", "file_claim", "reserve_stock", "reissue_shipment",
+                                      "issue_refund"}

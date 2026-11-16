@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
+import uuid
+
 import pytest
 
-from eda_retail.events.catalog import build_event
-from eda_retail.executors.base import BusinessError, Effect, NoPreparation, StepRequest
+from eda_retail.experiments import harness
+from eda_retail.infra.commands import Accepted, CommandEnvelope, CommandSpec
+from eda_retail.step_executors.runtime import ExecuteStep
 from eda_retail.synthetic.faults import (
     INJECTED_FAILURE,
     ConsumerCrashed,
-    FailingAction,
     FaultPlan,
     FaultyDelivery,
     should_fail,
@@ -84,40 +86,24 @@ def test_same_seed_same_failures():
     assert all(should_fail(42, "reserve_stock", k, 1.0) for k in keys)
 
 
-class _Reserve(NoPreparation):
-    action = "reserve_stock"
-    calls = 0
-
-    def execute(self, conn, request, prepared) -> Effect:
-        self.calls += 1
-        return Effect({"reservation_id": "R1"}, {})
-
-
-def _request(key: str) -> StepRequest:
-    event = build_event("StepRequested", {
-        "incident_id": "I1", "plan_version": 1, "step_id": "S3", "action": "reserve_stock",
-        "params": {"order_id": "P1"}, "idempotency_key": key,
-    }, correlation_id="I1", causation_id=None, producer="test")
-    return StepRequest.of(event)
-
-
 def test_failing_action_fails_chosen_steps_only():
     """Hacer fallar un tipo de paso con una probabilidad dada: falla sin ejecutar el efecto"""
     plan = FaultPlan(seed=42, fail_probability={"reserve_stock": 0.2})
-    inner = _Reserve()
-    action = FailingAction(inner, plan)
-    assert action.action == "reserve_stock"
+    handled = []
+    spec = harness.failing(CommandSpec(ExecuteStep, lambda conn, command, payload, prepared: handled.append(
+        payload.idempotency_key) or Accepted([])), "inventory", plan)
     failed = 0
     for i in range(200):
-        request = _request(f"k{i}")
-        if should_fail(42, "reserve_stock", request.idempotency_key, 0.2):
-            with pytest.raises(BusinessError) as exc:
-                action.execute(None, request, action.prepare(None, request))
-            assert exc.value.error == INJECTED_FAILURE and not exc.value.retryable
+        step = ExecuteStep(incident_id="I1", plan_version=1, step_id="S3", action="reserve_stock",
+                           params={"order_id": "P1"}, idempotency_key=f"k{i}")
+        command = CommandEnvelope(command_id=uuid.uuid4(), command_type="ExecuteStep", correlation_id="I1",
+                                  causation_id=None, payload=step.model_dump())
+        outcome = spec.handle(None, command, step, spec.prepare(command, step))
+        if should_fail(42, "reserve_stock", step.idempotency_key, 0.2):
+            [event] = outcome.events
+            assert (event.payload["error"], event.payload["retryable"]) == (INJECTED_FAILURE, False)
             failed += 1
-        else:
-            action.execute(None, request, action.prepare(None, request))
-    assert inner.calls == 200 - failed and failed > 0
+    assert len(handled) == 200 - failed and failed > 0
 
 
 def test_fault_plan_rejects_invalid_values():
@@ -134,7 +120,7 @@ def test_fault_plan_rejects_invalid_values():
 
 def test_non_idempotent_service_repeats_the_effect():
     """Un servicio sin idempotencia (E1) repite el efecto con la misma clave y cuenta cada ejecución"""
-    from eda_retail.executors.services import FakeService
+    from eda_retail.step_executors.services import FakeService
 
     idempotent = FakeService("mail", "M")
     assert idempotent.call("k") == idempotent.call("k")

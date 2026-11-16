@@ -10,6 +10,7 @@ import os
 import re
 from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager
+from dataclasses import asdict
 from pathlib import Path
 from typing import Annotated
 
@@ -21,6 +22,10 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 
 from eda_retail.config import load_settings
 from eda_retail.llm.ollama_client import DEFAULT_HOST as DEFAULT_OLLAMA_HOST
+from eda_retail.projectors.order_status import OrderStatus
+from eda_retail.queries.order_status import get_order_status
+from eda_retail.queries.parked_notices import get_parked_notices
+from eda_retail.web import topology as topo
 from eda_retail.web.commands import (
     NOTICE_SCRIPT,
     RUN_MAX_SECONDS,
@@ -40,7 +45,6 @@ from eda_retail.web.events import DEFAULT_LIMIT, MAX_LIMIT, events_after, last_s
 from eda_retail.web.health import HealthChecker, check_kafka, check_ollama, check_postgres
 from eda_retail.web.nodes import node_detail
 from eda_retail.web.stream import event_stream, start_seq
-from eda_retail.web.topology import EDGES, NODES, node
 from eda_retail.web.traces import jaeger_ui_url
 
 # Orígenes admitidos: http(s) en localhost, 127.0.0.1 o ::1, con cualquier puerto
@@ -139,13 +143,16 @@ def create_app(
     app.state.database_url = database_url or settings.database_url
     db_url = app.state.database_url
     ollama_host = os.environ.get("OLLAMA_HOST", DEFAULT_OLLAMA_HOST)
+    version = settings.poc_version  # el mapa y los procesos vigilados de la versión 1 o 2 de la PoC
     health = health or HealthChecker(
         {
             "postgres": lambda: check_postgres(db_url),
             "kafka": lambda: check_kafka(settings.kafka_bootstrap_servers),
             "ollama": lambda: check_ollama(ollama_host),
-        }
+        },
+        monitored=topo.monitored(version),
     )
+    app.state.health = health
     app.state.stream_max_polls = stream_max_polls
     app.add_middleware(
         CORSMiddleware,
@@ -169,6 +176,23 @@ def create_app(
     ) -> dict:
         return list_events(conn, limit=limit, before_seq=before_seq, incident_id=incident_id, node=node)
 
+    @app.get("/api/analytics/orders")
+    def analytics_orders(
+        conn: Conn,
+        status: OrderStatus | None = None,
+        incident_id: str | None = None,
+    ) -> dict:
+        """Vista de analítica de pedidos (spec web-front): solo lee `order_status` (CQRS)."""
+        view = get_order_status(conn, status=status, incident_id=incident_id or None, topic=settings.events_topic)
+        return {"counts": view.counts, "orders": [asdict(o) for o in view.orders], "applied": view.applied}
+
+    @app.get("/api/parked-notices")
+    def parked_notices(conn: Conn) -> dict:
+        """Avisos aparcados por el intérprete (spec web-front, «Aviso de avisos aparcados»): solo lee
+        `parked_notices` (CQRS), por plazo."""
+        view = get_parked_notices(conn, topic=settings.events_topic)
+        return {"notices": [asdict(n) for n in view.notices], "applied": view.applied}
+
     @app.get("/api/events/stream")
     def events_stream(
         request: Request,
@@ -189,13 +213,18 @@ def create_app(
     @app.get("/api/topology")
     def topology() -> dict:
         return {
-            "nodes": [n.as_dict() for n in NODES],
-            "edges": [{"source": source, "target": target} for source, target in EDGES],
+            "nodes": [n.as_dict() for n in topo.nodes(version)],
+            "edges": [{"source": source, "target": target} for source, target in topo.edges(version)],
         }
 
     @app.get("/api/config")
     def config() -> dict:
-        return {"jaeger_ui_url": jaeger_ui_url(), "free_text_enabled": free_text, "interactive_enabled": interactive}
+        return {
+            "jaeger_ui_url": jaeger_ui_url(),
+            "free_text_enabled": free_text,
+            "interactive_enabled": interactive,
+            "poc_version": version,  # la insignia «Versión 1» o «Versión 2 (MCP + A2A)» de la cabecera
+        }
 
     @app.get("/api/health")
     def health_report() -> dict:
@@ -204,7 +233,7 @@ def create_app(
     @app.get("/api/nodes/{node_id}")
     def node_info(node_id: str) -> dict:
         try:
-            found = node(node_id)
+            found = topo.node(node_id, version)
         except KeyError:
             raise HTTPException(404, "nodo desconocido") from None
         with read_only_connect(db_url) as conn:

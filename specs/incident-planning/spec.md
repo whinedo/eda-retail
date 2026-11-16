@@ -22,6 +22,13 @@ El planificador SHALL publicar `PlanCreated` para toda incidencia con `severity`
 - **WHEN** el planificador lo procesa
 - **THEN** publica `PlanCreated` con los pasos `notify_customer`, `file_claim`, `reserve_stock` y `reissue_shipment`
 
+#### Scenario: Plan ya creado
+
+- **GIVEN** una incidencia para la que el planificador ya publicó `PlanCreated`
+- **WHEN** recibe otro `CreatePlan` de esa incidencia con un `command_id` distinto
+- **THEN** rechaza el comando con el motivo `plan_exists`, sin llamar al LLM
+- **AND** no publica otro `PlanCreated`
+
 ### Requirement: Plan estructurado y versionado
 
 Todo plan MUST incluir `plan_version` y una lista de pasos, cada uno con `step_id`, `action`, `params` y `depends_on`. Las acciones permitidas SHALL ser `notify_customer`, `file_claim`, `reserve_stock`, `reissue_shipment`, `release_stock` y `issue_refund`.
@@ -69,7 +76,7 @@ La saga SHALL invocar a la vez los comandos `ExecuteStep` de los pasos cuyas dep
 
 ### Requirement: Revisión del plan ante un fallo
 
-Cuando un paso termine en `StepFailed` sin posibilidad de reintento, la saga SHALL invocar el comando `RevisePlan` al replanner, con el plan vigente, el paso fallido y las revisiones hechas, y el replanner SHALL publicar `PlanRevised` con `plan_version` incrementada y los pasos pendientes. MUST NOT incluir de nuevo los pasos ya completados.
+Cuando un paso termine en `StepFailed` sin posibilidad de reintento, la saga SHALL invocar el comando `RevisePlan` al replanner, con el plan vigente, el paso fallido y las revisiones hechas, y el replanner SHALL publicar `PlanRevised` con `plan_version` incrementada y los pasos pendientes. MUST NOT incluir de nuevo los pasos ya completados. Mientras haya un `RevisePlan` de la versión vigente pendiente, otro `StepFailed` no reintentable de esa versión MUST NOT invocar otro `RevisePlan` ni escalar la incidencia: espera a esa revisión. Al aplicar el `PlanRevised`, si el plan nuevo mantiene un paso que falló mientras tanto, la saga SHALL tratar ese fallo con las reglas normales en la versión nueva.
 
 #### Scenario: Sin stock en el almacén
 
@@ -78,6 +85,20 @@ Cuando un paso termine en `StepFailed` sin posibilidad de reintento, la saga SHA
 - **THEN** publica `PlanRevised` con `plan_version` 2
 - **AND** el plan sustituye `reissue_shipment` por `issue_refund`
 - **AND** no vuelve a incluir `notify_customer`, que ya estaba completado
+
+#### Scenario: Revisión ya hecha
+
+- **GIVEN** una incidencia cuya versión 1 del plan ya revisó el replanner
+- **WHEN** llega otro `RevisePlan` de la versión 1 con otro `command_id`
+- **THEN** el replanner lo rechaza con el motivo `revision_exists`
+- **AND** no llama al LLM ni publica otro `PlanRevised`
+
+#### Scenario: Segundo fallo con una revisión pendiente
+
+- **GIVEN** una incidencia con un `RevisePlan` de la versión 1 pendiente por el `out_of_stock` de `reserve_stock`
+- **WHEN** `file_claim` termina en `StepFailed` no reintentable de la versión 1
+- **THEN** la saga no invoca otro `RevisePlan` ni escala la incidencia
+- **AND** si el `PlanRevised` a la versión 2 mantiene `file_claim`, la saga invoca `RevisePlan` de la versión 2 por ese fallo
 
 ### Requirement: Estabilidad de los step_id
 
@@ -88,6 +109,13 @@ El replanner MUST reutilizar el `step_id` de los pasos que mantiene entre versio
 - **GIVEN** un paso `file_claim` con `step_id` S2 pendiente en la versión 1
 - **WHEN** el replanner publica la versión 2 manteniendo ese paso
 - **THEN** el paso conserva el `step_id` S2
+
+#### Scenario: Paso nuevo que repite uno abierto
+
+- **GIVEN** un paso `file_claim` del pedido P1 con `step_id` S2 pendiente en la versión 1
+- **WHEN** el replanner propone un `file_claim` de P1 con el `step_id` S9 y sin S2
+- **THEN** el command handler lo rechaza con el motivo `step_id_changed`
+- **AND** pide al replanner un plan nuevo, dentro de los límites de `llm-boundaries`
 
 ### Requirement: Saga con operaciones y compensaciones
 
@@ -112,13 +140,13 @@ El sistema MUST NOT emitir `issue_refund` mientras queden compensaciones pendien
 
 ### Requirement: Saga reactiva
 
-La saga SHALL avanzar solo por eventos y por el vencimiento de sus propios plazos: cada transición ocurre cuando el orquestador, único dueño de `orchestrator.plan_steps`, consume un evento (`ShipmentDelayed`, `PlanCreated`, `PlanRevised`, `StepCompleted`, `StepFailed`, `IncidentEscalated`) o vence uno de sus plazos, y deja, en la misma transacción, los comandos que invocará por REST (`CreatePlan`, `RevisePlan`, `ExecuteStep`) en su `command_outbox` y los eventos siguientes en su outbox. El orquestador no recibe comandos; un comando aceptado no cambia el estado del paso, que solo cambia al consumir el evento de resultado (spec `event-backbone`, "Invocación de comandos"). Ningún otro componente MUST escribir el estado de la saga, y el orquestador MUST NOT consultar ni esperar el estado de otros componentes: los resultados le llegan como eventos.
+La saga SHALL avanzar solo por eventos y por el vencimiento de sus propios plazos: cada transición ocurre cuando el orquestador, único dueño de `orchestrator.plan_steps`, consume un evento (`ShipmentDelayed`, `PlanCreated`, `PlanRevised`, `StepCompleted`, `StepFailed`, `IncidentEscalated`) o vence uno de sus plazos, y deja, en la misma transacción, los comandos que invocará por REST (`CreatePlan`, `RevisePlan`, `ExecuteStep`) en su `command_outbox` y los eventos siguientes en su outbox, entre ellos un `StepRequested` por cada `ExecuteStep`: un evento de notificación para la auditoría y el front, que ningún ejecutor consume. El orquestador no recibe comandos; un comando aceptado no cambia el estado del paso, que solo cambia al consumir el evento de resultado (spec `event-backbone`, "Invocación de comandos"). Ningún otro componente MUST escribir el estado de la saga, y el orquestador MUST NOT consultar ni esperar el estado de otros componentes: los resultados le llegan como eventos.
 
 #### Scenario: Resultado de un paso
 
 - **GIVEN** un `reserve_stock` en estado `requested` del que depende un `reissue_shipment`
 - **WHEN** el orquestador consume el `StepCompleted` de `reserve_stock` publicado por `inventory`
-- **THEN** marca el paso `completed` y deja en su `command_outbox` el comando `ExecuteStep` de `reissue_shipment`, en la misma transacción
+- **THEN** marca el paso `completed` y deja en su `command_outbox` el comando `ExecuteStep` de `reissue_shipment` y en su outbox su `StepRequested`, en la misma transacción
 - **AND** `inventory` no ha escrito ninguna tabla del orquestador
 
 #### Scenario: Compensación terminada
@@ -136,7 +164,14 @@ La saga SHALL avanzar solo por eventos y por el vencimiento de sus propios plazo
 
 ### Requirement: Plazos de la saga
 
-Cada comando que invoca la saga SHALL llevar un plazo durable, guardado en `orchestrator.deadlines` en la misma transacción que el comando. Si el plazo vence antes de su resultado, la saga MUST tratar un `ExecuteStep` como un `StepFailed` no reintentable con `error` `timeout` y, si el paso es compensable, pedir además su compensación; un `ExecuteStep` de `issue_refund` (pivote), un `CreatePlan` o un `RevisePlan` vencidos MUST escalar la incidencia con `step_timeout` o `plan_timeout`. Un resultado que llega después del plazo SHALL registrarse como obsoleto sin cambiar el estado. Revisar los plazos vencidos es leer la tabla del propio orquestador, nunca el estado de otro componente.
+Cada comando que invoca la saga SHALL llevar un plazo durable, guardado en `orchestrator.deadlines` en la misma transacción que el comando. El plazo SHALL empezar a contar cuando el dispatcher envía el comando por primera vez, responda o no el sistema destino, y no cuando la saga lo encola: mide el sistema destino, no la cola del dispatcher. Si el plazo vence antes de su resultado, la saga MUST tratar un `ExecuteStep` como un `StepFailed` no reintentable con `error` `timeout` y, si el paso es compensable, pedir además su compensación; un `ExecuteStep` de `issue_refund` (pivote), un `CreatePlan` o un `RevisePlan` vencidos MUST escalar la incidencia con `step_timeout` o `plan_timeout`. Un resultado que llega después del plazo SHALL registrarse como obsoleto sin cambiar el estado. Revisar los plazos vencidos es leer la tabla del propio orquestador, nunca el estado de otro componente.
+
+#### Scenario: Plazo desde el envío
+
+- **GIVEN** un `CreatePlan` encolado en `orchestrator.command_outbox` que el dispatcher aún no ha enviado
+- **WHEN** pasa más tiempo que su plazo antes del primer envío
+- **THEN** el plazo no vence
+- **AND** empieza a contar cuando el dispatcher lo envía
 
 #### Scenario: Paso sin respuesta
 
@@ -168,6 +203,17 @@ Cada comando que invoca la saga SHALL llevar un plazo durable, guardado en `orch
 - **GIVEN** un orquestador caído mientras vencía el plazo de un `ExecuteStep`
 - **WHEN** se reinicia
 - **THEN** trata ese plazo vencido sin perderlo
+
+### Requirement: Trabajo de una incidencia ya cerrada
+
+Antes de llamar al LLM, el trabajo de un `CreatePlan` o de un `RevisePlan` SHALL consultar la vista `view_incident_status` (lado de lectura, nunca las tablas del orquestador). Si la vista ya da la incidencia por `resolved` o `escalated`, el trabajo MUST NOT llamar al LLM ni publicar eventos, y SHALL terminar rechazado con el motivo `incident_closed`; esto vale también para el plan fijo de gravedad `low` y para las revisiones agotadas. Si la vista aún no tiene la incidencia o la da por abierta (consistencia eventual), el trabajo SHALL seguir como siempre, con todas sus comprobaciones.
+
+#### Scenario: Trabajo de una incidencia ya cerrada
+
+- **GIVEN** un `RevisePlan` aceptado para una incidencia que la saga escala después con `plan_timeout`
+- **WHEN** su trabajo se ejecuta
+- **THEN** no llama al LLM
+- **AND** no publica eventos
 
 ### Requirement: Escalado de la incidencia
 
@@ -255,4 +301,4 @@ El sistema MUST ignorar los `StepCompleted` y `StepFailed` de una `plan_version`
 - **GIVEN** un plan en la versión 2
 - **WHEN** llega un `StepFailed` generado por la versión 1
 - **THEN** el sistema no lo usa para decidir
-- **AND** queda registrado como obsoleto
+- **AND** queda registrado solo en el inbox del orquestador, sin cambiar el estado de la saga

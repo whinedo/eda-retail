@@ -32,6 +32,7 @@ def test_every_component_of_the_design_has_a_schema():
         "inventory",
         "event_log",
         "views",
+        "mail_server",
     }
 
 
@@ -59,6 +60,7 @@ def test_query_components_only_get_their_schema():
     """event_log y views no publican eventos: sus tablas llegan con el lado de lectura (T3)"""
     assert schemas.ddl("views") == ["CREATE SCHEMA IF NOT EXISTS views"]
     assert schemas.ddl("event_log") == ["CREATE SCHEMA IF NOT EXISTS event_log"]
+    assert schemas.ddl("mail_server") == ["CREATE SCHEMA IF NOT EXISTS mail_server"]  # sus tablas, en la 0021
 
 
 def test_no_table_references_another_schema():

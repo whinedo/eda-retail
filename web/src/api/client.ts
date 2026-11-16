@@ -69,6 +69,47 @@ export interface NodeDetail extends TopologyNode {
   llm: LlmMetrics | null;
 }
 
+// Vista de analítica de pedidos (spec web-front): GET /api/analytics/orders, solo lee order_status.
+export type OrderStatus = "delayed" | "in_resolution" | "resolved" | "refunded" | "escalated";
+
+export interface OrderStatusRow {
+  order_id: string;
+  incident_id: string;
+  status: OrderStatus;
+  last_event_type: string;
+  last_event_id: string;
+  occurred_at: string;
+  kafka_partition: number;
+  kafka_offset: number;
+}
+
+export interface OrderAnalytics {
+  counts: Record<OrderStatus, number>;
+  orders: OrderStatusRow[];
+  applied: Record<string, number>;
+}
+
+export interface OrderAnalyticsQuery {
+  status?: OrderStatus;
+  incidentId?: string;
+}
+
+// Aviso de avisos aparcados (spec web-front): GET /api/parked-notices, solo lee parked_notices.
+export interface ParkedNotice {
+  incident_id: string;
+  order_ids: string[];
+  deadline_at: string;
+  parked_at: string;
+  last_event_id: string;
+  kafka_partition: number;
+  kafka_offset: number;
+}
+
+export interface ParkedNotices {
+  notices: ParkedNotice[];
+  applied: Record<string, number>;
+}
+
 export type CommandRequest =
   | { command: "seed" }
   | { command: "send"; example?: string; text?: string }
@@ -93,6 +134,8 @@ export interface FrontConfig {
   jaeger_ui_url: string;
   free_text_enabled: boolean;
   interactive_enabled: boolean;
+  // Versión de la PoC con la que corre el backend (POC_VERSION): 1 o 2.
+  poc_version?: number;
 }
 
 export interface ApiClient {
@@ -101,6 +144,8 @@ export interface ApiClient {
   getTopology(): Promise<Topology>;
   getEvents(query?: EventsQuery): Promise<EventsPage>;
   getNode(id: string): Promise<NodeDetail>;
+  getOrderAnalytics(query?: OrderAnalyticsQuery): Promise<OrderAnalytics>;
+  getParkedNotices(): Promise<ParkedNotices>;
   runCommand(request: CommandRequest): Promise<CommandRun>;
   sendInput(runId: string, line: string): Promise<void>;
 }
@@ -129,6 +174,8 @@ export function createApiClient(fetchFn: FetchFn = (input, init) => fetch(input,
     getTopology: () => call("GET", "/api/topology"),
     getEvents: (query = {}) => call("GET", `/api/events${eventsQueryString(query)}`),
     getNode: (id) => call("GET", `/api/nodes/${encodeURIComponent(id)}`),
+    getOrderAnalytics: (query = {}) => call("GET", `/api/analytics/orders${analyticsQueryString(query)}`),
+    getParkedNotices: () => call("GET", "/api/parked-notices"),
     runCommand: (request) => call("POST", "/api/commands", request),
     sendInput: async (runId, line) => {
       await call("POST", `/api/commands/${encodeURIComponent(runId)}/input`, { line });
@@ -142,6 +189,14 @@ function eventsQueryString(query: EventsQuery): string {
   if (query.beforeSeq !== undefined) params.set("before_seq", String(query.beforeSeq));
   if (query.incidentId) params.set("incident_id", query.incidentId);
   if (query.node) params.set("node", query.node);
+  const text = params.toString();
+  return text ? `?${text}` : "";
+}
+
+function analyticsQueryString(query: OrderAnalyticsQuery): string {
+  const params = new URLSearchParams();
+  if (query.status) params.set("status", query.status);
+  if (query.incidentId) params.set("incident_id", query.incidentId);
   const text = params.toString();
   return text ? `?${text}` : "";
 }

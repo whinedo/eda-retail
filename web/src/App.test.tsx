@@ -1,8 +1,17 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import App from "./App";
-import type { ApiClient, EventRow, Health, NodeDetail } from "./api/client";
+import type {
+  ApiClient,
+  EventRow,
+  Health,
+  NodeDetail,
+  OrderAnalytics,
+  OrderStatus,
+  OrderStatusRow,
+  ParkedNotice,
+} from "./api/client";
 import type { StreamLike } from "./useCommandRun";
 
 const HEALTH: Health = {
@@ -12,6 +21,27 @@ const HEALTH: Health = {
   processes_total: 12,
 };
 
+const EMPTY_COUNTS: Record<OrderStatus, number> = { delayed: 0, in_resolution: 0, resolved: 0, refunded: 0, escalated: 0 };
+
+function orderRow(order_id: string, status: OrderStatus, last_event_type: string): OrderStatusRow {
+  return {
+    order_id,
+    incident_id: "INC-0007",
+    status,
+    last_event_type,
+    last_event_id: "d282ef26-1a2b-4c3d-9e8f-001122334455",
+    occurred_at: "2026-11-14T01:48:19.234567+00:00",
+    kafka_partition: 0,
+    kafka_offset: 7,
+  };
+}
+
+function analytics(rows: OrderStatusRow[]): OrderAnalytics {
+  const counts = { ...EMPTY_COUNTS };
+  for (const row of rows) counts[row.status] += 1;
+  return { counts, orders: rows, applied: { "0": 7 } };
+}
+
 function client(overrides: Partial<ApiClient> = {}): ApiClient {
   return {
     getHealth: vi.fn(async () => HEALTH),
@@ -19,6 +49,8 @@ function client(overrides: Partial<ApiClient> = {}): ApiClient {
     getTopology: vi.fn(async () => ({ nodes: [], edges: [] })),
     getEvents: vi.fn(async () => ({ events: [], next_before_seq: null })),
     getNode: vi.fn(async () => Promise.reject(new Error("sin detalle en este test"))),
+    getOrderAnalytics: vi.fn(async () => ({ counts: EMPTY_COUNTS, orders: [], applied: {} })),
+    getParkedNotices: vi.fn(async () => ({ notices: [], applied: {} })),
     runCommand: vi.fn(),
     sendInput: vi.fn(),
     ...overrides,
@@ -298,6 +330,36 @@ describe("Texto libre según /api/config", () => {
   });
 });
 
+describe("Versión de la PoC según /api/config", () => {
+  it("con POC_VERSION=2 la cabecera muestra «Versión 2 (MCP + A2A)»", async () => {
+    const api = client({
+      getConfig: vi.fn(async () => ({
+        jaeger_ui_url: "",
+        free_text_enabled: false,
+        interactive_enabled: false,
+        poc_version: 2,
+      })),
+    });
+    render(<App client={api} openStream={openStream} />);
+
+    expect(await screen.findByText("Versión 2 (MCP + A2A)")).toBeInTheDocument();
+  });
+
+  it("con POC_VERSION=1 la cabecera muestra «Versión 1»", async () => {
+    const api = client({
+      getConfig: vi.fn(async () => ({
+        jaeger_ui_url: "",
+        free_text_enabled: false,
+        interactive_enabled: false,
+        poc_version: 1,
+      })),
+    });
+    render(<App client={api} openStream={openStream} />);
+
+    expect(await screen.findByText("Versión 1")).toBeInTheDocument();
+  });
+});
+
 describe("Interactive según /api/config", () => {
   it("Interactive deshabilitado: sin interactive_enabled no aparece interactive", async () => {
     const api = client();
@@ -314,5 +376,125 @@ describe("Interactive según /api/config", () => {
     render(<App client={api} openStream={openStream} />);
 
     expect(await screen.findByRole("button", { name: /^interactive/ })).toBeInTheDocument();
+  });
+});
+
+describe("Vista de analítica de pedidos en la pantalla", () => {
+  beforeEach(() => {
+    window.location.hash = "#/";
+  });
+
+  it("Acceso desde la vista principal: contadores y tabla, y vuelta sin perder el filtro ni la altura", async () => {
+    window.localStorage.clear();
+    const user = userEvent.setup();
+    const api = client({ getOrderAnalytics: vi.fn(async () => analytics([orderRow("P-1001", "delayed", "ShipmentDelayed")])) });
+    render(<App client={api} openStream={openStream} />);
+    fireEvent.keyDown(screen.getByRole("separator", { name: "Altura del panel de eventos" }), { key: "ArrowDown" });
+    const filter = within(screen.getByRole("region", { name: "Eventos intercambiados" })).getByLabelText("Incidencia");
+    await user.type(filter, "INC-0007{Enter}");
+
+    await user.click(screen.getByRole("link", { name: "Analítica" }));
+
+    expect(window.location.hash).toBe("#/analytics");
+    const view = screen.getByRole("region", { name: "Estado de los pedidos" });
+    expect(within(view).getByRole("list", { name: "Pedidos por estado" })).toBeInTheDocument();
+    expect(await within(view).findByRole("row", { name: /P-1001/ })).toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Eventos intercambiados" })).not.toBeInTheDocument();
+    expect(screen.getByRole("banner")).toHaveTextContent("Kafka");
+
+    await user.click(screen.getByRole("link", { name: "← Vista principal" }));
+
+    expect(screen.queryByRole("region", { name: "Estado de los pedidos" })).not.toBeInTheDocument();
+    const events = screen.getByRole("region", { name: "Eventos intercambiados" });
+    expect(within(events).getByLabelText("Incidencia")).toHaveValue("INC-0007");
+    expect(screen.getByRole("main").style.getPropertyValue("--events-height")).toBe("320px");
+  });
+
+  it("Pedido reembolsado en vivo: en menos de 2 segundos aparece como Reembolsada y cambian los contadores", async () => {
+    window.location.hash = "#/analytics";
+    let current = analytics([orderRow("P-1001", "in_resolution", "PlanCreated")]);
+    const api = client({ getOrderAnalytics: vi.fn(async () => current) });
+    render(<App client={api} openStream={openStream} />);
+    const view = screen.getByRole("region", { name: "Estado de los pedidos" });
+    expect(await within(view).findByText("En proceso de solución", { selector: "td" })).toBeInTheDocument();
+
+    current = analytics([orderRow("P-1001", "refunded", "IncidentResolved")]);
+
+    expect(await within(view).findByText("Reembolsada", { selector: "td" }, { timeout: 2000 })).toBeInTheDocument();
+    expect(within(view).getByRole("button", { name: /Reembolsada/ })).toHaveTextContent("1Reembolsada");
+    expect(within(view).getByRole("button", { name: /En proceso de solución/ })).toHaveTextContent("0En proceso de solución");
+  });
+
+  it("Filtro por estado: pulsar «Envío retrasado» pide y muestra solo los pedidos en delayed", async () => {
+    window.location.hash = "#/analytics";
+    const rows = [orderRow("P-1001", "delayed", "ShipmentDelayed"), orderRow("P-1002", "refunded", "IncidentResolved")];
+    const api = client({
+      getOrderAnalytics: vi.fn(async (query = {}) => ({
+        ...analytics(rows),
+        orders: rows.filter((r) => !query.status || r.status === query.status),
+      })),
+    });
+    const user = userEvent.setup();
+    render(<App client={api} openStream={openStream} />);
+    const view = screen.getByRole("region", { name: "Estado de los pedidos" });
+    expect(await within(view).findByRole("row", { name: /P-1002/ })).toBeInTheDocument();
+
+    await user.click(within(view).getByRole("button", { name: /Envío retrasado/ }));
+
+    await waitFor(() => expect(within(view).queryByRole("row", { name: /P-1002/ })).not.toBeInTheDocument());
+    expect(within(view).getByRole("row", { name: /P-1001/ })).toBeInTheDocument();
+    expect(api.getOrderAnalytics).toHaveBeenLastCalledWith({ status: "delayed", incidentId: undefined });
+  });
+
+  it("no consulta la analítica mientras está abierta la vista principal", async () => {
+    const api = client();
+    render(<App client={api} openStream={openStream} />);
+    await screen.findByText("Kafka: healthy");
+    expect(api.getOrderAnalytics).not.toHaveBeenCalled();
+  });
+});
+
+describe("Aviso de avisos aparcados en la pantalla", () => {
+  beforeEach(() => {
+    window.location.hash = "#/";
+  });
+
+  const parked = (incident_id: string, order_ids: string[], deadline_at: string): ParkedNotice => ({
+    incident_id,
+    order_ids,
+    deadline_at,
+    parked_at: "2026-11-15T20:08:36+00:00",
+    last_event_id: "d282ef26-1a2b-4c3d-9e8f-001122334455",
+    kafka_partition: 0,
+    kafka_offset: 3,
+  });
+
+  it("Aviso de avisos aparcados: visible en la vista principal y en la analítica mientras haya alguno", async () => {
+    let notices = [parked("I-3f2a9c1b-0000-5000-8000-000000000000", ["P-1001"], "2026-11-15T20:13:36+00:00")];
+    const api = client({ getParkedNotices: vi.fn(async () => ({ notices, applied: { "0": 3 } })) });
+    const user = userEvent.setup();
+    render(<App client={api} openStream={openStream} />);
+
+    const banner = await screen.findByRole("status", { name: "Avisos aparcados" });
+    expect(banner).toHaveTextContent("1 aviso aparcado espera pedidos que aún no existen");
+    expect(banner).toHaveTextContent("P-1001");
+    expect(banner).toHaveTextContent("I-3f2a9c1b");
+    expect(banner).toHaveTextContent("usa «seed»");
+
+    await user.click(screen.getByRole("link", { name: "Analítica" }));
+    expect(screen.getByRole("region", { name: "Estado de los pedidos" })).toBeInTheDocument();
+    expect(screen.getByRole("status", { name: "Avisos aparcados" })).toHaveTextContent("P-1001");
+
+    notices = [];
+    await waitFor(() => expect(screen.queryByRole("status", { name: "Avisos aparcados" })).not.toBeInTheDocument(), {
+      timeout: 2000,
+    });
+  });
+
+  it("sin avisos aparcados no se muestra el aviso", async () => {
+    const api = client();
+    render(<App client={api} openStream={openStream} />);
+    await waitFor(() => expect(api.getParkedNotices).toHaveBeenCalled());
+    expect(screen.queryByRole("status", { name: "Avisos aparcados" })).not.toBeInTheDocument();
   });
 });

@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from decimal import Decimal
 
-from eda_retail.agents.writer import DraftRequest, Writer, validate_draft
 from eda_retail.llm.fake import FakeLlmClient
 from eda_retail.llm.generation import Budget
+from eda_retail.llm.prompts.writer import DraftRequest, Writer, validate_draft
 
 ORDER = "P-1a2b3c4d"
 GOOD = (f"Hola. Te escribimos por tu pedido {ORDER}. El transportista nos ha avisado de que la entrega "

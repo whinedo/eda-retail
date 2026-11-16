@@ -8,7 +8,7 @@ Ejecutar los efectos reales de cada paso (avisar al cliente, reclamar, reservar 
 
 ### Requirement: Un ejecutor por tipo de acción
 
-Cada acción permitida SHALL tener un sistema que atiende con su command handler solo los comandos `ExecuteStep` de esa acción (un `executor-<acción>`, o `inventory` para `reserve_stock` y `release_stock`). Los ejecutores MUST NOT invocar a un LLM para decidir si ejecutan o no.
+Cada acción permitida SHALL tener un sistema que atiende con su command handler solo los comandos `ExecuteStep` de esa acción (un `executor-<acción>`, o `inventory` para `reserve_stock` y `release_stock`). Los ejecutores MUST NOT invocar a un LLM para decidir si ejecutan o no. Un `executor-<acción>` SHALL responder al `ExecuteStep` con 202 o 422 al momento (rechaza en la petición `action_not_handled`, `incident_mismatch` y `missing_context`) y hacer la redacción y la llamada al servicio en su worker, sin bloquear la petición (spec `event-backbone`, «Invocación de comandos»); `inventory` responde con el resultado en la petición porque no hace E/S externa.
 
 #### Scenario: Enrutado por acción
 
@@ -71,3 +71,10 @@ El texto del aviso al cliente y de la reclamación, redactado por el agente reda
 - **WHEN** la validación lo revisa
 - **THEN** el ejecutor no lo envía
 - **AND** publica `StepFailed` con `error` `invalid_draft` y `retryable` verdadero
+
+#### Scenario: Causa del aviso en el comando
+
+- **GIVEN** un `ExecuteStep` de `notify_customer` que invoca la saga
+- **WHEN** el ejecutor pide el borrador al redactor
+- **THEN** usa la causa y el retraso que trae el comando y el pedido de `view_orders`
+- **AND** no lee las tablas del orquestador ni de `inventory`

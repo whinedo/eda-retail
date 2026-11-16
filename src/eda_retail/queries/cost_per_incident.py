@@ -13,8 +13,10 @@ from decimal import Decimal
 import psycopg
 
 from eda_retail.config import Settings
+from eda_retail.llm.generation import Budget
 from eda_retail.projectors.cost_per_incident import PROJECTOR_NAME
 from eda_retail.queries.positions import applied
+from eda_retail.rules import BusinessRules
 
 
 @dataclass(frozen=True)
@@ -62,3 +64,10 @@ def get_incident_cost(
                 + Decimal(row["tokens_out"]) / 1000 * prices.llm_out_per_1k)
     effects_cost = row["claims"] * prices.claim + row["reissues"] * prices.reissue + row["refunds_amount"]
     return IncidentCost(**row, llm_cost=llm_cost, effects_cost=effects_cost, applied=position)
+
+
+def budget_from_cost(cost: IncidentCost | None, rules: BusinessRules) -> Budget:
+    """Presupuesto de LLM gastado según esta proyección (sin fila: nada gastado). Lo usan los
+    componentes con LLM, que no leen el estado de otros (spec llm-boundaries, "Presupuesto por incidencia")."""
+    used, calls = (cost.tokens_in + cost.tokens_out, cost.llm_calls) if cost is not None else (0, 0)
+    return Budget(used, calls, rules.max_tokens_per_incident, rules.max_llm_calls_per_incident)

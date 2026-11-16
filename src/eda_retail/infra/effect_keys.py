@@ -40,9 +40,9 @@ class Claim:
     result: dict[str, Any] | None = None
 
 
-def _table(schema: str | None) -> str:
-    """`<schema>.effect_keys` del ejecutor; sin esquema, la tabla compartida (hasta T10)."""
-    return qualified(schema, "effect_keys") if schema is not None else "effect_keys"
+def _table(schema: str) -> str:
+    """`<schema>.effect_keys` del ejecutor (o de `inventory`)."""
+    return qualified(schema, "effect_keys")
 
 
 def compute_idempotency_key(incident_id: str, step_id: str, *, origin_plan_version: int) -> str:
@@ -60,7 +60,7 @@ def acquire(
     action: str,
     lock_seconds: int,
     enabled: bool = True,
-    schema: str | None = None,
+    schema: str,
 ) -> Claim:
     """Registra la clave con INSERT … ON CONFLICT DO NOTHING o informa de su estado.
 
@@ -102,7 +102,7 @@ def acquire(
 
 
 def complete(
-    conn: psycopg.Connection, key: str, result: dict[str, Any], *, enabled: bool = True, schema: str | None = None
+    conn: psycopg.Connection, key: str, result: dict[str, Any], *, enabled: bool = True, schema: str
 ) -> None:
     """Marca la clave como completada con su resultado (misma transacción que el efecto)."""
     if not enabled:
@@ -115,3 +115,12 @@ def complete(
         """,
         (Jsonb(result), key),
     )
+
+
+def stored_result(conn: psycopg.Connection, key: str, *, schema: str) -> dict[str, Any] | None:
+    """El resultado de una clave ya completada, o None (sin bloquear; para saltarse trabajo previo)."""
+    with conn.transaction():
+        row = conn.execute(
+            f"SELECT result FROM {_table(schema)} WHERE idempotency_key = %s AND status = 'completed'", (key,)
+        ).fetchone()
+    return (row["result"] or {}) if row is not None else None

@@ -1,7 +1,7 @@
 """Conexión del front a PostgreSQL: solo lectura (spec web-front, "Acceso de solo lectura y local").
 
 PostgreSQL rechaza cualquier escritura en una transacción de solo lectura, así que el front no
-puede escribir en `events` ni en las vistas aunque un endpoint lo intentara por error.
+puede escribir en `event_log.events` ni en las vistas aunque un endpoint lo intentara por error.
 """
 
 from __future__ import annotations

@@ -8,7 +8,7 @@ import psycopg
 import pytest
 
 from eda_retail.infra.migrations import downgrade, upgrade
-from eda_retail.infra.schemas import COMPONENTS
+from eda_retail.infra.schemas import COMPONENTS, JOB_COMPONENTS
 
 
 @pytest.fixture
@@ -42,6 +42,7 @@ def test_upgrade_creates_every_component_schema(scratch_db):
         if component.publishes:
             assert {f"{name}.outbox", f"{name}.inbox", f"{name}.dead_letters"} <= tables
         assert (f"{name}.effect_keys" in tables) == component.effect_keys
+        assert (f"{name}.command_jobs" in tables) == (name in JOB_COMPONENTS)
 
 
 def test_no_foreign_key_crosses_schemas(scratch_db):
@@ -60,7 +61,7 @@ def test_no_foreign_key_crosses_schemas(scratch_db):
 
 
 def test_upgrade_is_idempotent_and_downgrade_drops_the_schemas(scratch_db):
-    upgrade(scratch_db)
+    upgrade(scratch_db, "0016")  # 0017 borra el modelo compartido y no tiene vuelta atrás
     downgrade(scratch_db, "0007")
     assert _tables(scratch_db) == set()
     upgrade(scratch_db)

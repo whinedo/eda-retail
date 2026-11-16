@@ -18,7 +18,7 @@ import pytest
 from eda_retail.events.envelope import new_event
 from eda_retail.infra import outbox
 from eda_retail.infra.event_store import InvalidEventError
-from eda_retail.infra.relay import RelayDeliveryError
+from eda_retail.infra.outbox import RelayDeliveryError
 
 
 class _Result:

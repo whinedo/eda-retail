@@ -30,8 +30,8 @@ El `correlation_id` de todos los eventos de una incidencia SHALL ser su `inciden
 #### Scenario: Cadena de causalidad
 
 - **GIVEN** un `ShipmentDelayed` con `event_id` E1 e `incident_id` I1
-- **WHEN** el planificador publica `PlanCreated` como consecuencia
-- **THEN** el `PlanCreated` lleva `correlation_id` I1 y `causation_id` E1
+- **WHEN** la saga invoca `CreatePlan` con `causation_id` E1 y el planificador publica `PlanCreated` como consecuencia
+- **THEN** el `PlanCreated` lleva `correlation_id` I1 y como `causation_id` el `command_id` de ese `CreatePlan`, cuyo `causation_id` es E1
 
 ### Requirement: Log de eventos inmutable
 
@@ -88,40 +88,53 @@ El bus MUST entregar cada evento a cada consumidor al menos una vez y reentregar
 
 #### Scenario: Reentrega tras falta de confirmación
 
-- **GIVEN** un consumidor que recibe un evento y falla antes de confirmarlo
-- **WHEN** vence el tiempo de confirmación
-- **THEN** el bus reentrega el evento al consumidor
+- **GIVEN** un consumidor que recibe un evento y falla antes de confirmar su offset
+- **WHEN** se reinicia en el mismo grupo de consumidores
+- **THEN** el bus le vuelve a entregar el evento
 
 ### Requirement: Invocación de comandos
 
-Los comandos SHALL invocarse de forma síncrona por HTTP (REST): cada sistema expone su command handler como `POST /commands/<Comando>`. La saga MUST guardar cada comando en `orchestrator.command_outbox` en la misma transacción que su transición, y su despachador SHALL invocarlo y reintentarlo con backoff, siempre con el mismo `command_id`, hasta recibir una respuesta. Todo comando MUST ser idempotente: el handler registra el `command_id` en su inbox en la misma transacción que su estado y sus eventos, y un comando repetido devuelve la misma respuesta sin repetir estado, eventos ni efectos. La respuesta solo dice si el comando se acepta (202) o se rechaza (422); el resultado le llega a la saga como evento por Kafka. Un comando rechazado SHALL tratarse como un fallo no reintentable.
+Los comandos SHALL invocarse de forma síncrona por HTTP (REST): cada sistema expone su command handler como `POST /commands/<Comando>`. La saga MUST guardar cada comando en `orchestrator.command_outbox` en la misma transacción que su transición, y su dispatcher SHALL invocarlo y reintentarlo con backoff, siempre con el mismo `command_id`, hasta recibir una respuesta. Todo comando MUST ser idempotente: el handler registra el `command_id` en su inbox en la misma transacción que su estado y sus eventos, y un comando repetido devuelve la misma respuesta sin repetir estado, eventos ni efectos. La respuesta solo dice si el comando se acepta (202) o se rechaza (422); el resultado le llega a la saga como evento por Kafka. Un comando cuyo trabajo es largo (llama al LLM o a un servicio externo: `CreatePlan`, `RevisePlan` y el `ExecuteStep` de los cuatro ejecutores) MUST responder 202 o 422 al momento, sin esperar a ese trabajo: la petición comprueba los invariantes que no lo necesitan (esquema del payload, `plan_exists`, `revision_exists`, `action_not_handled`, `incident_mismatch`, `missing_context`) y guarda el trabajo en el `command_jobs` del sistema en la misma transacción que su inbox; el worker del sistema lo hace después y su resultado SHALL ser un evento. Un trabajo que queda a medias por una caída se retoma y su resultado se escribe una sola vez; un rechazo dentro del trabajo (una carrera que la aceptación no podía ver) no escribe eventos y lo trata el plazo de la saga. `ExecuteStep` de `inventory` responde con su resultado en la petición: no hace E/S externa. Un comando rechazado SHALL tratarse como un fallo no reintentable.
 
 #### Scenario: Caída antes de invocar
 
 - **GIVEN** una transición de la saga confirmada con un `CreatePlan` en `orchestrator.command_outbox`
 - **WHEN** el orquestador cae antes de invocarlo y se reinicia
-- **THEN** el despachador invoca `CreatePlan` con su `command_id`
+- **THEN** el dispatcher invoca `CreatePlan` con su `command_id`
 
 #### Scenario: Comando invocado dos veces
 
 - **GIVEN** un `ExecuteStep` de `file_claim` ya aceptado con `command_id` C1
-- **WHEN** el despachador lo invoca otra vez con C1
+- **WHEN** el dispatcher lo invoca otra vez con C1
 - **THEN** el handler devuelve la misma respuesta que la primera vez
 - **AND** no escribe estado ni eventos nuevos ni repite la reclamación
 
 #### Scenario: Sistema que no responde
 
 - **GIVEN** el ejecutor de reclamaciones sin responder
-- **WHEN** el despachador invoca su `ExecuteStep`
+- **WHEN** el dispatcher invoca su `ExecuteStep`
 - **THEN** reintenta con backoff y el mismo `command_id`
 - **AND** la saga sigue procesando los eventos de otras incidencias
 
 #### Scenario: El resultado llega como evento
 
 - **GIVEN** un `ExecuteStep` de `reserve_stock` aceptado con 202
-- **WHEN** el despachador recibe la respuesta
+- **WHEN** el dispatcher recibe la respuesta
 - **THEN** el paso sigue `requested`
 - **AND** pasa a `completed` cuando la saga consume el `StepCompleted` de `inventory`
+
+#### Scenario: Comando con trabajo largo
+
+- **GIVEN** un `CreatePlan` de una incidencia de gravedad `high`, cuyo plan propone el LLM
+- **WHEN** el dispatcher lo invoca
+- **THEN** el planificador responde 202 antes de llamar al LLM
+- **AND** publica `PlanCreated` cuando su worker termina el trabajo
+
+#### Scenario: Caída con el trabajo pendiente
+
+- **GIVEN** un `CreatePlan` aceptado con 202 cuyo trabajo tomó el worker del planificador
+- **WHEN** el worker cae antes de terminarlo y vence su lease
+- **THEN** el worker lo vuelve a tomar y publica un único `PlanCreated`
 
 #### Scenario: Comando rechazado
 
@@ -170,8 +183,8 @@ Cada tipo de evento SHALL tener un `event_version`. Un cambio incompatible de es
 
 #### Scenario: Evento de versión anterior
 
-- **GIVEN** un evento `ShipmentDelayed` de la versión 1 en el log
-- **AND** un proyector que espera la versión 2
+- **GIVEN** un evento `StepCompleted` de la versión 1 en el log
+- **AND** un proyector que espera la versión 2 (la del catálogo)
 - **WHEN** el proyector lee el evento
 - **THEN** lo convierte a la versión 2 al leerlo
 - **AND** el evento del log no cambia

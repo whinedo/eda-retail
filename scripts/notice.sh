@@ -23,7 +23,7 @@ if ! docker compose ps --status running --services 2>/dev/null | grep -qx postgr
   echo "error: postgres no está en marcha; ejecuta: docker compose up -d" >&2
   exit 1
 fi
-if ! pgrep -f 'eda-agent interpreter' >/dev/null 2>&1; then
+if ! pgrep -f 'eda-interpreter' >/dev/null 2>&1; then
   echo "aviso: los agentes no están en marcha (scripts/run-agents.sh); los avisos no avanzarán" >&2
 fi
 

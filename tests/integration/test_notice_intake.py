@@ -2,44 +2,9 @@
 
 from __future__ import annotations
 
-import logging
-
 import pytest
 
 from eda_retail.synthetic.cli import parse_args
-from eda_retail.synthetic.sample import EXAMPLES, ORDERS, seed, send_notice
-
-from .command_helpers import events_of
-
-
-def test_seed_is_idempotent(conn):
-    """Los datos de ejemplo se cargan una vez; repetir seed no duplica pedidos ni stock"""
-    seed(conn)
-    assert seed(conn) == (0, 0)
-    found = conn.execute(
-        "SELECT count(*) AS n FROM orders WHERE order_id = ANY(%s)", ([o[0] for o in ORDERS],)
-    ).fetchone()["n"]
-    conn.commit()
-    assert found == len(ORDERS)
-
-
-def test_every_example_mentions_a_sample_order():
-    """Cada aviso de ejemplo cita un pedido de los datos de ejemplo"""
-    ids = {o[0] for o in ORDERS}
-    assert all(any(i in text for i in ids) for text in EXAMPLES.values())
-
-
-def test_send_registers_the_notice(conn, caplog):
-    """Un aviso enviado entra como CarrierNoticeReceived de su incidencia y deja una línea de log"""
-    caplog.set_level(logging.INFO, logger="eda_retail.command")
-    sent = send_notice(conn, EXAMPLES["delay"])
-    assert sent.result.accepted
-    [ev] = events_of(conn, sent.incident_id)
-    assert (ev["event_type"], ev["payload"]["raw_text"]) == ("CarrierNoticeReceived", EXAMPLES["delay"])
-    assert f"RegisterCarrierNotice {sent.carrier_notice_id} aceptado -> CarrierNoticeReceived" in caplog.text
-    again = send_notice(conn, "otro texto", carrier_notice_id=sent.carrier_notice_id)
-    assert (again.result.accepted, again.result.reason) == (False, "duplicate_notice")
-    assert "rechazado: duplicate_notice" in caplog.text
 
 
 def test_cli_arguments():
@@ -60,42 +25,49 @@ def _clock(step: float = 1.0):
     return tick
 
 
-def test_interactive_sends_example_and_follows_incident(conn):
-    """El modo interactivo carga datos, envía el ejemplo elegido y sigue la incidencia hasta el límite"""
+def _invoke_via(apis: dict):
+    """`invoke` del cliente REST que llama en proceso a la API de cada sistema (sin red)."""
+    from eda_retail.infra.command_client import CommandReply
+
+    def invoke(url, command_type, *, command_id, correlation_id, causation_id, payload, timeout):
+        response = apis[url].post(f"/commands/{command_type}", json={
+            "command_id": str(command_id), "correlation_id": correlation_id,
+            "causation_id": str(causation_id) if causation_id else None, "payload": payload,
+        })
+        return CommandReply(response.status_code, response.json(),
+                            response.headers.get("Idempotent-Replayed") == "true")
+
+    return invoke
+
+
+def test_interactive_sends_example_and_follows_incident(conn, base_settings, database_url):
+    """El modo interactivo carga datos en inventory, envía el ejemplo a intake y sigue la incidencia"""
+    from eda_retail.intake.handler import specs as intake_specs
+    from eda_retail.inventory.handler import specs as inventory_specs
+    from eda_retail.synthetic.client import NoticeClient
     from eda_retail.synthetic.interactive import run
 
-    answers = iter(["s", "1", "9", "q"])
-    lines: list[str] = []
-    run(conn, lambda _prompt: next(answers), lines.append, timeout=2, sleep=lambda _s: None, clock=_clock())
+    from .component_helpers import client, outbox
+
+    settings = base_settings
+    with client(database_url, "intake", intake_specs()) as intake, \
+            client(database_url, "inventory", inventory_specs(settings)) as inventory:
+        notices = NoticeClient(settings, invoke=_invoke_via({settings.intake_url: intake,
+                                                             settings.inventory_url: inventory}))
+        answers = iter(["s", "1", "9", "q"])
+        lines: list[str] = []
+        run(conn, lambda _prompt: next(answers), lines.append, notices, timeout=2, sleep=lambda _s: None,
+            clock=_clock())
     text = "\n".join(lines)
     assert "datos de ejemplo:" in text
     [sent] = [line for line in lines if line.startswith("aviso ")]
     incident = sent.rsplit(" ", 1)[1]
-    assert [e["event_type"] for e in events_of(conn, incident)] == ["CarrierNoticeReceived"]
-    assert "esperando a que el intérprete abra la incidencia" in text  # sin agentes en marcha
+    assert [e["event_type"] for e in outbox(conn, "intake", incident)] == ["CarrierNoticeReceived"]
+    assert "esperando a que el intérprete abra la incidencia" in text  # sin intérprete en marcha
     assert "sin cerrar tras 2 s" in text
     assert "opción no válida: 9" in text
 
 
-def test_watch_stops_when_incident_is_closed(conn, settings):
-    """El seguimiento termina en cuanto la vista muestra la incidencia cerrada"""
-    import uuid
-
-    from eda_retail.command.models import EscalateIncident
-    from eda_retail.synthetic.interactive import watch
-
-    from .command_helpers import handler, open_incident, version_of
-    from .projection_helpers import project
-
-    incident, _ = open_incident(conn)
-    handler().handle(conn, EscalateIncident(command_id=uuid.uuid4(), expected_version=version_of(conn, incident),
-                                            producer="test", incident_id=incident, reason="budget_exhausted"))
-    conn.commit()
-    project(settings, conn, "incident_status", incident)
-    lines: list[str] = []
-    status = watch(conn, incident, lines.append, timeout=60, sleep=lambda _s: None, clock=_clock())
-    assert status is not None and status.status == "escalated"
-    assert lines == ["  escalated (budget_exhausted)"]
 
 
 def test_default_command_is_interactive():
