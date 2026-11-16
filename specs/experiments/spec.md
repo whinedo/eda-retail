@@ -62,7 +62,7 @@ El experimento E3 SHALL dejar sin stock el almacén en una parte de las incidenc
 - **GIVEN** 30 incidencias de pérdida con el almacén sin stock
 - **WHEN** se ejecuta E3
 - **THEN** cada incidencia termina con un reembolso o con un escalado
-- **AND** ningún `notify_customer` ni `file_claim` completado se repite
+- **AND** el efecto de ningún `notify_customer` ni `file_claim` completado se repite (volver a confirmar con `StepCompleted` un paso mantenido en una revisión, sin efecto nuevo, no cuenta como repetición)
 
 ### Requirement: E4 Reconstrucción de vistas (hipótesis H4)
 
