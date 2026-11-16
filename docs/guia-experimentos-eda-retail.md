@@ -23,6 +23,19 @@ uv run eda-experiment <exp> --seed N
 
 Opciones útiles: `--incidents` (tamaño del escenario), `--out` (carpeta de informes), y solo en E5 y E6 `--llm oracle|ollama`, `--repetitions`, `--temperature` y (solo E5) `--threshold`. Cada ejecución crea y borra su propia base de datos y su propio topic, y escribe `experiments/results/<exp>-<fecha>/report.json` y `report.md` con la semilla, la configuración, el modelo y la versión de los prompts. El código sale con 0 si todas las hipótesis se cumplen.
 
+**Con informe de resultados (`eda-expexecutor`).** El expexecutor (spec `expexecutor`) es un agente determinista, sin LLM, que ejecuta el experimento con `eda-experiment` y documenta la ejecución:
+
+```
+uv run eda-expexecutor run <exp> [--seed N] [--incidents N] [--config experiments/config.py]
+uv run eda-expexecutor report experiments/results/<exp>-<fecha>
+uv run eda-expexecutor delete experiments/results/<exp>-<fecha>
+uv run eda-expexecutor delete --all
+```
+
+- `run` guarda la salida del experimento en `experiment.log`, dentro de su carpeta, y escribe `results.md` con el propósito, el resultado (esperado, obtenido y si coinciden) y las evidencias, cada una con su origen (clave de `report.json` o línea de `experiment.log`). Termina con el mismo código que `eda-experiment`; si el experimento falla sin escribir `report.json`, el informe lo dice y cita el final del log.
+- Los parámetros salen de la línea de comandos, de `experiments/config.py` (diccionario `EXPERIMENTS` por experimento) o del valor por defecto de `eda-experiment`, en ese orden, y el informe dice de dónde sale cada uno. El fichero se valida antes de ejecutar nada.
+- `report` regenera `results.md` sin repetir la ejecución; `delete <carpeta>` borra solo ese `results.md`, y `delete --all` borra todas las carpetas de ejecución de `experiments/results` (no toca `experiments/config.py`). Los resultados no están en el control de versiones.
+
 **Arnés actual.** Monta los componentes en un solo proceso contra PostgreSQL y Kafka reales: relays, proyectores, agentes, orquestador y ejecutores se atienden por turnos, y lo que tarda (el LLM, los servicios) corre en su propio hilo. La inyección de fallos (`FaultPlan`) admite hoy: duplicados de entrega (1 a N), retraso de la entrega, probabilidad de fallo por tipo de paso, caída de un consumidor tras K mensajes sin confirmar el último offset, y almacenes sin stock. La elección de los pasos que fallan depende de la semilla, la acción y la `idempotency_key`, no del orden de ejecución, así que es reproducible.
 
 **Referencias de componentes** (para leer los informes): `PENDING_NOTICE_TIMEOUT_S` (300 s) aparca avisos; `SAGA_STEP_TIMEOUT_S` (60 s) y `SAGA_PLAN_TIMEOUT_S` (300 s) son los plazos de la saga; `COMMAND_HTTP_TIMEOUT_S` (5 s) es el timeout HTTP del dispatcher; `EXECUTOR_MAX_CONCURRENCY` (5) limita a los ejecutores; `JOB_LEASE_SECONDS`, `JOB_MAX_ATTEMPTS` y el backoff gobiernan los trabajos diferidos.

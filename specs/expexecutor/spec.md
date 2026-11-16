@@ -35,7 +35,7 @@ El `expexecutor` SHALL ofrecer un CLI, `uv run eda-expexecutor`, con tres subcom
 
 ### Requirement: Ejecución de un experimento
 
-`eda-expexecutor run <exp>` SHALL ejecutar el experimento con `eda-experiment`, pasándole sin cambios las opciones de este (`--seed`, `--incidents`, `--llm`, `--out`…), y MUST guardar toda su salida (stdout y stderr) en `experiment.log`, dentro de la carpeta de la ejecución (`<out>/<exp>-<fecha>/`), junto a `report.json` y `report.md`. Al terminar el experimento, SHALL generar el informe de resultados de esa ejecución.
+`eda-expexecutor run <exp>` SHALL ejecutar el experimento con `eda-experiment`, pasándole sin cambios las opciones de este (`--seed`, `--incidents`, `--llm`, `--out`…), y MUST guardar toda su salida (stdout y stderr) en `experiment.log`, dentro de la carpeta de la ejecución (`<out>/<exp>-<fecha>/`), junto a `report.json` y `report.md`. Al terminar el experimento, SHALL generar el informe de resultados de esa ejecución y MUST terminar con el mismo código que `eda-experiment`. Una ejecución cuya hipótesis no se cumple no es una ejecución fallida: `eda-experiment` escribe su informe y termina con 1, y el informe de resultados se genera como el de cualquier otra. Una ejecución fallida es la que termina sin escribir `report.json`; su carpeta la crea el expexecutor con el mismo formato de nombre.
 
 #### Scenario: Ejecución completa
 
@@ -46,7 +46,7 @@ El `expexecutor` SHALL ofrecer un CLI, `uv run eda-expexecutor`, con tres subcom
 
 #### Scenario: Experimento que falla
 
-- **GIVEN** un experimento que termina con un código distinto de 0
+- **GIVEN** un experimento que termina con un código distinto de 0 sin escribir `report.json`
 - **WHEN** se ejecuta con `eda-expexecutor run`
 - **THEN** `experiment.log` guarda su salida completa
 - **AND** se genera `results.md` con el resultado obtenido «ejecución fallida» y, como evidencia, las últimas líneas del log
@@ -54,7 +54,7 @@ El `expexecutor` SHALL ofrecer un CLI, `uv run eda-expexecutor`, con tres subcom
 
 #### Scenario: Experimento desconocido
 
-- **GIVEN** un nombre que no es ningún experimento de `specs/experiments`
+- **GIVEN** un nombre que no es ningún experimento que ofrezca `eda-experiment`
 - **WHEN** se ejecuta `uv run eda-expexecutor run e99`
 - **THEN** termina con un código distinto de 0 sin ejecutar nada ni crear ninguna carpeta
 
