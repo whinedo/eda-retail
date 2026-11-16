@@ -8,6 +8,19 @@ Una tienda online recibe avisos de retraso de los transportistas, en texto libre
 
 Regla de diseño: **el LLM propone y el código dispone**. Ningún LLM ejecuta efectos ni escribe directamente en el log.
 
+## Ejecución rápida
+
+Requisitos: Docker, Ollama con un modelo descargado (`ollama pull qwen2.5:7b-instruct`), [uv](https://docs.astral.sh/uv/) y Node 24. Desde la raíz del proyecto:
+
+```bash
+scripts/init-env.sh                # 1. una sola vez: crea .env y genera A2A_CARRIER_TOKEN
+scripts/start-all.sh               # 2. arranca todo (versión 1); el front queda en http://localhost:5173
+scripts/start-all.sh --version 2   #    o la versión 2, con MCP y A2A
+scripts/stop-all.sh                # 3. al terminar: para los procesos, el front y los contenedores
+```
+
+En el front, pulsa **seed** para cargar los pedidos de ejemplo y después cualquier aviso (**delay**, **loss**…) para ver una incidencia de principio a fin. `stop-all.sh` no borra datos; `docker compose down -v` empieza de cero. Los detalles están en «Puesta en marcha» y «Scripts».
+
 ## Versión 1
 
 La arquitectura de la primera versión (`POC_VERSION=1`, por defecto): un agregado por sistema, solo eventos por Kafka, comandos REST desde la saga y el lado de lectura consumiendo Kafka. La versión 2 la amplía (ver «Versión 2»).
