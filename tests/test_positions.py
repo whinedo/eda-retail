@@ -98,3 +98,51 @@ def test_rewind_reads_every_partition_from_offset_zero():
                                             apply=lambda conn, msg: None)
     consumer.rewind()
     assert kafka.assigned == [("eda.events", 0, 0), ("eda.events", 1, 0), ("eda.events", 2, 0)]
+
+
+class _Watermarks:
+    """Consumer de prueba: falla `errors` veces con un error de Kafka y después da la marca de agua alta 7."""
+
+    def __init__(self, *errors: int) -> None:
+        self._errors = list(errors)
+        self.calls = 0
+
+    def get_watermark_offsets(self, tp, timeout):
+        from confluent_kafka import KafkaError, KafkaException
+
+        self.calls += 1
+        if self._errors:
+            raise KafkaException(KafkaError(self._errors.pop(0)))
+        return (0, 7)
+
+
+def test_high_watermark_retries_while_the_partition_has_no_leader():
+    """Justo después de crear un topic, Kafka aún elige el líder de la partición: la marca de agua se reintenta"""
+    from confluent_kafka import KafkaError, TopicPartition
+
+    kafka = _Watermarks(KafkaError.NOT_LEADER_FOR_PARTITION, KafkaError.LEADER_NOT_AVAILABLE)
+    slept = []
+    assert positions.high_watermark(kafka, TopicPartition("t", 0), timeout=10, sleep=slept.append) == 7
+    assert kafka.calls == 3 and len(slept) == 2
+
+
+def test_high_watermark_does_not_retry_other_errors():
+    """Otro error de Kafka se propaga al primer intento, sin reintentar"""
+    import pytest
+    from confluent_kafka import KafkaError, KafkaException, TopicPartition
+
+    kafka = _Watermarks(KafkaError._ALL_BROKERS_DOWN)
+    with pytest.raises(KafkaException) as exc:
+        positions.high_watermark(kafka, TopicPartition("t", 0), timeout=10, sleep=lambda s: None)
+    assert exc.value.args[0].code() == KafkaError._ALL_BROKERS_DOWN and kafka.calls == 1
+
+
+def test_high_watermark_gives_up_at_the_timeout():
+    """El error transitorio más allá del plazo se propaga tal cual"""
+    import pytest
+    from confluent_kafka import KafkaError, KafkaException, TopicPartition
+
+    kafka = _Watermarks(*[KafkaError.NOT_LEADER_FOR_PARTITION] * 1000)
+    with pytest.raises(KafkaException) as exc:
+        positions.high_watermark(kafka, TopicPartition("t", 0), timeout=0, sleep=lambda s: None)
+    assert exc.value.args[0].code() == KafkaError.NOT_LEADER_FOR_PARTITION and kafka.calls == 1

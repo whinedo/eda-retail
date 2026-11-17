@@ -83,6 +83,7 @@ from eda_retail.infra.jobs import JobWorker, run_job_once
 from eda_retail.infra.kafka import make_consumer
 from eda_retail.infra.migrations import upgrade
 from eda_retail.infra.outbox import ComponentRelay
+from eda_retail.infra.positions import high_watermark
 from eda_retail.infra.schemas import qualified
 from eda_retail.intake import handler as intake
 from eda_retail.interpreter import consumer as interpreter
@@ -991,7 +992,7 @@ class Harness:
         try:
             topic = self.settings.dlq_topic
             parts = probe.list_topics(topic, timeout=10).topics[topic].partitions
-            return sum(probe.get_watermark_offsets(TopicPartition(topic, p), timeout=10)[1] for p in parts)
+            return sum(high_watermark(probe, TopicPartition(topic, p)) for p in parts)
         finally:
             probe.close()
 
