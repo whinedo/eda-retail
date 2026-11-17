@@ -120,7 +120,7 @@ SERVICE_OF = {"notify_customer": "mail", "file_claim": "claims", "reissue_shipme
 JOB_POLL_S = 0.05  # sondeo de un worker de trabajos sin trabajo
 CONSUMER_POLL_S = 0.1  # sondeo de Kafka de un consumidor en su hilo
 JOIN_TIMEOUT_S = 30.0  # espera al parar un hilo (puede estar dentro de una llamada al LLM)
-SETTLE_GRACE_S = 2.0  # espera máxima del repaso final a que el lado de lectura llegue a lag 0
+LOG_CATCH_UP_S = 30.0  # espera máxima de event_log a las marcas de agua altas antes de las invariantes
 IDLE_SLEEP_S = 0.01  # pausa de un turno sin avance mientras los hilos trabajan
 THREADED_CONSUMERS = frozenset({interpreter.SCHEMA})  # consumidores con su propio hilo
 PUBLISHERS = ("intake", "interpreter", "planner", "replanner", "orchestrator", "inventory",
@@ -767,22 +767,22 @@ class Harness:
     def _settle(self) -> None:
         """Último repaso, hasta `idle_seconds`: turnos mientras algo avance o un hilo trabaje, y, cuando todo parece
         quieto, uno más. Un hilo puede confirmar una fila de outbox (un resultado retrasado) justo después del último
-        turno y antes de dejar de contar como trabajo: el turno extra la publica. Después espera, como mucho
-        `SETTLE_GRACE_S`, a que el lado de lectura en marcha la lea (I4 la busca en `event_log`). No espera a los
-        grupos de Kafka ni a los proyectores parados (E17): su lag puede no bajar y cada ejecución pagaría el margen."""
+        turno y antes de dejar de contar como trabajo: el turno extra la publica. No espera a ningún lag: lo que
+        `event_log` aún no haya leído lo lee `catch_up_log`, una sola vez, antes de comprobar las invariantes."""
         end = time.monotonic() + self.config.idle_seconds
-        grace: float | None = None
         while time.monotonic() < end:
-            if self.step() or self._working() or self.step():
-                grace = None
-                continue
-            lag = self._read_lag()
-            if lag == 0:
+            if not (self.step() or self._working() or self.step()):
                 return
-            grace = grace if grace is not None else time.monotonic() + SETTLE_GRACE_S
-            if time.monotonic() > grace:
-                log.warning("repaso final terminado con lag %d en el lado de lectura", lag)
-                return
+
+    def catch_up_log(self, timeout: float = LOG_CATCH_UP_S) -> bool:
+        """`event_log` lee hasta las marcas de agua altas de ahora (I4 busca ahí cada fila publicada). False si no
+        llega en `timeout`."""
+        try:
+            self._readers[0].catch_up(timeout)
+        except TimeoutError as exc:
+            log.warning("%s", exc)
+            return False
+        return True
 
     def run_until_closed(self) -> float:
         """Turnos hasta cerrar todas las incidencias, o hasta `idle_seconds` sin avance (con los hilos ociosos
@@ -812,10 +812,6 @@ class Harness:
     def _active_readers(self) -> list[Any]:
         """Consumidores del lado de lectura en marcha: `event_log` ([0]) y, si no están parados, los proyectores."""
         return self._readers[:1] if self._projectors_paused else self._readers
-
-    def _read_lag(self) -> int:
-        """Lo que le falta por leer al lado de lectura en marcha."""
-        return sum(r.lag() for r in self._active_readers())
 
     def lag(self) -> int:
         """Lo que les falta por leer a los grupos de Kafka y al lado de lectura."""

@@ -173,7 +173,6 @@ def test_run_does_not_finish_while_jobs_are_pending(monkeypatch):
     monkeypatch.setattr(h, "closed", lambda: 0)
     monkeypatch.setattr(h, "step", step)
     monkeypatch.setattr(h, "_open_jobs", lambda: next(open_jobs))
-    monkeypatch.setattr(h, "_read_lag", lambda: 0)
 
     h.run_until_closed()
 
@@ -183,10 +182,9 @@ def test_run_does_not_finish_while_jobs_are_pending(monkeypatch):
 
 def test_final_sweep_publishes_what_a_thread_left_after_the_last_turn(monkeypatch):
     """Un hilo confirma una fila de outbox justo tras el último turno y deja de trabajar: el repaso final da un turno
-    más, que la publica, y no se para hasta que el lag es 0"""
+    más, que la publica, y se para cuando dos turnos seguidos no avanzan, sin esperar a ningún lag"""
     h = _bare(harness.RunConfig(seed=1, incidents=1, idle_seconds=5, timeout_seconds=10))
-    turns = iter([0, 1, 0, 0, 0, 0])  # quieto; el turno extra publica la fila; después, quieto otra vez
-    lags = iter([1, 0])  # event_log aún no la leyó; luego sí
+    turns = iter([0, 1, 0, 0])  # quieto; el turno extra publica la fila; después, quieto otra vez
     calls = SimpleNamespace(step=0)
 
     def step():
@@ -195,36 +193,23 @@ def test_final_sweep_publishes_what_a_thread_left_after_the_last_turn(monkeypatc
 
     monkeypatch.setattr(h, "step", step)
     monkeypatch.setattr(h, "_working", lambda: False)
-    monkeypatch.setattr(h, "_read_lag", lambda: next(lags))
-
-    h._settle()
-
-    assert calls.step == 6 and next(lags, None) is None
-
-
-def test_final_sweep_does_not_wait_forever_for_lag(monkeypatch):
-    """Si el lag no llega a 0, el repaso final se para tras un margen corto, no al vencer idle_seconds"""
-    h = _bare(harness.RunConfig(seed=1, incidents=1, idle_seconds=30, timeout_seconds=60))
-    monkeypatch.setattr(harness, "SETTLE_GRACE_S", 0.05)
-    monkeypatch.setattr(h, "step", lambda: 0)
-    monkeypatch.setattr(h, "_working", lambda: False)
-    monkeypatch.setattr(h, "_read_lag", lambda: 3)
+    monkeypatch.setattr(h, "lag", lambda: pytest.fail("el repaso final no consulta el lag"))
     start = time.monotonic()
+
     h._settle()
-    assert time.monotonic() - start < 5
+
+    assert calls.step == 4 and time.monotonic() - start < 1
 
 
-def test_final_sweep_waits_only_for_the_running_read_side(monkeypatch):
-    """El repaso final espera solo al lado de lectura en marcha: ni a los grupos de Kafka ni a los proyectores
-    parados (E17), cuyo lag no baja mientras lo estén"""
-    h = _bare(harness.RunConfig(seed=1, incidents=1, idle_seconds=30, timeout_seconds=60))
-    h._readers = [SimpleNamespace(lag=lambda: 0), SimpleNamespace(lag=lambda: 7)]  # [0] es event_log
-    h._projectors_paused = True
-    monkeypatch.setattr(h, "step", lambda: 0)
-    monkeypatch.setattr(h, "_working", lambda: False)
-    monkeypatch.setattr(h, "lag", lambda: pytest.fail("el repaso final no consulta los grupos de Kafka"))
-    start = time.monotonic()
-    h._settle()
-    assert time.monotonic() - start < 1
-    h._projectors_paused = False
-    assert h._read_lag() == 7
+def test_catch_up_log_reads_event_log_up_to_the_high_watermarks():
+    """Antes de las invariantes, event_log lee hasta las marcas de agua altas; si no llega, lo dice sin fallar"""
+    h = _bare(harness.RunConfig(seed=1, incidents=1, idle_seconds=5, timeout_seconds=10))
+    timeouts: list[float] = []
+    h._readers = [SimpleNamespace(catch_up=timeouts.append)]
+    assert h.catch_up_log(3.0) is True and timeouts == [3.0]
+
+    def stuck(timeout):
+        raise TimeoutError("event_log: no llegó a {0: 5} en 3.0 s")
+
+    h._readers = [SimpleNamespace(catch_up=stuck)]
+    assert h.catch_up_log(3.0) is False

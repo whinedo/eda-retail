@@ -55,6 +55,7 @@ def _rows(h: Harness, sql: str, params: tuple = ()) -> list[dict[str, Any]]:
 def check(h: Harness, *, views: bool = True) -> dict[str, dict[str, Any]]:
     """I1 a I5 de la ejecución del arnés `h`: `{"I1": {"violations": n, ...}, ...}`. Con `views=False` no
     reconstruye las vistas (I5 queda sin comprobar, `None`)."""
+    log_caught_up = h.catch_up_log()  # I1, I3 e I4 leen event_log
     open_ = _rows(h, """
         SELECT DISTINCT correlation_id FROM event_log.events WHERE event_type = 'CarrierNoticeReceived'
         EXCEPT SELECT correlation_id FROM event_log.events WHERE event_type IN ('IncidentResolved', 'IncidentEscalated')
@@ -79,7 +80,8 @@ def check(h: Harness, *, views: bool = True) -> dict[str, dict[str, Any]]:
         "I2": {"violations": sum(duplicates.values()), "repeated": duplicates},
         "I3": {"violations": len(refunds) + len(early), "repeated_refunds": refunds[:20],
                "refunds_with_pending_compensations": early[:20]},
-        "I4": {"violations": len(lost), "lost": [{**r, "event_id": str(r["event_id"])} for r in lost][:20]},
+        "I4": {"violations": len(lost), "lost": [{**r, "event_id": str(r["event_id"])} for r in lost][:20],
+               "log_caught_up": log_caught_up},
     }
     if views:
         differ = [view for view in sorted(PROJECTORS) if not rebuild(h.settings, h.conn, view).identical]
