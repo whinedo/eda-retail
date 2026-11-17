@@ -156,6 +156,24 @@ def _e21(report: dict[str, Any]) -> list[Check]:
     ]
 
 
+E23_VARIANTS = ("resent_notices", "rerequested_steps", "refund_again", "shared_order")
+E23_AT_MOST_ONE = ("incidents_per_notice", "shipment_delayed_per_incident", "claims_per_incident_order",
+                   "notices_per_incident_order_version", "refunds_per_incident_order",
+                   "active_reservations_per_incident_order")
+
+
+def _e23(report: dict[str, Any]) -> list[Check]:
+    checks = []
+    for variant in E23_VARIANTS:
+        prefix = f"metrics.variants.{variant}"
+        checks += [_check(report, f"{prefix}.h23", "true", lambda v: v is True),
+                   *(_check(report, f"{prefix}.{count}", "<= 1", lambda v: isinstance(v, int) and v <= 1)
+                     for count in E23_AT_MOST_ONE),
+                   _check(report, f"{prefix}.over_refunded", "0", lambda v: v == 0),
+                   *_invariants(report, prefix)]
+    return checks
+
+
 CATALOG: dict[str, Entry] = {
     "e1": Entry(
         "E1", "Mide si los efectos se duplican cuando cada evento y cada comando llegan 2 y 3 veces, con "
@@ -217,4 +235,13 @@ CATALOG: dict[str, Entry] = {
         "sin inbox de comandos ni `effect_keys`.",
         "H21: reproducir el log no produce ningún efecto, evento ni cambio de estado nuevos, y la variante de "
         "control sin idempotencia en los efectos sí repite algún efecto.", _e21),
+    "e23": Entry(
+        "E23", "Mide los duplicados que nacen del negocio: 50 incidencias con un 50 % de fallos en `reserve_stock` "
+        "y cuatro variantes: avisos reenviados de 1 a 5 veces (en orden y a la vez), replanes que vuelven a pedir "
+        "`file_claim` y `notify_customer` ya atendidos, un reembolso pedido otra vez tras un replan posterior y el "
+        "mismo pedido en dos incidencias.",
+        "H23: ningún efecto se repite: un `incident_id` por aviso, cada repetición descartada con "
+        "`duplicate_notice`, como mucho una reclamación, un reembolso y una reserva activa por (incidencia, "
+        "pedido), un aviso por (incidencia, pedido, versión del plan), ningún reembolso por encima del importe e "
+        "I1 a I5 sin violaciones.", _e23),
 }

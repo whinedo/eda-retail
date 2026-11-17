@@ -261,7 +261,7 @@ BEGIN
 COMMIT
 ```
 
-Restricciones de unicidad que refuerzan la idempotencia incluso sin `effect_keys`, cada una en la tabla de su ejecutor: `claims (incident_id, order_id)`, `refunds (incident_id, step_id)`, `customer_messages (incident_id, step_id)`. Cada ejecutor (y `inventory`, que ejecuta `reserve_stock` y `release_stock`) atiende como mucho `EXECUTOR_MAX_CONCURRENCY` peticiones a la vez (uvicorn `limit_concurrency`, por defecto 5): por encima responde 503 y el dispatcher de la saga reintenta el mismo comando, con el mismo `command_id`, tras una espera (§4.4).
+Restricciones de unicidad que refuerzan la idempotencia incluso sin `effect_keys`, cada una en la tabla de su ejecutor: `claims (incident_id, order_id)`, `refunds (incident_id, step_id)` y `refunds (incident_id, order_id)`, `customer_messages (incident_id, step_id)` y `customer_messages (incident_id, order_id, plan_version)` (`plan_version`: la versión del plan con la que la saga pidió el paso; nula en los avisos anteriores a la migración 0025). Los ejecutores devuelven el efecto ya registrado que coincida con cualquiera de ellas, aunque el `step_id` o la `idempotency_key` sean otros. Cada ejecutor (y `inventory`, que ejecuta `reserve_stock` y `release_stock`) atiende como mucho `EXECUTOR_MAX_CONCURRENCY` peticiones a la vez (uvicorn `limit_concurrency`, por defecto 5): por encima responde 503 y el dispatcher de la saga reintenta el mismo comando, con el mismo `command_id`, tras una espera (§4.4).
 
 Para la variante «sin idempotencia» del experimento E1 se desactivan `INBOX_ENABLED` y `EFFECT_KEYS_ENABLED` y, en la base de pruebas, se eliminan también estas restricciones.
 

@@ -188,6 +188,43 @@ def test_effect_uniques_migration_stops_on_existing_duplicates_without_deleting(
         assert c.execute(f"SELECT count(*) FROM {table}").fetchone()[0] == 2
 
 
+def test_business_uniques_migration(scratch_db):
+    """0025 impide un segundo reembolso por (incidencia, pedido) y un segundo aviso por (incidencia, pedido,
+    versión del plan), y su downgrade quita los índices y la columna plan_version"""
+    upgrade(scratch_db)
+    with psycopg.connect(scratch_db, autocommit=True) as c:
+        _refund(c, "RF-1", step_id="S4")
+        with pytest.raises(psycopg.errors.UniqueViolation):
+            _refund(c, "RF-2", step_id="S7")  # otro paso, mismo pedido
+        version = "INSERT INTO executor_notify_customer.customer_messages (message_id, incident_id, order_id," \
+                  " step_id, plan_version, text) VALUES (%s, 'I1', 'P1', %s, %s, 'texto')"
+        c.execute(version, ("M-1", "S1", 1))
+        c.execute(version, ("M-2", "S2", 2))  # otra versión: permitido
+        with pytest.raises(psycopg.errors.UniqueViolation):
+            c.execute(version, ("M-3", "S3", 2))
+    downgrade(scratch_db, "0024")
+    with psycopg.connect(scratch_db, autocommit=True) as c:
+        _refund(c, "RF-2", step_id="S7")
+        assert not c.execute("SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema ="
+                             " 'executor_notify_customer' AND table_name = 'customer_messages'"
+                             " AND column_name = 'plan_version')").fetchone()[0]
+        assert c.execute("SELECT to_regclass('executor_issue_refund.refunds_incident_step_key')"
+                         " IS NOT NULL").fetchone()[0]  # 0023 sigue aplicada
+
+
+def test_business_uniques_migration_stops_on_existing_duplicates_without_deleting(scratch_db):
+    """0025 con dos reembolsos de un pedido en una incidencia: se detiene con un error y no borra ninguno"""
+    upgrade(scratch_db, "0024")
+    with psycopg.connect(scratch_db, autocommit=True) as c:
+        _refund(c, "RF-1", step_id="S4")
+        _refund(c, "RF-2", step_id="S7")
+    with pytest.raises(RuntimeError, match="no se borra ninguno"):
+        upgrade(scratch_db)
+    with psycopg.connect(scratch_db) as c:
+        assert c.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0024"
+        assert c.execute("SELECT count(*) FROM executor_issue_refund.refunds").fetchone()[0] == 2
+
+
 def test_command_jobs_migration_reverts(scratch_db):
     """0019 crea command_jobs en los componentes con trabajo largo y su downgrade la borra"""
     from eda_retail.infra.schemas import JOB_COMPONENTS

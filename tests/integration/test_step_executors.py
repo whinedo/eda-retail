@@ -41,8 +41,8 @@ def _api(database_url, action, *, llm=None, service=None, attempts=3, version=1,
                   specs(settings, action, llm or FakeLlmClient([]), RULES, service=service, mail_server=mail_server))
 
 
-def _step(action, order, incident, *, key=None, amount=None, context=True, step_id="S1") -> dict:
-    payload = {"incident_id": incident, "plan_version": 1, "step_id": step_id, "action": action,
+def _step(action, order, incident, *, key=None, amount=None, context=True, step_id="S1", plan_version=1) -> dict:
+    payload = {"incident_id": incident, "plan_version": plan_version, "step_id": step_id, "action": action,
                "params": {"order_id": order, "amount": amount}, "idempotency_key": key or uuid.uuid4().hex}
     if context and action in ("notify_customer", "file_claim"):
         payload |= {"cause": "delay", "estimated_delay_hours": 48}
@@ -285,8 +285,8 @@ def test_v2_too_many_mails_for_an_incident(database_url, conn):
     store = _mail_store()
     api = _api(database_url, "notify_customer", llm=FakeLlmClient([{"text": NOTICE}] * 4), version=2,
                mail_server=build_server(store))
-    for n in range(4):
-        _execute(api, _step("notify_customer", order, incident, step_id=f"S{n}"))
+    for n in range(4):  # una versión del plan por aviso: en la misma, el ejecutor devolvería el primero
+        _execute(api, _step("notify_customer", order, incident, step_id=f"S{n}", plan_version=n + 1))
 
     assert len(store.mailbox) == 3
     failed = [e for e in _events(conn, "notify_customer", incident) if e["event_type"] == "StepFailed"]
@@ -328,3 +328,39 @@ def test_a_notice_step_already_recorded_with_another_key_is_not_resent(database_
     assert events[3]["payload"]["result"] == {"message_id": sent["payload"]["message_id"]}
     assert _count(conn, "executor_notify_customer.customer_messages", incident) == 1
     assert mail.calls == 1
+
+
+def test_a_refund_requested_again_after_a_revision_is_not_repeated(database_url, conn):
+    """Reembolso pedido otra vez tras una revisión: un plan posterior vuelve a proponer `issue_refund` para el mismo
+    pedido con otro `step_id`; el ejecutor devuelve el reembolso existente, sin otro reembolso ni RefundIssued"""
+    order, incident = _order(conn), _incident()
+    payments = FakeService("payments", "RF")
+    api = _api(database_url, "issue_refund", service=payments)
+    _execute(api, _step("issue_refund", order, incident, amount="40.00", step_id="S4"))
+    [issued] = [e for e in _events(conn, "issue_refund", incident) if e["event_type"] == "RefundIssued"]
+
+    _execute(api, _step("issue_refund", order, incident, amount="40.00", step_id="S7", plan_version=3))
+
+    events = _events(conn, "issue_refund", incident)
+    assert [e["event_type"] for e in events] == ["RefundIssued", "StepCompleted", "StepCompleted"]
+    assert events[2]["payload"]["result"] == {"refund_id": issued["payload"]["refund_id"]}
+    assert _count(conn, "executor_issue_refund.refunds", incident) == 1
+    assert payments.calls == 1
+
+
+def test_one_notice_per_order_and_plan_version(database_url, conn):
+    """Otro aviso del mismo pedido en la misma versión: otro `notify_customer` del mismo pedido en la misma versión
+    devuelve el aviso existente; en una versión nueva se envía otro"""
+    order, incident = _order(conn), _incident()
+    mail = FakeService("mail", "M")
+    api = _api(database_url, "notify_customer", llm=FakeLlmClient([{"text": NOTICE}] * 3), service=mail)
+    _execute(api, _step("notify_customer", order, incident, step_id="S1", plan_version=2))
+    [sent] = [e for e in _events(conn, "notify_customer", incident) if e["event_type"] == "CustomerNotified"]
+
+    _execute(api, _step("notify_customer", order, incident, step_id="S5", plan_version=2))
+    completed = [e for e in _events(conn, "notify_customer", incident) if e["event_type"] == "StepCompleted"]
+    assert completed[-1]["payload"]["result"] == {"message_id": sent["payload"]["message_id"]}
+    assert (_count(conn, "executor_notify_customer.customer_messages", incident), mail.calls) == (1, 1)
+
+    _execute(api, _step("notify_customer", order, incident, step_id="S6", plan_version=3))
+    assert (_count(conn, "executor_notify_customer.customer_messages", incident), mail.calls) == (2, 2)
