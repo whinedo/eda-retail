@@ -364,3 +364,28 @@ def test_one_notice_per_order_and_plan_version(database_url, conn):
 
     _execute(api, _step("notify_customer", order, incident, step_id="S6", plan_version=3))
     assert (_count(conn, "executor_notify_customer.customer_messages", incident), mail.calls) == (2, 2)
+
+
+def test_an_expired_in_progress_key_is_taken_over(database_url, conn):
+    """Clave en curso vencida (spec experiments, E22): una clave `in_progress` cuyo ejecutor cayó y cuyo
+    `locked_until` ya venció; otro ejecutor recibe el mismo paso, lo toma y lo completa sin duplicar el efecto
+    externo"""
+    order, incident, key = _order(conn), _incident(), uuid.uuid4().hex
+    mail = FakeService("mail", "M")
+    mail.call(key)  # el ejecutor caído ya envió el correo con la clave
+    with conn.transaction():
+        conn.execute("INSERT INTO executor_notify_customer.effect_keys (idempotency_key, incident_id, step_id, action,"
+                     " status, locked_until) VALUES (%s, %s, 'S1', 'notify_customer', 'in_progress',"
+                     " now() - interval '1 second')", (key, incident))
+
+    response = _execute(_api(database_url, "notify_customer", llm=FakeLlmClient([{"text": NOTICE}]), service=mail),
+                        _step("notify_customer", order, incident, key=key))
+
+    assert response.status_code == 202
+    assert [e["event_type"] for e in _events(conn, "notify_customer", incident)][-2:] == [
+        "CustomerNotified", "StepCompleted"]
+    with conn.transaction():
+        status = conn.execute("SELECT status FROM executor_notify_customer.effect_keys WHERE idempotency_key = %s",
+                              (key,)).fetchone()["status"]
+    assert status == "completed"
+    assert mail.executions[key] == 1  # el reintento usa la misma clave: el servicio no repite el envío

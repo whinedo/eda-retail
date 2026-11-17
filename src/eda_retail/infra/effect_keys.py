@@ -28,6 +28,10 @@ from psycopg.types.json import Jsonb
 from eda_retail.infra.schemas import qualified
 
 
+class EffectInProgress(RuntimeError):
+    """La clave está `in_progress` en otra instancia con su plazo vigente (BUSY): el trabajo se reintenta."""
+
+
 class ClaimStatus(enum.Enum):
     ACQUIRED = "acquired"
     COMPLETED = "completed"

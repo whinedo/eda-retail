@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from types import SimpleNamespace
 
 import pytest
 
@@ -12,6 +13,8 @@ from eda_retail.step_executors.runtime import ExecuteStep
 from eda_retail.synthetic.faults import (
     INJECTED_FAILURE,
     ConsumerCrashed,
+    EffectRecordCrash,
+    EffectRecordCrashes,
     FaultPlan,
     FaultyDelivery,
     should_fail,
@@ -177,6 +180,14 @@ def test_fault_plan_rejects_invalid_values():
         FaultPlan(step_delay_seconds={"file_claim": -1.0})
     with pytest.raises(ValueError):
         FaultPlan(step_delay_seconds={"delete_order": 1.0})
+    with pytest.raises(ValueError):
+        FaultPlan(concurrent_commands={"ExecuteStep": 0})
+    with pytest.raises(ValueError):
+        FaultPlan(concurrent_commands={"DeleteOrder": 2})
+    with pytest.raises(ValueError):
+        FaultPlan(reinvoke_steps=("delete_order",))
+    with pytest.raises(ValueError):
+        FaultPlan(crash_between_effect_and_record=("delete_order",))
 
 
 def test_non_idempotent_service_repeats_the_effect():
@@ -214,3 +225,57 @@ def test_reset_group_offsets_to_the_beginning():
     reset_group_offsets(admin, ["interpreter", "orchestrator"], "eda.t", [2, 0, 1])
     parts = [("eda.t", 0, 0), ("eda.t", 1, 0), ("eda.t", 2, 0)]
     assert admin.altered == [("interpreter", parts), ("orchestrator", parts)]
+
+
+def test_crash_between_effect_and_record_only_on_the_first_attempt_of_each_key():
+    """Caída entre efecto y registro: cae en el primer envío de cada clave de esas acciones, no en el reintento"""
+    crashes = EffectRecordCrashes(FaultPlan(crash_between_effect_and_record=("notify_customer",)))
+    assert crashes.should_crash("notify_customer", "K1") is True
+    assert crashes.should_crash("notify_customer", "K1") is False  # el reintento con la misma clave
+    assert crashes.should_crash("notify_customer", "K2") is True
+    assert crashes.should_crash("issue_refund", "K3") is False  # acción sin caída
+    assert crashes.crashed == {"K1": "notify_customer", "K2": "notify_customer"}
+
+
+class _Service:
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def prepare(self, command, payload):
+        self.calls.append(payload.idempotency_key)
+        return SimpleNamespace(external_id="M-1", stored=None)
+
+
+def _notify(key: str) -> ExecuteStep:
+    return ExecuteStep(incident_id="I-1", plan_version=1, step_id="S1", action="notify_customer",
+                       params={"order_id": "P-1"}, idempotency_key=key)
+
+
+def test_executor_crashes_after_the_effect_and_retries_with_the_same_key():
+    """Caída entre efecto y registro (spec synthetic-data): el ejecutor envía el correo y cae antes de registrar la
+    clave; el experimento registra una ejecución del servicio con la clave K y el siguiente intento llega con el
+    mismo command_id y la misma clave K"""
+    service, handled = _Service(), []
+    spec = CommandSpec(ExecuteStep, lambda conn, c, p, prepared: handled.append((c.command_id, p.idempotency_key)),
+                       prepare=service.prepare)
+    crashes = EffectRecordCrashes(FaultPlan(crash_between_effect_and_record=("notify_customer",)))
+    wrapped = harness.crashing(spec, crashes)
+    command = CommandEnvelope(command_id=uuid.uuid4(), command_type="ExecuteStep", correlation_id="I-1",
+                              causation_id=None, payload=_notify("K").model_dump())
+
+    with pytest.raises(EffectRecordCrash):
+        wrapped.prepare(command, _notify("K"))
+    assert service.calls == ["K"] and handled == []  # el efecto ocurrió y no se registró
+
+    retry = wrapped.prepare(command, _notify("K"))  # el trabajo se reintenta: mismo command_id y clave
+    wrapped.handle(None, command, _notify("K"), retry)
+    assert service.calls == ["K", "K"] and handled == [(command.command_id, "K")]
+
+
+def test_no_crash_when_the_effect_already_existed():
+    """Sin efecto nuevo (resultado guardado) no hay ventana efecto–registro: no cae"""
+    spec = CommandSpec(ExecuteStep, lambda *a: None,
+                       prepare=lambda c, p: SimpleNamespace(external_id=None, stored={"message_id": "M-1"}))
+    wrapped = harness.crashing(spec, EffectRecordCrashes(FaultPlan(crash_between_effect_and_record=("notify_customer",))))
+    command = SimpleNamespace(command_id=uuid.uuid4())
+    assert wrapped.prepare(command, _notify("K")).stored == {"message_id": "M-1"}

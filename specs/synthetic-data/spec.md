@@ -124,7 +124,21 @@ La inyección SHALL permitir llevar los offsets de uno o todos los grupos de con
 
 ### Requirement: Entrega concurrente de comandos
 
-La inyección SHALL permitir entregar un mismo comando desde N hilos (o procesos) a la vez, con conexiones propias, para ejercer las carreras del inbox y de `effect_keys`, y SHALL permitir un punto de caída entre el efecto externo y el registro de su clave (`crash_between_effect_and_record` por acción).
+La inyección SHALL permitir entregar un mismo comando desde N hilos (o procesos) a la vez, con conexiones propias, para ejercer las carreras del inbox y de `effect_keys`, SHALL permitir entregar a la vez el `ExecuteStep` de una acción con otro `command_id` y la misma `idempotency_key` (como una reinvocación de la saga tras un plazo), y SHALL permitir un punto de caída entre el efecto externo y el registro de su clave (`crash_between_effect_and_record` por acción). Cada entrega anota la respuesta que recibió.
+
+#### Scenario: Mismo comando desde varios hilos
+
+- **GIVEN** la entrega concurrente de `ExecuteStep` con 4 hilos
+- **WHEN** la saga invoca un paso
+- **THEN** el comando llega 4 veces a la vez con el mismo `command_id`
+- **AND** se anotan las 4 respuestas de ese `command_id`
+
+#### Scenario: Reinvocación con otro command_id
+
+- **GIVEN** la reinvocación de `notify_customer`
+- **WHEN** la saga invoca un paso `notify_customer` con la clave K
+- **THEN** llegan a la vez dos `ExecuteStep` con la clave K y `command_id` distintos
+- **AND** el resto de acciones llega una sola vez
 
 #### Scenario: Caída entre efecto y registro
 

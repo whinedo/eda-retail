@@ -156,6 +156,24 @@ def _e21(report: dict[str, Any]) -> list[Check]:
     ]
 
 
+E22_VARIANTS = ("execute_step_2", "execute_step_4", "execute_step_8", "other_commands", "same_key",
+                "effect_record_crash")
+E22_SERVICE_ACTIONS = ("notify_customer", "file_claim", "reserve_stock", "reissue_shipment", "issue_refund")
+
+
+def _e22(report: dict[str, Any]) -> list[Check]:
+    checks = []
+    for variant in E22_VARIANTS:
+        prefix = f"metrics.variants.{variant}"
+        checks += [_check(report, f"{prefix}.h22", "true", lambda v: v is True),
+                   *(_check(report, f"{prefix}.executions_per_key.{action}", "<= 1",
+                            lambda v: isinstance(v, int) and v <= 1) for action in E22_SERVICE_ACTIONS),
+                   _check(report, f"{prefix}.distinct_responses_per_command_id", "<= 1",
+                          lambda v: isinstance(v, int) and v <= 1),
+                   *_invariants(report, prefix)]
+    return checks
+
+
 E23_VARIANTS = ("resent_notices", "rerequested_steps", "refund_again", "shared_order")
 E23_AT_MOST_ONE = ("incidents_per_notice", "shipment_delayed_per_incident", "claims_per_incident_order",
                    "notices_per_incident_order_version", "refunds_per_incident_order",
@@ -235,6 +253,14 @@ CATALOG: dict[str, Entry] = {
         "sin inbox de comandos ni `effect_keys`.",
         "H21: reproducir el log no produce ningún efecto, evento ni cambio de estado nuevos, y la variante de "
         "control sin idempotencia en los efectos sí repite algún efecto.", _e21),
+    "e22": Entry(
+        "E22", "Mide las carreras de comandos y la ventana entre el efecto y el registro de su clave: 50 incidencias "
+        "con un 50 % de fallos en `reserve_stock` y cuatro variantes: el mismo `ExecuteStep` desde 2, 4 y 8 hilos; "
+        "`CreatePlan`, `RevisePlan`, `RegisterCarrierNotice` y `SeedSampleData` concurrentes con el mismo "
+        "`command_id`; dos `command_id` con la misma `idempotency_key`; y una caída entre el efecto y el registro en "
+        "`notify_customer` e `issue_refund`, con reintento.",
+        "H22: como mucho una ejecución del servicio por clave en cada variante, la misma respuesta para todas las "
+        "entregas de un `command_id` e I1 a I5 sin violaciones.", _e22),
     "e23": Entry(
         "E23", "Mide los duplicados que nacen del negocio: 50 incidencias con un 50 % de fallos en `reserve_stock` "
         "y cuatro variantes: avisos reenviados de 1 a 5 veces (en orden y a la vez), replanes que vuelven a pedir "

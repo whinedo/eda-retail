@@ -34,7 +34,8 @@ def executed(monkeypatch):
 
 def _commands(plan, *, inbox=True, crashed=None):
     target = harness.Target("executor_notify_customer", {"ExecuteStep": None}, inbox)
-    return harness.InProcessCommands(None, {"http://x": target}, plan, crashed if crashed is not None else set())
+    return harness.InProcessCommands(None, {"http://x": target}, plan, crashed if crashed is not None else set(),
+                                     connect=lambda: None)
 
 
 PAYLOAD = {"action": "notify_customer", "step_id": "S1"}
@@ -59,6 +60,54 @@ def test_an_executor_crashes_after_committing_and_before_answering(executed):
 
     assert len(executed) == 3  # el paso de la caída se confirmó antes de caer
     assert commands.crashes == 1 and crashed == {"executor-notify_customer"}
+
+
+STEP = {"action": "notify_customer", "step_id": "S1", "idempotency_key": "K1"}
+
+
+def test_same_command_from_several_threads(executed):
+    """Mismo comando desde varios hilos: el mismo comando desde N hilos a la vez, con el mismo command_id; se anotan
+    las respuestas de cada entrega"""
+    command_id = uuid.uuid4()
+    commands = _commands(FaultPlan(concurrent_commands={"ExecuteStep": 4}))
+    _invoke(commands, STEP, command_id)
+    assert executed == [("executor_notify_customer", command_id, True)] * 4
+    [delivery] = commands.deliveries
+    assert (delivery.command_id, delivery.idempotency_key, len(delivery.responses)) == (command_id, "K1", 4)
+    assert harness.distinct_responses(commands.deliveries) == 1
+
+
+def test_reinvocation_with_another_command_id(executed):
+    """Reinvocación con otro command_id: el ExecuteStep de esas acciones llega también, a la vez, con un command_id
+    nuevo y la misma idempotency_key (una reinvocación de la saga)"""
+    command_id = uuid.uuid4()
+    commands = _commands(FaultPlan(reinvoke_steps=("notify_customer",)))
+    _invoke(commands, STEP, command_id)
+    ids = {c for _, c, _ in executed}
+    assert len(executed) == 2 and command_id in ids and len(ids) == 2
+    assert {d.idempotency_key for d in commands.deliveries} == {"K1"}
+    _invoke(commands, PAYLOAD | {"action": "file_claim", "idempotency_key": "K2"})
+    assert len(executed) == 3  # file_claim no se reinvoca
+
+
+@pytest.mark.parametrize("inbox", [True, False])
+def test_entry_commands_keep_one_delivery_with_inbox(executed, inbox):
+    """Comandos de entrada del arnés (datos de ejemplo, avisos): una entrega con inbox aunque el plan duplique los
+    comandos o el sistema no use inbox (comportamiento anterior a E22)"""
+    command = CommandEnvelope(command_id=uuid.uuid4(), command_type="ExecuteStep", correlation_id="I-1",
+                              causation_id=None, payload=STEP)
+    commands = _commands(FaultPlan(duplicates=3), inbox=inbox)
+    commands.deliver(harness.Target("intake", {"ExecuteStep": None}, inbox), command, entry=True)
+    assert executed == [("intake", command.command_id, True)]
+
+
+def test_distinct_responses_per_command_id():
+    """Respuestas distintas por command_id: el máximo de respuestas diferentes que recibió un mismo command_id"""
+    c = uuid.uuid4()
+    same = harness.CommandDelivery("ExecuteStep", c, "notify_customer", "K", [(202, {"a": 1}), (202, {"a": 1})])
+    other = harness.CommandDelivery("ExecuteStep", c, "notify_customer", "K", [(422, {"a": 2})])
+    assert harness.distinct_responses([same]) == 1
+    assert harness.distinct_responses([same, other]) == 2
 
 
 def _failing_spec(plan):
@@ -163,3 +212,27 @@ def test_the_harness_planner_does_not_consult_the_carrier_by_default(monkeypatch
     harness = Harness(Settings(), RunConfig(seed=1, incidents=1), llm=FakeLlmClient([]), carrier=injected)
     harness.settings = Settings()
     assert harness._targets()["planner"].specs["CreatePlan"].prepare._carrier is injected
+
+
+def test_duplicated_commands_answer_with_the_last_delivery(monkeypatch):
+    """E1: con `duplicates`, la saga recibe la respuesta de la última entrega (sin inbox, el segundo `CreatePlan` se
+    rechaza y la saga escala con `command_rejected`)"""
+    answers = iter([CommandResponse(202, {"status": "accepted"}), CommandResponse(422, {"reason": "plan_exists"})])
+    monkeypatch.setattr(harness, "execute_command", lambda *a, **k: next(answers))
+    reply = _invoke(_commands(FaultPlan(duplicates=2), inbox=False), {"action": "notify_customer"})
+    assert (reply.status_code, reply.body) == (422, {"reason": "plan_exists"})
+
+
+def test_busy_claims_are_counted_and_retried():
+    """E22: un trabajo que encuentra su clave `in_progress` se cuenta y el error sigue para que el trabajo se
+    reintente"""
+    from eda_retail.infra.effect_keys import EffectInProgress
+
+    def handle(conn, command, payload, prepared):
+        raise EffectInProgress("K en curso")
+
+    counted = []
+    spec = harness.counting_busy(CommandSpec(ExecuteStep, handle), lambda: counted.append(1))
+    with pytest.raises(EffectInProgress):
+        spec.handle(None, None, None, None)
+    assert counted == [1]

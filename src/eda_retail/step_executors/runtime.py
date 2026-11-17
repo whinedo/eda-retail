@@ -204,7 +204,7 @@ def execute_step(action: RecordingAction, settings: Settings):
             result = claim.result or {}
         elif claim.status is effect_keys.ClaimStatus.BUSY:
             # Clave y efecto se confirman juntos: solo otra transacción en curso. El cliente reintenta.
-            raise RuntimeError(f"efecto {step.idempotency_key} en curso")
+            raise effect_keys.EffectInProgress(f"efecto {step.idempotency_key} en curso")
         elif prepared.stored is not None:
             # Resultado guardado de esta clave, o de un efecto que ya existía con otra clave: se registra en
             # la clave de este paso, sin evento de efecto nuevo.
