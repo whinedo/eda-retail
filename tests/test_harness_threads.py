@@ -10,6 +10,7 @@ import time
 from types import SimpleNamespace
 from typing import ClassVar
 
+import pytest
 from pydantic import BaseModel
 
 from eda_retail.config import Settings
@@ -177,3 +178,38 @@ def test_run_does_not_finish_while_jobs_are_pending(monkeypatch):
 
     assert calls.step > 20  # siguió mientras había trabajos, y luego venció el plazo de inactividad
     assert next(open_jobs) == 0
+
+
+def test_final_sweep_publishes_what_a_thread_left_after_the_last_turn(monkeypatch):
+    """Un hilo confirma una fila de outbox justo tras el último turno y deja de trabajar: el repaso final da un turno
+    más, que la publica, y se para cuando dos turnos seguidos no avanzan, sin esperar a ningún lag"""
+    h = _bare(harness.RunConfig(seed=1, incidents=1, idle_seconds=5, timeout_seconds=10))
+    turns = iter([0, 1, 0, 0])  # quieto; el turno extra publica la fila; después, quieto otra vez
+    calls = SimpleNamespace(step=0)
+
+    def step():
+        calls.step += 1
+        return next(turns)
+
+    monkeypatch.setattr(h, "step", step)
+    monkeypatch.setattr(h, "_working", lambda: False)
+    monkeypatch.setattr(h, "lag", lambda: pytest.fail("el repaso final no consulta el lag"))
+    start = time.monotonic()
+
+    h._settle()
+
+    assert calls.step == 4 and time.monotonic() - start < 1
+
+
+def test_catch_up_log_reads_event_log_up_to_the_high_watermarks():
+    """Antes de las invariantes, event_log lee hasta las marcas de agua altas; si no llega, lo dice sin fallar"""
+    h = _bare(harness.RunConfig(seed=1, incidents=1, idle_seconds=5, timeout_seconds=10))
+    timeouts: list[float] = []
+    h._readers = [SimpleNamespace(catch_up=timeouts.append)]
+    assert h.catch_up_log(3.0) is True and timeouts == [3.0]
+
+    def stuck(timeout):
+        raise TimeoutError("event_log: no llegó a {0: 5} en 3.0 s")
+
+    h._readers = [SimpleNamespace(catch_up=stuck)]
+    assert h.catch_up_log(3.0) is False

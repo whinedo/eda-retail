@@ -168,21 +168,21 @@ El harness SHALL ofrecer un modo multiproceso (`--mode multiprocess`) que arranq
 
 ### Requirement: E11 Entrega retrasada y planes revisados (H11)
 
-El sistema SHALL cumplir la hipótesis H11: con revisiones forzadas del plan y resultados de pasos que llegan tarde, ningún resultado obsoleto cambia el estado de la saga y se mantienen los invariantes I1 a I5. El escenario son 50 incidencias con un 50 % de fallos en `reserve_stock` (`fail_probability`), planes con pasos en paralelo y `step_delay_seconds` en `reserve_stock`, `reissue_shipment` y `file_claim` para que haya resultados de una `plan_version` anterior después de un `PlanRevised`. El informe MUST dar: `PlanRevised` por incidencia, resultados registrados como obsoletos (`StepCompleted` y `StepFailed` con `plan_version` anterior a la vigente), resultados tardíos tras el plazo, compensaciones pedidas y completadas, y el número de incidencias escaladas por motivo.
+El sistema SHALL cumplir la hipótesis H11: con revisiones forzadas del plan y resultados de pasos que llegan tarde, ningún resultado obsoleto cambia el estado de la saga, salvo la excepción del supuesto A4, y se mantienen los invariantes I1 a I5. El escenario son 50 incidencias con un 50 % de fallos en `reserve_stock` (`fail_probability`), planes con pasos en paralelo, `step_delay_seconds` en `reserve_stock`, `reissue_shipment` y `file_claim` para que haya resultados de una `plan_version` anterior después de un `PlanRevised`, y un plazo de `ExecuteStep` más corto que parte de esos retrasos. El orquestador descarta un resultado obsoleto sin registrarlo en ningún sitio, así que el experimento los cuenta desde el log: es obsoleto el `StepCompleted` o `StepFailed` cuya `plan_version` es anterior a la vigente cuando el orquestador lo consume, y el de un paso cuyo plazo ya venció con el paso pedido (el plazo no deja evento: lo anota el harness al tratarlo). Un obsoleto cambia el estado de la saga si el orquestador emite algún evento con él como causa. La excepción A4: el `StepCompleted` tardío de un `reserve_stock` cancelado se marca completado y pide su `release_stock`, para no dejar la reserva sin liberar; esa compensación MUST pedirse una sola vez. El informe MUST dar: `PlanRevised` por incidencia, resultados obsoletos por versión y tras el plazo, los que cambiaron el estado de la saga (fuera de A4) y las compensaciones A4, compensaciones pedidas y completadas, y el número de incidencias escaladas por motivo.
 
 #### Scenario: Resultado de una versión antigua tras una revisión
 
 - **GIVEN** un plan v1 con `reserve_stock` y `file_claim` en paralelo, y la reserva falla
 - **WHEN** la saga aplica `PlanRevised` v2 y después llega el `StepCompleted` de `file_claim` de la v1
-- **THEN** el orquestador lo registra como obsoleto sin cambiar el estado de la saga
-- **AND** el paso `file_claim` no se ejecuta otra vez
+- **THEN** el orquestador lo descarta como obsoleto sin cambiar el estado de la saga (no emite ningún evento por él)
+- **AND** el efecto de `file_claim` no se ejecuta otra vez (I2)
 
 #### Scenario: Resultado después del plazo
 
 - **GIVEN** un `ExecuteStep` cuyo plazo vence mientras su ejecutor tarda más de lo previsto
 - **WHEN** el resultado llega después del plazo
-- **THEN** la saga ya ha tratado el paso como `StepFailed` con `error` `timeout` y registra el resultado como obsoleto
-- **AND** si el paso era `reserve_stock`, su compensación se ejecuta una sola vez
+- **THEN** la saga ya ha tratado el paso como fallido con `error` `timeout` y descarta el resultado como obsoleto
+- **AND** si el paso era `reserve_stock`, su compensación se pide una sola vez
 
 #### Scenario: Reembolso con compensaciones pendientes
 
@@ -194,7 +194,13 @@ El sistema SHALL cumplir la hipótesis H11: con revisiones forzadas del plan y r
 
 - **GIVEN** la ejecución completa de E11
 - **WHEN** se evalúa la hipótesis
-- **THEN** H11 se cumple si I1 a I5 no tienen violaciones y ningún resultado obsoleto modificó una fila de `orchestrator.plan_steps`
+- **THEN** H11 se cumple si I1 a I5 no tienen violaciones, ningún resultado obsoleto cambió el estado de la saga salvo las compensaciones A4 y ninguna compensación se pidió más de una vez
+
+#### Scenario: Reserva cancelada completada tarde (supuesto A4)
+
+- **GIVEN** un `reserve_stock` cancelado por una revisión del plan cuyo `StepCompleted` llega después
+- **WHEN** el orquestador lo consume
+- **THEN** marca la reserva como completada y pide su `release_stock` una sola vez, y no cuenta como un cambio de estado indebido
 
 ### Requirement: E12 Ejecutor caído y ejecutor colgado (H12)
 

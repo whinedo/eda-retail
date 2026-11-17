@@ -58,3 +58,9 @@ def test_replay_without_one_consumer_inbox(report):
 def test_h21_met(report):
     """Cumplimiento de H21"""
     assert report.hypothesis == {"H21": True}
+
+
+def test_report_with_invariants(report):
+    """Informe con invariantes"""
+    assert set(report.metrics["invariants"]) == {"I1", "I2", "I3", "I4", "I5"}
+    assert all(inv["violations"] == 0 for inv in report.metrics["invariants"].values())

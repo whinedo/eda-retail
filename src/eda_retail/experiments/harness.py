@@ -62,8 +62,10 @@ from mcp.server.mcpserver import MCPServer
 from eda_retail.config import Settings
 from eda_retail.event_log import cli as event_log
 from eda_retail.events.catalog import build_event
+from eda_retail.events.envelope import EventEnvelope
 from eda_retail.events.ids import incident_id_for_notice
 from eda_retail.experiments.oracle import Oracle
+from eda_retail.infra import outbox
 from eda_retail.infra.backoff import Backoff
 from eda_retail.infra.command_client import CommandReply, CommandUnavailable
 from eda_retail.infra.commands import Accepted, CommandEnvelope, CommandSpec, execute_command
@@ -101,6 +103,7 @@ from eda_retail.synthetic.faults import (
     group_lag,
     reset_group_offsets,
     should_fail,
+    step_delay,
 )
 from eda_retail.synthetic.generator import Dataset, generate
 
@@ -117,6 +120,7 @@ SERVICE_OF = {"notify_customer": "mail", "file_claim": "claims", "reissue_shipme
 JOB_POLL_S = 0.05  # sondeo de un worker de trabajos sin trabajo
 CONSUMER_POLL_S = 0.1  # sondeo de Kafka de un consumidor en su hilo
 JOIN_TIMEOUT_S = 30.0  # espera al parar un hilo (puede estar dentro de una llamada al LLM)
+LOG_CATCH_UP_S = 30.0  # espera máxima de event_log a las marcas de agua altas antes de las invariantes
 IDLE_SLEEP_S = 0.01  # pausa de un turno sin avance mientras los hilos trabajan
 THREADED_CONSUMERS = frozenset({interpreter.SCHEMA})  # consumidores con su propio hilo
 PUBLISHERS = ("intake", "interpreter", "planner", "replanner", "orchestrator", "inventory",
@@ -197,6 +201,27 @@ def failing(spec: CommandSpec, producer: str, plan: FaultPlan) -> CommandSpec:
         }, correlation_id=command.correlation_id, causation_id=command.command_id, producer=producer)])
 
     return replace(spec, prepare=prepare, handle=handle)
+
+
+# (esquema del ejecutor, command_id, eventos de resultado, segundos): los añade a su outbox más tarde.
+DeferResult = Callable[[str, uuid.UUID, list[EventEnvelope], float], None]
+
+
+def delaying(spec: CommandSpec, schema: str, plan: FaultPlan, defer: DeferResult) -> CommandSpec:
+    """`ExecuteStep` cuyo resultado llega tarde (spec synthetic-data, «Inyección de entrega retrasada por acción»):
+    el efecto se ejecuta a su hora y en su transacción, pero sus eventos (`StepCompleted` o `StepFailed`) no van
+    al outbox con ella: `defer` los añade `step_delay` segundos después."""
+
+    def handle(conn: psycopg.Connection, command: CommandEnvelope, payload: Any, prepared: Any) -> Any:
+        outcome = spec.handle(conn, command, payload, prepared)
+        seconds = step_delay(plan.seed, payload.action, payload.idempotency_key,
+                             plan.step_delay_seconds.get(payload.action, 0.0))
+        if seconds <= 0 or not isinstance(outcome, Accepted) or not outcome.events:
+            return outcome
+        defer(schema, command.command_id, list(outcome.events), seconds)
+        return replace(outcome, events=[])
+
+    return replace(spec, handle=handle)
 
 
 class Activity:
@@ -298,6 +323,7 @@ class RunConfig:
     step_timeout_seconds: float | None = None  # plazo de ExecuteStep; None: el de la configuración
     pending_notice_timeout_seconds: float = PENDING_NOTICE_TIMEOUT_S  # plazo de un aviso aparcado
     seed_orders: bool = True  # False: los pedidos se siembran después, con `Harness.seed_orders` (E17)
+    track_timeouts: bool = False  # anota los `ExecuteStep` cuyo plazo vence (`Harness.timed_out`, E11)
 
 
 def saga_deadlines(config: RunConfig) -> dict[str, float]:
@@ -375,6 +401,8 @@ class Harness:
         self._stop = threading.Event()
         self._crash_lock = threading.Lock()
         self._projectors_paused = False
+        self.delayed_results = 0  # resultados de pasos retrasados (E11)
+        self.timed_out: list[dict[str, Any]] = []  # pasos cuyo plazo venció con el paso pedido (E11)
         self._threads: list[threading.Thread] = []
         self._workers: list[JobWorker] = []
         self._threaded = set(THREADED_CONSUMERS)
@@ -443,8 +471,9 @@ class Harness:
             "planner": Target(planner.SCHEMA, planner.specs(s, self.llm, self.rules, carrier=self._carrier),
                               mode != "none"),
             "replanner": Target(replanner.SCHEMA, replanner.specs(s, self.llm, self.rules), mode != "none"),
-            "inventory": Target(inventory.SCHEMA, dict(inventory.specs(effects), ExecuteStep=failing(
-                inventory.specs(effects)["ExecuteStep"], inventory.SCHEMA, plan)), mode == "full"),
+            "inventory": Target(inventory.SCHEMA, dict(inventory.specs(effects), ExecuteStep=delaying(failing(
+                inventory.specs(effects)["ExecuteStep"], inventory.SCHEMA, plan), inventory.SCHEMA, plan,
+                self._defer_result)), mode == "full"),
         }
         mail_server = mail_server_for(self.services, s.poc_version)
         for action in EXECUTOR_ACTIONS:
@@ -452,9 +481,57 @@ class Harness:
                                         service=getattr(self.services, SERVICE_OF[action]),
                                         mail_server=mail_server)["ExecuteStep"]
             targets[f"executor_{action}"] = Target(f"executor_{action}",
-                                                   {"ExecuteStep": failing(spec, f"executor-{action}", plan)},
+                                                   {"ExecuteStep": delaying(failing(spec, f"executor-{action}", plan),
+                                                                            f"executor_{action}", plan,
+                                                                            self._defer_result)},
                                                    mode == "full")
         return targets
+
+    def _record_timeouts(self) -> None:
+        """Los `ExecuteStep` que `expire_once` va a tratar como `timeout` en este turno: plazo vencido y sin
+        resolver con el paso aún `requested`. El orquestador y los plazos van en el mismo hilo, así que nada los
+        resuelve entre esta consulta y `expire_once`. El plazo no deja ningún evento en el log."""
+        with self._timer_conn.transaction():
+            rows = self._timer_conn.execute(
+                """
+                SELECT d.incident_id, d.step_id, (c.payload ->> 'plan_version')::int AS plan_version
+                FROM orchestrator.deadlines d
+                JOIN orchestrator.command_outbox c USING (command_id)
+                JOIN orchestrator.plan_steps s ON s.incident_id = d.incident_id AND s.step_id = d.step_id
+                WHERE d.kind = 'execute_step' AND d.resolved_at IS NULL AND d.expires_at <= now()
+                  AND s.status = 'requested'
+                """
+            ).fetchall()
+        self.timed_out += [dict(r) for r in rows]
+
+    def _defer_result(self, schema: str, command_id: uuid.UUID, events: list[EventEnvelope], seconds: float) -> None:
+        """Añade al outbox de `schema` los eventos de resultado de un paso `seconds` segundos después, cuando la
+        transacción del comando ya está confirmada (su fila de inbox existe). Cuenta como trabajo en curso."""
+        url = self.settings.database_url
+        with self._crash_lock:
+            self.delayed_results += 1
+
+        def run() -> None:
+            with self._activity.working():
+                time.sleep(seconds)
+                conn = connect(url)
+                try:
+                    end = time.monotonic() + JOIN_TIMEOUT_S
+                    while time.monotonic() < end:
+                        with conn.transaction():
+                            if conn.execute(f"SELECT 1 FROM {qualified(schema, 'inbox')} WHERE message_id = %s",
+                                            (command_id,)).fetchone() is not None:
+                                outbox.append(conn, schema, events)
+                                break
+                        time.sleep(IDLE_SLEEP_S)
+                    else:
+                        log.warning("resultado retrasado de %s descartado: el comando %s no se confirmó",
+                                    schema, command_id)
+                finally:
+                    conn.close()
+            self._activity.progressed()
+
+        threading.Thread(target=run, daemon=True, name=f"harness-delay-{schema}").start()
 
     def _build(self) -> None:
         s = self.settings
@@ -605,8 +682,7 @@ class Harness:
     def step(self) -> int:
         """Un turno: relays, lado de lectura, consumidores, dispatcher y plazos. Devuelve cuánto avanzó."""
         progressed = sum(r.run_once() + r.publish_dead_letters() for r in self._relays)
-        readers = self._readers[:1] if self._projectors_paused else self._readers  # [0] es event_log
-        progressed += sum(r.run_once(timeout=0) for r in readers)
+        progressed += sum(r.run_once(timeout=0) for r in self._active_readers())
         for i, (delivery, factory) in enumerate(self._deliveries):
             if delivery.consumer.name in self._threaded:
                 continue  # tiene su propio hilo
@@ -626,6 +702,8 @@ class Harness:
                                  backoff=self._dispatch_backoff):
                 break
             progressed += 1
+        if self.config.track_timeouts:
+            self._record_timeouts()
         progressed += expire_once(self._timer_conn, self.settings, self.rules)
         progressed += interpreter.expire_parked(self._timer_conn)
         return progressed
@@ -686,6 +764,26 @@ class Harness:
             time.sleep(IDLE_SLEEP_S)
         return moved
 
+    def _settle(self) -> None:
+        """Último repaso, hasta `idle_seconds`: turnos mientras algo avance o un hilo trabaje, y, cuando todo parece
+        quieto, uno más. Un hilo puede confirmar una fila de outbox (un resultado retrasado) justo después del último
+        turno y antes de dejar de contar como trabajo: el turno extra la publica. No espera a ningún lag: lo que
+        `event_log` aún no haya leído lo lee `catch_up_log`, una sola vez, antes de comprobar las invariantes."""
+        end = time.monotonic() + self.config.idle_seconds
+        while time.monotonic() < end:
+            if not (self.step() or self._working() or self.step()):
+                return
+
+    def catch_up_log(self, timeout: float = LOG_CATCH_UP_S) -> bool:
+        """`event_log` lee hasta las marcas de agua altas de ahora (I4 busca ahí cada fila publicada). False si no
+        llega en `timeout`."""
+        try:
+            self._readers[0].catch_up(timeout)
+        except TimeoutError as exc:
+            log.warning("%s", exc)
+            return False
+        return True
+
     def run_until_closed(self) -> float:
         """Turnos hasta cerrar todas las incidencias, o hasta `idle_seconds` sin avance (con los hilos ociosos
         y sin trabajos pendientes) o `timeout_seconds` en total."""
@@ -699,9 +797,7 @@ class Harness:
             elif now - last > self.config.idle_seconds:
                 break
         # Un último repaso para que las vistas y el log reflejen todo lo publicado.
-        end = time.monotonic() + self.config.idle_seconds
-        while (self.step() or self._working()) and time.monotonic() < end:
-            pass
+        self._settle()
         return time.monotonic() - start
 
     # -- reproducción del log (E21) ------------------------------------------------------------
@@ -712,6 +808,10 @@ class Harness:
     def messages(self) -> int:
         """Mensajes que hay ahora en el topic de la ejecución."""
         return sum(self._readers[0].high_watermarks().values())
+
+    def _active_readers(self) -> list[Any]:
+        """Consumidores del lado de lectura en marcha: `event_log` ([0]) y, si no están parados, los proyectores."""
+        return self._readers[:1] if self._projectors_paused else self._readers
 
     def lag(self) -> int:
         """Lo que les falta por leer a los grupos de Kafka y al lado de lectura."""
@@ -773,9 +873,7 @@ class Harness:
         while time.monotonic() - start < self.config.timeout_seconds:
             if not self._advance() and self.lag() == 0:
                 break
-        end = time.monotonic() + self.config.idle_seconds
-        while (self.step() or self._working()) and time.monotonic() < end:
-            pass
+        self._settle()
         return time.monotonic() - start
 
     def redeliver(self, command_type: str = "ExecuteStep", *, idempotency: str | None = None) -> list[CommandReply]:

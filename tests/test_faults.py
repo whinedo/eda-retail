@@ -15,6 +15,7 @@ from eda_retail.synthetic.faults import (
     FaultPlan,
     FaultyDelivery,
     should_fail,
+    step_delay,
 )
 
 
@@ -106,6 +107,62 @@ def test_failing_action_fails_chosen_steps_only():
     assert len(handled) == 200 - failed and failed > 0
 
 
+def _step(key: str, action: str = "file_claim") -> tuple[ExecuteStep, CommandEnvelope]:
+    step = ExecuteStep(incident_id="I1", plan_version=1, step_id="S2", action=action,
+                       params={"order_id": "P1"}, idempotency_key=key)
+    return step, CommandEnvelope(command_id=uuid.uuid4(), command_type="ExecuteStep", correlation_id="I1",
+                                 causation_id=None, payload=step.model_dump())
+
+
+def test_deterministic_late_result():
+    """Resultado tardío determinista: los mismos pasos file_claim retrasan su resultado la misma cantidad en las
+    dos ejecuciones"""
+    keys = [f"k{i}" for i in range(100)]
+    first = [step_delay(42, "file_claim", k, 4.0) for k in keys]
+    assert first == [step_delay(42, "file_claim", k, 4.0) for k in keys]
+    assert all(2.0 <= d < 6.0 for d in first) and len(set(first)) > 90  # jitter en [0,5, 1,5) de 4 s
+    assert first != [step_delay(43, "file_claim", k, 4.0) for k in keys]
+    assert step_delay(42, "file_claim", "k1", 0.0) == 0.0
+
+
+def test_delayed_step_result_is_appended_later():
+    """El efecto se ejecuta en su transacción, pero sus eventos de resultado se entregan al cabo del retraso"""
+    plan = FaultPlan(seed=42, step_delay_seconds={"file_claim": 4.0})
+    deferred = []
+    events = [object()]
+    spec = harness.delaying(CommandSpec(ExecuteStep, lambda conn, command, payload, prepared: Accepted(
+        list(events), {"ok": True})), "executor_file_claim", plan,
+        lambda schema, command_id, evs, seconds: deferred.append((schema, command_id, evs, seconds)))
+    step, command = _step("k1")
+    outcome = spec.handle(None, command, step, None)
+    assert outcome.events == [] and outcome.body == {"ok": True}
+    [(schema, command_id, evs, seconds)] = deferred
+    assert (schema, command_id, evs) == ("executor_file_claim", command.command_id, events)
+    assert seconds == step_delay(42, "file_claim", "k1", 4.0)
+
+
+def test_action_without_delay_keeps_its_result():
+    plan = FaultPlan(seed=42, step_delay_seconds={"file_claim": 4.0})
+    deferred = []
+    spec = harness.delaying(CommandSpec(ExecuteStep, lambda conn, command, payload, prepared: Accepted([object()])),
+                            "executor_notify_customer", plan, lambda *a: deferred.append(a))
+    step, command = _step("k1", action="notify_customer")
+    assert len(spec.handle(None, command, step, None).events) == 1 and deferred == []
+
+
+def test_combination_of_faults():
+    """Combinación de fallos: con la misma semilla, los mismos pasos fallan y se retrasan en las dos ejecuciones"""
+    plan = FaultPlan(seed=42, duplicates=2, fail_probability={"reserve_stock": 0.5},
+                     step_delay_seconds={"reserve_stock": 3.0})
+    keys = [f"k{i}" for i in range(50)]
+
+    def run() -> list[tuple[bool, float]]:
+        return [(should_fail(plan.seed, "reserve_stock", k, 0.5), step_delay(plan.seed, "reserve_stock", k, 3.0))
+                for k in keys]
+
+    assert run() == run()
+
+
 def test_fault_plan_rejects_invalid_values():
     """La configuración de fallos se valida: entregas de 1 a N, probabilidades entre 0 y 1, acciones permitidas"""
     with pytest.raises(ValueError):
@@ -116,6 +173,10 @@ def test_fault_plan_rejects_invalid_values():
         FaultPlan(fail_probability={"delete_order": 0.1})
     with pytest.raises(ValueError):
         FaultPlan(delay_seconds=-1)
+    with pytest.raises(ValueError):
+        FaultPlan(step_delay_seconds={"file_claim": -1.0})
+    with pytest.raises(ValueError):
+        FaultPlan(step_delay_seconds={"delete_order": 1.0})
 
 
 def test_non_idempotent_service_repeats_the_effect():
