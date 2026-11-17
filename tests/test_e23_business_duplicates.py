@@ -20,6 +20,8 @@ from eda_retail.experiments.e23_business_duplicates import (
 from eda_retail.experiments.oracle import Oracle
 from eda_retail.llm.generation import LlmRequest
 from eda_retail.llm.schemas import PlanProposal
+from eda_retail.replanner.handler import check_revision
+from eda_retail.rules import BusinessRules
 from eda_retail.synthetic.generator import generate
 
 DATA = generate(seed=11, size=12)
@@ -37,41 +39,61 @@ def _prompt(*lines: str, failed: str) -> str:
             + f"\nFallo: el paso {failed} terminó con el error out_of_stock y no se puede reintentar.")
 
 
-def _loss_failed() -> str:
+AMOUNTS = {o.order_id: o.amount for o in DATA.orders}
+
+
+def _current(*steps: tuple[str, str, list[str], str]) -> list[dict]:
+    """El plan vigente del replanner: (step_id, acción, depends_on, estado) del pedido LOSS."""
+    def params(action: str) -> dict:
+        return {"order_id": LOSS.order_id} | ({"amount": float(AMOUNTS[LOSS.order_id])}
+                                             if action == "issue_refund" else {})
+    return [{"step_id": i, "action": a, "params": params(a), "depends_on": deps, "status": status}
+            for i, a, deps, status in steps]
+
+
+def _prompt_of(current: list[dict], failed: str) -> str:
     o = {"order_id": LOSS.order_id}
-    return _prompt(f"S1: notify_customer {o} depends_on [] -> completed",
-                   f"S2: file_claim {o} depends_on [] -> completed",
-                   f"S3: reserve_stock {o} depends_on [] -> failed, error out_of_stock",
-                   f"S4: reissue_shipment {o} depends_on ['S3'] -> pending", failed="S3")
+    return _prompt(*(f"{s['step_id']}: {s['action']} {o} depends_on {s['depends_on']} -> {s['status']}"
+                     for s in current), failed=failed)
 
 
-def _valid(plan: list[dict]) -> bool:
-    ids = [s["step_id"] for s in plan]
-    return len(ids) == len(set(ids)) and all(d in ids or d in {"S1", "S2"} for s in plan for d in s["depends_on"])
+LOSS_FAILED = _current(("S1", "notify_customer", [], "completed"), ("S2", "file_claim", [], "completed"),
+                       ("S3", "reserve_stock", [], "failed"), ("S4", "reissue_shipment", ["S3"], "pending"))
+
+
+def _accepted(current: list[dict], plan: list[dict]) -> bool:
+    """El replanner del sistema acepta la revisión (spec incident-planning: `check_revision`)."""
+    return not isinstance(check_revision(current, plan, BusinessRules(), AMOUNTS), str)
+
+
+def _loss_failed() -> str:
+    return _prompt_of(LOSS_FAILED, "S3")
 
 
 def test_replan_asks_again_for_a_claim_and_a_notice_already_served():
-    """Reclamación solicitada dos veces: el oráculo de la variante (b) mantiene `file_claim` y `notify_customer`
-    completados y los vuelve a pedir con `step_id` nuevos para el mismo pedido"""
+    """Reclamación solicitada dos veces: el oráculo de la variante (b) vuelve a pedir `file_claim` y
+    `notify_customer` ya completados con `step_id` nuevos para el mismo pedido, y el replanner lo acepta"""
     plan = _replan(RerequestOracle(DATA), _loss_failed())
     assert [(s["step_id"], s["action"]) for s in plan] == [
-        ("S5", "issue_refund"), ("S1", "notify_customer"), ("S2", "file_claim"),
-        ("S6", "notify_customer"), ("S7", "file_claim")]
-    assert all(s["params"]["order_id"] == LOSS.order_id for s in plan) and _valid(plan)
+        ("S5", "issue_refund"), ("S6", "notify_customer"), ("S7", "file_claim")]
+    assert all(s["params"]["order_id"] == LOSS.order_id for s in plan)
+    assert _accepted(LOSS_FAILED, plan)
 
 
 def test_replan_proposes_the_refund_again_after_a_later_failure():
-    """Reembolso único: el oráculo de la variante (c) añade, tras el reembolso, una reserva que depende de él; si
-    esa reserva falla, el replan siguiente vuelve a proponer `issue_refund`"""
+    """Reembolso único: el oráculo de la variante (c) mantiene, tras el reembolso, la reserva fallida (su
+    `step_id`, su clave y por tanto su fallo); cuando vuelve a fallar, el replan siguiente propone `issue_refund`
+    otra vez, y el replanner acepta las dos revisiones"""
     first = _replan(RefundAgainOracle(DATA), _loss_failed())
     assert [(s["step_id"], s["action"], s["depends_on"]) for s in first] == [
-        ("S5", "issue_refund", []), ("S6", "reserve_stock", ["S5"])]
-    o = {"order_id": LOSS.order_id}
-    second = _replan(RefundAgainOracle(DATA), _prompt(
-        f"S1: notify_customer {o} depends_on [] -> completed", f"S2: file_claim {o} depends_on [] -> completed",
-        f"S5: issue_refund {o} depends_on [] -> completed",
-        f"S6: reserve_stock {o} depends_on ['S5'] -> failed, error out_of_stock", failed="S6"))
-    assert [(s["step_id"], s["action"]) for s in second] == [("S7", "issue_refund")]
+        ("S5", "issue_refund", []), ("S3", "reserve_stock", ["S5"])]
+    assert _accepted(LOSS_FAILED, first)
+    again = _current(("S1", "notify_customer", [], "completed"), ("S2", "file_claim", [], "completed"),
+                     ("S3", "reserve_stock", ["S5"], "failed"), ("S4", "reissue_shipment", ["S3"], "cancelled"),
+                     ("S5", "issue_refund", [], "completed"))
+    second = _replan(RefundAgainOracle(DATA), _prompt_of(again, "S3"))
+    assert [(s["step_id"], s["action"]) for s in second] == [("S6", "issue_refund")]
+    assert _accepted(again, second)
 
 
 def test_shared_order_dataset_gives_some_orders_a_second_notice():

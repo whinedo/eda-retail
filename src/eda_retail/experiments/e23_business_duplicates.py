@@ -6,10 +6,10 @@ Cuatro ejecuciones de 50 incidencias con un 50 % de fallos en `reserve_stock`, q
 
 - (a) `resent_notices`: cada aviso se reenvía de 1 a 5 veces con el mismo `carrier_notice_id`, unos en orden y
   otros a la vez;
-- (b) `rerequested_steps`: el replanner mantiene `file_claim` y `notify_customer` ya completados y además los vuelve
-  a pedir con `step_id` nuevos (`RerequestOracle`);
-- (c) `refund_again`: el primer replan añade, tras el reembolso, una reserva nueva que puede volver a fallar, y el
-  replan siguiente vuelve a proponer `issue_refund` (`RefundAgainOracle`);
+- (b) `rerequested_steps`: el replanner vuelve a pedir `file_claim` y `notify_customer` ya completados con
+  `step_id` nuevos (`RerequestOracle`);
+- (c) `refund_again`: el primer replan mantiene, tras el reembolso, la reserva fallida, que vuelve a fallar (misma
+  clave), y el replan siguiente vuelve a proponer `issue_refund` (`RefundAgainOracle`);
 - (d) `shared_order`: parte de los pedidos reciben un segundo aviso con otro `carrier_notice_id` y las mismas
   etiquetas, así que el oráculo (que indexa por pedido) responde igual a las dos incidencias.
 
@@ -61,31 +61,33 @@ def _next_id(*plans: Iterable[Mapping[str, Any]]) -> int:
 
 
 class RerequestOracle(Oracle):
-    """(b): además del plan del oráculo, mantiene `file_claim` y `notify_customer` ya completados (con su
-    `step_id`) y los vuelve a pedir con `step_id` nuevos para el mismo pedido."""
+    """(b): además del plan del oráculo, vuelve a pedir `file_claim` y `notify_customer` ya completados con
+    `step_id` nuevos para el mismo pedido (el replanner no acepta un paso completado en el plan:
+    `completed_step_in_plan`)."""
 
     def _replan(self, prompt: str, order: str) -> list[dict[str, Any]]:
         kept = super()._replan(prompt, order)
         done = [s for s in _plan(prompt) if s["status"] == "completed" and s["action"] in REREQUESTED]
         n = _next_id(_plan(prompt), kept)
-        again = [{"step_id": f"S{n + i}", "action": s["action"], "params": {"order_id": order}, "depends_on": []}
-                 for i, s in enumerate(done)]
-        same = [{"step_id": s["step_id"], "action": s["action"], "params": {"order_id": order}, "depends_on": []}
-                for s in done]
-        return kept + same + again
+        return kept + [{"step_id": f"S{n + i}", "action": s["action"], "params": {"order_id": order},
+                        "depends_on": []} for i, s in enumerate(done)]
 
 
 class RefundAgainOracle(Oracle):
-    """(c): cuando el oráculo sustituye un reenvío por un reembolso y aún no hay ninguno completado, añade una
-    reserva nueva que depende del reembolso; si falla, el replan siguiente vuelve a proponer `issue_refund`."""
+    """(c): cuando el oráculo sustituye un reenvío por un reembolso tras fallar `reserve_stock` y aún no hay ningún
+    reembolso completado, mantiene la reserva fallida (su `step_id`, para que el replanner no lo rechace con
+    `step_id_changed`) dependiendo del reembolso. Conserva su clave y por tanto su fallo, así que vuelve a fallar y
+    el replan siguiente propone `issue_refund` otra vez."""
 
     def _replan(self, prompt: str, order: str) -> list[dict[str, Any]]:
         kept = super()._replan(prompt, order)
-        refunded = any(s["action"] == "issue_refund" and s["status"] == "completed" for s in _plan(prompt))
+        plan = _plan(prompt)
+        refunded = any(s["action"] == "issue_refund" and s["status"] == "completed" for s in plan)
         refund = next((s for s in kept if s["action"] == "issue_refund"), None)
-        if refund is not None and not refunded:
-            kept.append({"step_id": f"S{_next_id(_plan(prompt), kept)}", "action": "reserve_stock",
-                         "params": {"order_id": order}, "depends_on": [refund["step_id"]]})
+        failed = next((s for s in plan if s["status"] == "failed" and s["action"] == "reserve_stock"), None)
+        if refund is not None and failed is not None and not refunded:
+            kept.append({"step_id": failed["step_id"], "action": "reserve_stock", "params": {"order_id": order},
+                         "depends_on": [refund["step_id"]]})
         return kept
 
 
