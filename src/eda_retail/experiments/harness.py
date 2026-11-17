@@ -55,6 +55,7 @@ from decimal import Decimal
 from typing import Any, Self
 
 import psycopg
+from confluent_kafka import TopicPartition
 from confluent_kafka.admin import AdminClient, NewTopic
 from mcp.server.mcpserver import MCPServer
 
@@ -462,7 +463,8 @@ class Harness:
         self._relays = [ComponentRelay.from_settings(s, schema) for schema in PUBLISHERS]
         # El lado de lectura no tiene outbox: su relay solo publica sus dead letters en la DLQ.
         self._relays += [ComponentRelay.from_settings(s, schema, outbox=False) for schema in READ_SIDE]
-        self._readers = [event_log.build(s), *(consumer_for(p, s, self._connect()) for p in build_all())]
+        self._projectors = build_all()
+        self._readers = [event_log.build(s), *(consumer_for(p, s, self._connect()) for p in self._projectors)]
         self._closables += [*self._relays, *self._readers]
         self._build_deliveries()
 
@@ -687,10 +689,41 @@ class Harness:
 
     def lag(self) -> int:
         """Lo que les falta por leer a los grupos de Kafka y al lado de lectura."""
+        return sum(self.lags().values())
+
+    def lags(self) -> dict[str, int]:
+        """Lag de cada grupo de Kafka y de cada consumidor posicionado del lado de lectura (E18)."""
         highs = self._readers[0].high_watermarks()
         topic = self.settings.events_topic
-        return (sum(group_lag(self._admin, group, topic, highs) for group in self._factories())
-                + sum(reader.lag() for reader in self._readers))
+        lags = {group: group_lag(self._admin, group, topic, highs) for group in self._factories()}
+        return lags | {reader.consumer: reader.lag() for reader in self._readers}
+
+    # -- mensajes veneno (E18) -----------------------------------------------------------------
+    def dead_letter_consumers(self) -> list[tuple[str, str, Callable[[str | None], bool]]]:
+        """(consumidor, esquema de su `dead_letters`, si atiende un `event_type`) de cada consumidor del
+        topic: los de Kafka, `event_log` (atiende todos los tipos) y cada proyector (spec resilience)."""
+        kafka = [(d.consumer.name, d.consumer.schema, d.consumer.attends) for d, _ in self._deliveries]
+        return [*kafka, (self._readers[0].consumer, READ_SIDE[0], lambda _type: True),
+                *((p.name, READ_SIDE[1], p.attends) for p in self._projectors)]
+
+    def partitions(self) -> list[int]:
+        """Particiones del topic de eventos de la ejecución."""
+        return self._readers[0].partitions()
+
+    def dlq_messages(self) -> int:
+        """Mensajes que hay ahora en el topic DLQ de la ejecución (marcas de agua altas)."""
+        probe = make_consumer(self.settings.kafka_bootstrap_servers, group_id=f"{self.settings.dlq_topic}.probe")
+        try:
+            topic = self.settings.dlq_topic
+            parts = probe.list_topics(topic, timeout=10).topics[topic].partitions
+            return sum(probe.get_watermark_offsets(TopicPartition(topic, p), timeout=10)[1] for p in parts)
+        finally:
+            probe.close()
+
+    def retries(self, partition: int, offset: int) -> dict[str, int]:
+        """Caídas de cada consumidor de Kafka con el mensaje en (`partition`, `offset`) antes de saltarlo."""
+        with self._crash_lock:
+            return {name: n for (name, p, o), n in self._failures.items() if (p, o) == (partition, offset)}
 
     def replay(self, inbox_off: Iterable[str] = ()) -> float:
         """Con el sistema parado, lleva al principio los offsets de los grupos de Kafka (spec synthetic-data,

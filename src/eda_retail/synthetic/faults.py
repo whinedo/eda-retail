@@ -11,6 +11,7 @@
 - Existencias (`empty_warehouses` del plan): el arnés siembra a 0 esos almacenes.
 - Offsets (`reset_group_offsets`): con el sistema parado, lleva los grupos de consumidores al principio
   del topic para reproducir el log completo (E21); `group_lag` dice cuánto les falta por leer.
+- Mensajes veneno (E18): se publican directamente en el topic con `synthetic.poison`.
 """
 
 from __future__ import annotations

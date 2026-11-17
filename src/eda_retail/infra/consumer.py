@@ -156,12 +156,16 @@ class EventConsumer:
     def event_id_of(msg: Message) -> uuid.UUID:
         return uuid.UUID(json.loads(msg.value())["event_id"])
 
+    def attends(self, event_type: str | None) -> bool:
+        """True si atiende el tipo; un mensaje sin `event_type` legible lo atienden todos (spec resilience)."""
+        return event_type is None or event_type in self._handlers
+
     def handle_message(self, msg: Message) -> Outcome:
         """Procesa el mensaje en una transacción. No confirma el offset."""
         try:
             event = decode_checked(msg)
         except InvalidMessage as bad:
-            if bad.event_type is not None and bad.event_type not in self._handlers:
+            if not self.attends(bad.event_type):
                 return Outcome.IGNORED  # no es para este consumidor
             return self._dead_letter(bad)
         if event.event_type not in self._handlers:

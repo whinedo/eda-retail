@@ -107,6 +107,21 @@ def _e7(report: dict[str, Any]) -> list[Check]:
     ]
 
 
+def _e18(report: dict[str, Any]) -> list[Check]:
+    poisons = lookup(report, "metrics.poisons")
+    failed = (MISSING if not isinstance(poisons, dict)
+              else sorted(kind for kind, p in poisons.items() if not p.get("ok")))
+    lags = lookup(report, "metrics.lag")
+    return [
+        Check("metrics.lag (todos los grupos)", "0", lags,
+              isinstance(lags, dict) and bool(lags) and all(v == 0 for v in lags.values())),
+        Check("metrics.poisons (en la DLQ de quien atiende su tipo)", "[] (ninguno falla)", failed,
+              isinstance(poisons, dict) and bool(poisons) and failed == []),
+        _check(report, "metrics.unexpected_dead_letters", "0", lambda v: v == 0),
+        _check(report, "metrics.open", "0", lambda v: v == 0),
+    ]
+
+
 def _e21(report: dict[str, Any]) -> list[Check]:
     return [
         _check(report, "metrics.replay.changed", "false", lambda v: v is False),
@@ -150,6 +165,13 @@ CATALOG: dict[str, Entry] = {
         "el log y la traza.",
         "H7: para el 100 % de las seleccionadas se puede indicar qué agente propuso cada paso, con qué "
         "versión del plan y por qué.", _e7),
+    "e18": Entry(
+        "E18", "Mide los mensajes veneno: con las incidencias en curso se publica en mitad de las particiones un "
+        "mensaje de cada tipo (JSON inválido, campo obligatorio ausente, `event_type` desconocido, versión sin "
+        "upcaster, schema incumplido, datos personales y payload de 900 KB) y se ejecuta hasta lag 0.",
+        "H18: ningún grupo se detiene (lag 0), cada veneno llega a la DLQ de cada consumidor que atiende su tipo y "
+        "a ninguna más, el `event_type` desconocido queda en el log sin dead letter y todas las incidencias "
+        "terminan.", _e18),
     "e21": Entry(
         "E21", "Mide la reproducción total del log: con las incidencias cerradas y el sistema parado, se llevan "
         "los offsets de todos los grupos al principio de `eda.events` y se vuelve a consumir hasta que el lag "

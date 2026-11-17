@@ -282,7 +282,7 @@ El sistema SHALL cumplir la hipótesis H17: con los proyectores parados, los avi
 
 ### Requirement: E18 Mensajes veneno en mitad de la partición (H18)
 
-El sistema SHALL cumplir la hipótesis H18: un mensaje inválido en mitad de una partición no detiene a ningún grupo de consumidores ni se descarta en silencio. El escenario son 100 incidencias con una inyección de cada tipo de veneno, repartidas en distintas posiciones y particiones. El informe MUST dar, por tipo de veneno y por consumidor: si llegó a `<componente>.dead_letters` y a `eda.dlq`, el motivo, el lag de cada grupo al final y cuántos reintentos hizo antes de saltarlo. Cuando el veneno lleva un `correlation_id` identificable, su incidencia SHALL escalarse; en los demás casos queda solo en la dead letter.
+El sistema SHALL cumplir la hipótesis H18: un mensaje inválido en mitad de una partición no detiene a ningún grupo de consumidores ni se descarta en silencio. El escenario son 100 incidencias con una inyección de cada tipo de veneno, repartidas en distintas posiciones y particiones. Los consumidores de un veneno son los que atienden su `event_type`, como fija la spec `resilience` («Dead letter queue»): todos para un mensaje sin `event_type` legible; `event_log` y los consumidores con handler para el tipo, en los demás casos. Un `event_type` desconocido con la estructura común válida no es un veneno para nadie (tolerant reader): se comprueba que ningún consumidor lo lleva a la dead letter y que `event_log` lo guarda. El informe MUST dar, por tipo de veneno y por consumidor: si llegó a `<componente>.dead_letters` y a `eda.dlq`, el motivo, el lag de cada grupo al final y cuántos reintentos hizo antes de saltarlo. Cuando el veneno lleva un `correlation_id` identificable, su incidencia SHALL escalarse; en los demás casos queda solo en la dead letter.
 
 #### Scenario: JSON inválido
 
@@ -291,17 +291,24 @@ El sistema SHALL cumplir la hipótesis H18: un mensaje inválido en mitad de una
 - **THEN** cada consumidor lo guarda en su `dead_letters` con el motivo `invalid_schema` y confirma el offset
 - **AND** los mensajes siguientes de la partición se procesan
 
-#### Scenario: Evento de un tipo o versión desconocidos
+#### Scenario: Evento de un tipo desconocido
 
-- **GIVEN** un evento con `event_type` desconocido y otro con `event_version` sin upcaster
-- **WHEN** los reciben los consumidores
-- **THEN** van a la dead letter queue y no bloquean la partición
+- **GIVEN** un evento con la estructura común válida y un `event_type` que no está en el catálogo
+- **WHEN** lo reciben los consumidores
+- **THEN** ninguno lo lleva a la dead letter queue ni bloquea la partición
+- **AND** `event_log` lo guarda en `event_log.events`
+
+#### Scenario: Evento de una versión desconocida
+
+- **GIVEN** un evento de un tipo del catálogo con `event_version` sin upcaster
+- **WHEN** lo reciben los consumidores
+- **THEN** va a la dead letter queue de cada consumidor que atiende su tipo y no bloquea la partición
 
 #### Scenario: Evento con datos personales
 
 - **GIVEN** un evento cuyo payload incluye datos personales no permitidos
-- **WHEN** lo recibe un consumidor
-- **THEN** va a la dead letter queue y no se escribe en las vistas ni en el log
+- **WHEN** lo reciben los consumidores que atienden su tipo
+- **THEN** va a la dead letter queue de cada uno y no se escribe en las vistas ni en el log
 
 #### Scenario: Payload muy grande
 
@@ -313,13 +320,14 @@ El sistema SHALL cumplir la hipótesis H18: un mensaje inválido en mitad de una
 
 - **GIVEN** el final de la ejecución
 - **WHEN** se compara lo inyectado con lo que hay en `eda.dlq` y en los `dead_letters`
-- **THEN** cada veneno aparece exactamente una vez por consumidor y la ejecución no tiene ningún otro mensaje en la DLQ
+- **THEN** cada veneno aparece exactamente una vez por cada consumidor que atiende su tipo, y en ninguno más
+- **AND** la ejecución no tiene ningún otro mensaje en la DLQ
 
 #### Scenario: Cumplimiento de H18
 
 - **GIVEN** la ejecución completa de E18
 - **WHEN** se evalúa la hipótesis
-- **THEN** H18 se cumple si el lag final de todos los grupos es 0, todo veneno está en su DLQ y las 100 incidencias terminan (I1)
+- **THEN** H18 se cumple si el lag final de todos los grupos es 0, todo veneno está en la DLQ de cada consumidor que atiende su tipo, el evento de tipo desconocido está en `event_log.events` y las 100 incidencias terminan (I1)
 
 ### Requirement: E21 Reproducción total del log (H21)
 
