@@ -235,6 +235,6 @@ def run_e12(base: Settings, *, seed: int = 42, incidents: int = 50) -> Report:
 
 
 def generate_share(seed: int, incidents: int) -> float:
-    """Proporción de incidencias del conjunto que usan `file_claim` (la spec pide aproximadamente la mitad)."""
+    """Proporción de incidencias del conjunto que usan `file_claim` (la spec pide que el informe la dé)."""
     uses = uses_file_claim(generate(seed, incidents))
     return sum(uses.values()) / len(uses) if uses else 0.0
