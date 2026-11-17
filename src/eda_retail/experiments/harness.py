@@ -120,7 +120,7 @@ SERVICE_OF = {"notify_customer": "mail", "file_claim": "claims", "reissue_shipme
 JOB_POLL_S = 0.05  # sondeo de un worker de trabajos sin trabajo
 CONSUMER_POLL_S = 0.1  # sondeo de Kafka de un consumidor en su hilo
 JOIN_TIMEOUT_S = 30.0  # espera al parar un hilo (puede estar dentro de una llamada al LLM)
-SETTLE_GRACE_S = 2.0  # espera máxima del repaso final a que el lag llegue a 0
+SETTLE_GRACE_S = 2.0  # espera máxima del repaso final a que el lado de lectura llegue a lag 0
 IDLE_SLEEP_S = 0.01  # pausa de un turno sin avance mientras los hilos trabajan
 THREADED_CONSUMERS = frozenset({interpreter.SCHEMA})  # consumidores con su propio hilo
 PUBLISHERS = ("intake", "interpreter", "planner", "replanner", "orchestrator", "inventory",
@@ -682,8 +682,7 @@ class Harness:
     def step(self) -> int:
         """Un turno: relays, lado de lectura, consumidores, dispatcher y plazos. Devuelve cuánto avanzó."""
         progressed = sum(r.run_once() + r.publish_dead_letters() for r in self._relays)
-        readers = self._readers[:1] if self._projectors_paused else self._readers  # [0] es event_log
-        progressed += sum(r.run_once(timeout=0) for r in readers)
+        progressed += sum(r.run_once(timeout=0) for r in self._active_readers())
         for i, (delivery, factory) in enumerate(self._deliveries):
             if delivery.consumer.name in self._threaded:
                 continue  # tiene su propio hilo
@@ -769,19 +768,20 @@ class Harness:
         """Último repaso, hasta `idle_seconds`: turnos mientras algo avance o un hilo trabaje, y, cuando todo parece
         quieto, uno más. Un hilo puede confirmar una fila de outbox (un resultado retrasado) justo después del último
         turno y antes de dejar de contar como trabajo: el turno extra la publica. Después espera, como mucho
-        `SETTLE_GRACE_S`, a que el lag sea 0 para que `event_log` y los consumidores la lean."""
+        `SETTLE_GRACE_S`, a que el lado de lectura en marcha la lea (I4 la busca en `event_log`). No espera a los
+        grupos de Kafka ni a los proyectores parados (E17): su lag puede no bajar y cada ejecución pagaría el margen."""
         end = time.monotonic() + self.config.idle_seconds
         grace: float | None = None
         while time.monotonic() < end:
             if self.step() or self._working() or self.step():
                 grace = None
                 continue
-            lag = self.lag()
+            lag = self._read_lag()
             if lag == 0:
                 return
             grace = grace if grace is not None else time.monotonic() + SETTLE_GRACE_S
             if time.monotonic() > grace:
-                log.warning("repaso final terminado con lag %d", lag)
+                log.warning("repaso final terminado con lag %d en el lado de lectura", lag)
                 return
 
     def run_until_closed(self) -> float:
@@ -808,6 +808,14 @@ class Harness:
     def messages(self) -> int:
         """Mensajes que hay ahora en el topic de la ejecución."""
         return sum(self._readers[0].high_watermarks().values())
+
+    def _active_readers(self) -> list[Any]:
+        """Consumidores del lado de lectura en marcha: `event_log` ([0]) y, si no están parados, los proyectores."""
+        return self._readers[:1] if self._projectors_paused else self._readers
+
+    def _read_lag(self) -> int:
+        """Lo que le falta por leer al lado de lectura en marcha."""
+        return sum(r.lag() for r in self._active_readers())
 
     def lag(self) -> int:
         """Lo que les falta por leer a los grupos de Kafka y al lado de lectura."""

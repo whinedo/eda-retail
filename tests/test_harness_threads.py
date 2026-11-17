@@ -10,6 +10,7 @@ import time
 from types import SimpleNamespace
 from typing import ClassVar
 
+import pytest
 from pydantic import BaseModel
 
 from eda_retail.config import Settings
@@ -172,7 +173,7 @@ def test_run_does_not_finish_while_jobs_are_pending(monkeypatch):
     monkeypatch.setattr(h, "closed", lambda: 0)
     monkeypatch.setattr(h, "step", step)
     monkeypatch.setattr(h, "_open_jobs", lambda: next(open_jobs))
-    monkeypatch.setattr(h, "lag", lambda: 0)
+    monkeypatch.setattr(h, "_read_lag", lambda: 0)
 
     h.run_until_closed()
 
@@ -194,7 +195,7 @@ def test_final_sweep_publishes_what_a_thread_left_after_the_last_turn(monkeypatc
 
     monkeypatch.setattr(h, "step", step)
     monkeypatch.setattr(h, "_working", lambda: False)
-    monkeypatch.setattr(h, "lag", lambda: next(lags))
+    monkeypatch.setattr(h, "_read_lag", lambda: next(lags))
 
     h._settle()
 
@@ -207,7 +208,23 @@ def test_final_sweep_does_not_wait_forever_for_lag(monkeypatch):
     monkeypatch.setattr(harness, "SETTLE_GRACE_S", 0.05)
     monkeypatch.setattr(h, "step", lambda: 0)
     monkeypatch.setattr(h, "_working", lambda: False)
-    monkeypatch.setattr(h, "lag", lambda: 3)
+    monkeypatch.setattr(h, "_read_lag", lambda: 3)
     start = time.monotonic()
     h._settle()
     assert time.monotonic() - start < 5
+
+
+def test_final_sweep_waits_only_for_the_running_read_side(monkeypatch):
+    """El repaso final espera solo al lado de lectura en marcha: ni a los grupos de Kafka ni a los proyectores
+    parados (E17), cuyo lag no baja mientras lo estén"""
+    h = _bare(harness.RunConfig(seed=1, incidents=1, idle_seconds=30, timeout_seconds=60))
+    h._readers = [SimpleNamespace(lag=lambda: 0), SimpleNamespace(lag=lambda: 7)]  # [0] es event_log
+    h._projectors_paused = True
+    monkeypatch.setattr(h, "step", lambda: 0)
+    monkeypatch.setattr(h, "_working", lambda: False)
+    monkeypatch.setattr(h, "lag", lambda: pytest.fail("el repaso final no consulta los grupos de Kafka"))
+    start = time.monotonic()
+    h._settle()
+    assert time.monotonic() - start < 1
+    h._projectors_paused = False
+    assert h._read_lag() == 7
