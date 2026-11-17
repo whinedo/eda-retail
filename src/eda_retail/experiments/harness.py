@@ -27,6 +27,12 @@ Fallos (spec experiments; L55):
 - E21: `replay` para el sistema, lleva al principio los offsets de los grupos de Kafka, rebobina el lado de
   lectura y arranca otra vez hasta que el lag sea 0; `redeliver` entrega de nuevo los comandos ya atendidos
   con su `command_id` original.
+- E22 (spec synthetic-data, «Entrega concurrente de comandos»): `concurrent_commands` entrega el comando desde N
+  hilos a la vez, cada uno con su conexión (`deliver_concurrently`); `reinvoke_steps` entrega a la vez el mismo
+  `ExecuteStep` con otro `command_id`; `crash_between_effect_and_record` hace caer el ejecutor entre el efecto y
+  el registro de su clave (`crashing`). `InProcessCommands.deliveries` anota las respuestas de cada entrega,
+  `busy_claims` las claves que un trabajo encontró `in_progress` y `RunConfig.job_workers` da varios workers por
+  componente para que dos trabajos con la misma clave corran a la vez.
 
 Modos de idempotencia (E1, supuesto A3):
 - `full`: inbox en los consumidores y en los comandos, `effect_keys` y servicios con clave.
@@ -44,6 +50,7 @@ ejecuciones. Con la versión 1, el ejecutor llama al servicio simulado directame
 from __future__ import annotations
 
 import contextlib
+import json
 import logging
 import threading
 import time
@@ -94,10 +101,13 @@ from eda_retail.replanner import handler as replanner
 from eda_retail.rules import BusinessRules
 from eda_retail.step_executors import component as step_executors
 from eda_retail.step_executors.actions import ACTIONS as EXECUTOR_ACTIONS
+from eda_retail.step_executors.runtime import EffectInProgress
 from eda_retail.step_executors.services import Services
 from eda_retail.synthetic.faults import (
     INJECTED_FAILURE,
     ConsumerCrashed,
+    EffectRecordCrash,
+    EffectRecordCrashes,
     FaultPlan,
     FaultyDelivery,
     group_lag,
@@ -226,6 +236,34 @@ def delaying(spec: CommandSpec, schema: str, plan: FaultPlan, defer: DeferResult
     return replace(spec, handle=handle)
 
 
+def crashing(spec: CommandSpec, crashes: EffectRecordCrashes) -> CommandSpec:
+    """`ExecuteStep` que cae entre el efecto y el registro de su clave (spec synthetic-data, «Entrega concurrente de
+    comandos»): si `prepare` acaba de llamar al servicio (`external_id`) y es el primer intento de la clave, cae antes
+    de la transacción de `handle`. El trabajo se reintenta con el mismo `command_id` y la misma clave."""
+
+    def prepare(command: CommandEnvelope, payload: Any) -> Any:
+        prepared = spec.prepare(command, payload) if spec.prepare is not None else None
+        if getattr(prepared, "external_id", None) is not None and crashes.should_crash(payload.action,
+                                                                                       payload.idempotency_key):
+            raise EffectRecordCrash(f"{payload.action} cae tras el efecto de {payload.idempotency_key}")
+        return prepared
+
+    return replace(spec, prepare=prepare)
+
+
+def counting_busy(spec: CommandSpec, count: Callable[[], None]) -> CommandSpec:
+    """`ExecuteStep` que anota con `count` cada vez que su trabajo encuentra la clave `in_progress` (E22)."""
+
+    def handle(conn: psycopg.Connection, command: CommandEnvelope, payload: Any, prepared: Any) -> Any:
+        try:
+            return spec.handle(conn, command, payload, prepared)
+        except EffectInProgress:
+            count()
+            raise
+
+    return replace(spec, handle=handle)
+
+
 class Activity:
     """Trabajo en curso (`busy`) y hecho (`done`) en los hilos del arnés: decide si la ejecución está ociosa."""
 
@@ -275,27 +313,109 @@ class Target:
     inbox: bool = True
 
 
+@dataclass
+class CommandDelivery:
+    """Las entregas de un comando y la respuesta de cada una, `(status_code, body)` (E22)."""
+
+    command_type: str
+    command_id: uuid.UUID
+    action: str | None
+    idempotency_key: str | None
+    responses: list[tuple[int, Any]]
+
+
+def distinct_responses(deliveries: Iterable[CommandDelivery]) -> int:
+    """El máximo de respuestas distintas que recibió un mismo `command_id`."""
+    seen: dict[uuid.UUID, set[str]] = {}
+    for d in deliveries:
+        seen.setdefault(d.command_id, set()).update(f"{code}:{json.dumps(body, sort_keys=True, default=str)}"
+                                                    for code, body in d.responses)
+    return max((len(v) for v in seen.values()), default=0)
+
+
+def deliver_concurrently(connect: Callable[[], Any], calls: list[Callable[[Any], Any]]) -> list[Any]:
+    """Hace las llamadas a la vez, cada una en su hilo y con su conexión (`connect`), y devuelve sus resultados en
+    orden. Una barrera las suelta juntas; un error de un hilo se relanza aquí."""
+    barrier = threading.Barrier(len(calls))
+    results: list[Any] = [None] * len(calls)
+    errors: list[BaseException] = []
+
+    def run(i: int) -> None:
+        conn = None
+        try:
+            conn = connect()
+            barrier.wait(timeout=JOIN_TIMEOUT_S)
+            results[i] = calls[i](conn)
+        except BaseException as exc:  # noqa: BLE001 — se relanza en el hilo que llama
+            errors.append(exc)
+        finally:
+            if conn is not None:
+                conn.close()
+
+    threads = [threading.Thread(target=run, args=(i,), name=f"concurrent-{i}") for i in range(len(calls))]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(JOIN_TIMEOUT_S)
+    if errors:
+        raise errors[0]
+    return results
+
+
 class InProcessCommands:
-    """Sustituye a `command_client.invoke`: ejecuta el comando con el handler de su sistema, sin HTTP."""
+    """Sustituye a `command_client.invoke`: ejecuta el comando con el handler de su sistema, sin HTTP.
+
+    `connect` abre la conexión de cada hilo en una entrega concurrente (E22)."""
 
     def __init__(self, conn: psycopg.Connection, targets: dict[str, Target], plan: FaultPlan,
-                 crashed: set[str]) -> None:
+                 crashed: set[str], *, connect: Callable[[], Any] | None = None) -> None:
         self._conn = conn
         self._targets = targets
         self._plan = plan
         self._crashed = crashed
+        self._connect = connect
         self._handled: Counter[str] = Counter()
+        self._lock = threading.Lock()
         self.crashes = 0
+        self.deliveries: list[CommandDelivery] = []
+
+    def deliver(self, target: Target, command: CommandEnvelope, *, conn: psycopg.Connection | None = None,
+                entry: bool = False) -> Any:
+        """Entrega el comando a su sistema con los fallos del plan y devuelve la respuesta a `command`: `duplicates`
+        veces seguidas, o desde `concurrent_commands` hilos a la vez; con `reinvoke_steps`, también a la vez con
+        otro `command_id`. Anota cada entrega en `deliveries`.
+
+        `entry`: comando de entrada del arnés (datos de ejemplo, avisos): siempre con inbox y sin `duplicates`, como
+        antes de E22; solo le afecta `concurrent_commands`."""
+        inbox_enabled = True if entry else target.inbox
+        spec = target.specs[command.command_type]
+        payload = command.payload
+        commands = [command]
+        if command.command_type == "ExecuteStep" and payload.get("action") in self._plan.reinvoke_steps:
+            commands.append(command.model_copy(update={"command_id": uuid.uuid4()}))
+        threads = self._plan.concurrent_commands.get(command.command_type, 1)
+
+        def run(c: CommandEnvelope) -> Callable[[Any], Any]:
+            return lambda conn_: execute_command(conn_, target.schema, c, spec, inbox_enabled=inbox_enabled)
+
+        if len(commands) == 1 and threads == 1:
+            sent = [command] * (1 if entry else self._plan.duplicates)  # al menos una vez: el mismo command_id
+            responses = [run(command)(conn or self._conn) for _ in sent]
+        else:
+            sent = [c for c in commands for _ in range(threads)]
+            responses = deliver_concurrently(self._connect, [run(c) for c in sent])
+        with self._lock:
+            for c in commands:
+                self.deliveries.append(CommandDelivery(
+                    c.command_type, c.command_id, payload.get("action"), payload.get("idempotency_key"),
+                    [(r.status_code, r.body) for s, r in zip(sent, responses, strict=True) if s is c]))
+        return responses[sent.index(command)]
 
     def __call__(self, url: str, command_type: str, *, command_id: uuid.UUID, correlation_id: str,
                  causation_id: uuid.UUID | None, payload: dict[str, Any], timeout: float) -> CommandReply:
-        target = self._targets[url]
         command = CommandEnvelope(command_id=command_id, command_type=command_type, correlation_id=correlation_id,
                                   causation_id=causation_id, payload=payload)
-        response = None
-        for _ in range(self._plan.duplicates):  # entrega al menos una vez: el mismo command_id
-            response = execute_command(self._conn, target.schema, command, target.specs[command_type],
-                                       inbox_enabled=target.inbox)
+        response = self.deliver(self._targets[url], command)
         if command_type == "ExecuteStep" and response.status_code == 202:
             self._crash_after_commit(f"executor-{payload['action']}")
         return CommandReply(response.status_code, response.body, response.replayed)
@@ -326,6 +446,7 @@ class RunConfig:
     pending_notice_timeout_seconds: float = PENDING_NOTICE_TIMEOUT_S  # plazo de un aviso aparcado
     seed_orders: bool = True  # False: los pedidos se siembran después, con `Harness.seed_orders` (E17)
     track_timeouts: bool = False  # anota los `ExecuteStep` cuyo plazo vence (`Harness.timed_out`, E11)
+    job_workers: int = 1  # workers de trabajos por componente (E22: dos trabajos con la misma clave a la vez)
 
 
 def saga_deadlines(config: RunConfig) -> dict[str, float]:
@@ -396,6 +517,8 @@ class Harness:
         self.poison_messages = 0
         self.outcomes: Counter[tuple[str, str]] = Counter()  # (consumidor, resultado) de cada mensaje
         self._inbox_off: frozenset[str] = frozenset()  # consumidores sin inbox (control de E21)
+        self.effect_crashes = EffectRecordCrashes(config.faults)  # caídas entre efecto y registro (E22)
+        self.busy_claims = 0  # trabajos que encontraron su clave `in_progress` (E22)
         self._init_threads()
 
     def _init_threads(self) -> None:
@@ -474,14 +597,15 @@ class Harness:
                               mode != "none"),
             "replanner": Target(replanner.SCHEMA, replanner.specs(s, self.llm, self.rules), mode != "none"),
             "inventory": Target(inventory.SCHEMA, dict(inventory.specs(effects), ExecuteStep=delaying(failing(
-                inventory.specs(effects)["ExecuteStep"], inventory.SCHEMA, plan), inventory.SCHEMA, plan,
-                self._defer_result)), mode == "full"),
+                counting_busy(inventory.specs(effects)["ExecuteStep"], self._count_busy), inventory.SCHEMA, plan),
+                inventory.SCHEMA, plan, self._defer_result)), mode == "full"),
         }
         mail_server = mail_server_for(self.services, s.poc_version)
         for action in EXECUTOR_ACTIONS:
             spec = step_executors.specs(effects, action, self.llm, self.rules,
                                         service=getattr(self.services, SERVICE_OF[action]),
                                         mail_server=mail_server)["ExecuteStep"]
+            spec = counting_busy(crashing(spec, self.effect_crashes), self._count_busy)
             targets[f"executor_{action}"] = Target(f"executor_{action}",
                                                    {"ExecuteStep": delaying(failing(spec, f"executor-{action}", plan),
                                                                             f"executor_{action}", plan,
@@ -505,6 +629,10 @@ class Harness:
                 """
             ).fetchall()
         self.timed_out += [dict(r) for r in rows]
+
+    def _count_busy(self) -> None:
+        with self._crash_lock:
+            self.busy_claims += 1
 
     def _defer_result(self, schema: str, command_id: uuid.UUID, events: list[EventEnvelope], seconds: float) -> None:
         """Añade al outbox de `schema` los eventos de resultado de un paso `seconds` segundos después, cuando la
@@ -539,7 +667,8 @@ class Harness:
         s = self.settings
         self.targets = self._targets()
         self.commands = InProcessCommands(self._connect(), {target_url(s, t): v for t, v in self.targets.items()},
-                                          self.config.faults, self._crashed)
+                                          self.config.faults, self._crashed,
+                                          connect=lambda: connect(s.database_url))
         self._seed_conn = self._connect()
         self._dispatcher_conn = self._connect()
         self._timer_conn = self._connect()
@@ -601,12 +730,13 @@ class Harness:
         for target in self.targets.values():
             if not any(spec.deferred for spec in target.specs.values()):
                 continue
-            worker = JobWorker(lambda: connect(s.database_url), target.schema, target.specs,
-                               lease_seconds=s.job_lease_seconds, poll_interval=JOB_POLL_S, max_attempts=s.job_max_attempts,
-                               backoff=Backoff(0.01, 0.05, seed=self.config.seed), run_once=self._tracked_job,
-                               name=f"harness-jobs-{target.schema}")
-            worker.start()
-            self._workers.append(worker)
+            for k in range(self.config.job_workers):
+                worker = JobWorker(lambda: connect(s.database_url), target.schema, target.specs,
+                                   lease_seconds=s.job_lease_seconds, poll_interval=JOB_POLL_S,
+                                   max_attempts=s.job_max_attempts, backoff=Backoff(0.01, 0.05, seed=self.config.seed),
+                                   run_once=self._tracked_job, name=f"harness-jobs-{target.schema}-{k}")
+                worker.start()
+                self._workers.append(worker)
         for i, (delivery, _) in enumerate(self._deliveries):
             if delivery.consumer.name in self._threaded:
                 thread = threading.Thread(target=self._consume, args=(i,), daemon=True,
@@ -633,12 +763,12 @@ class Harness:
 
     def _command(self, target: str, command_type: str, correlation_id: str, payload: dict[str, Any], *,
                  check: bool = True) -> Any:
-        """Comando de entrada (datos de ejemplo, avisos): directo a su handler, sin fallos inyectados. Con `check`,
-        un rechazo es un error; sin él, devuelve la respuesta."""
-        t = self.targets[target]
+        """Comando de entrada (datos de ejemplo, avisos): directo a su handler, con las entregas del plan
+        (`duplicates`, `concurrent_commands`) y sin más fallos inyectados. Con `check`, un rechazo es un error; sin
+        él, devuelve la respuesta."""
         command = CommandEnvelope(command_id=uuid.uuid4(), command_type=command_type, correlation_id=correlation_id,
                                   causation_id=None, payload=payload)
-        response = execute_command(self._seed_conn, t.schema, command, t.specs[command_type])
+        response = self.commands.deliver(self.targets[target], command, conn=self._seed_conn, entry=True)
         if check and response.status_code != 202:
             raise RuntimeError(f"{command_type} rechazado: {response.body}")
         return response
@@ -687,29 +817,14 @@ class Harness:
         n, t = self.data.notices[index], self.targets["intake"]
         payload = {"carrier_notice_id": n.carrier_notice_id, "carrier": n.carrier,
                    "raw_text": n.raw_text(self.config.fmt)}
-        barrier = threading.Barrier(times)
-        responses: list[Any] = [None] * times
-        errors: list[BaseException] = []
 
-        def send(i: int) -> None:
+        def send(conn: psycopg.Connection) -> Any:
             command = CommandEnvelope(command_id=uuid.uuid4(), command_type="RegisterCarrierNotice",
                                       correlation_id=incident_id_for_notice(n.carrier_notice_id),
                                       causation_id=None, payload=payload)
-            try:
-                with connect(self.settings.database_url) as conn:
-                    barrier.wait(timeout=JOIN_TIMEOUT_S)
-                    responses[i] = execute_command(conn, t.schema, command, t.specs["RegisterCarrierNotice"])
-            except BaseException as exc:  # noqa: BLE001 — se relanza en el hilo que llama
-                errors.append(exc)
+            return execute_command(conn, t.schema, command, t.specs["RegisterCarrierNotice"])
 
-        threads = [threading.Thread(target=send, args=(i,), name=f"resend-{index}-{i}") for i in range(times)]
-        for thread in threads:
-            thread.start()
-        for thread in threads:
-            thread.join(JOIN_TIMEOUT_S)
-        if errors:
-            raise errors[0]
-        return responses
+        return deliver_concurrently(lambda: connect(self.settings.database_url), [send] * times)
 
     def step(self) -> int:
         """Un turno: relays, lado de lectura, consumidores, dispatcher y plazos. Devuelve cuánto avanzó."""

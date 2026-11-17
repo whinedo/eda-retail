@@ -98,6 +98,10 @@ class RecordingAction(StepAction, Protocol):
     def record_calls(self, conn: psycopg.Connection, command: CommandEnvelope, calls: list[LlmCall]) -> None: ...
 
 
+class EffectInProgress(RuntimeError):
+    """La clave del efecto está `in_progress` en otra instancia con su plazo vigente: el trabajo se reintenta."""
+
+
 def _missing_context(action: StepAction, step: ExecuteStep) -> bool:
     return action.needs_context and (step.cause is None or step.estimated_delay_hours is None)
 
@@ -204,7 +208,7 @@ def execute_step(action: RecordingAction, settings: Settings):
             result = claim.result or {}
         elif claim.status is effect_keys.ClaimStatus.BUSY:
             # Clave y efecto se confirman juntos: solo otra transacción en curso. El cliente reintenta.
-            raise RuntimeError(f"efecto {step.idempotency_key} en curso")
+            raise EffectInProgress(f"efecto {step.idempotency_key} en curso")
         elif prepared.stored is not None:
             # Resultado guardado de esta clave, o de un efecto que ya existía con otra clave: se registra en
             # la clave de este paso, sin evento de efecto nuevo.

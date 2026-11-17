@@ -17,11 +17,20 @@
   `experiments.harness.delaying`).
 - Mensajes veneno (E18): se publican directamente en el topic con `synthetic.poison`.
 - Proyectores (E17): el arnés los para y los reanuda (`Harness.pause_projectors`, `resume_projectors`).
+- Entrega concurrente (`concurrent_commands`, E22): el comando de ese tipo se entrega desde N hilos a la vez, cada
+  uno con su conexión y el mismo `command_id` (`Harness` e `InProcessCommands`).
+- Reinvocación (`reinvoke_steps`, E22): el `ExecuteStep` de esas acciones llega a la vez con su `command_id` y con
+  otro nuevo, con la misma `idempotency_key` (como una reinvocación de la saga tras un plazo).
+- Caída entre el efecto y el registro (`crash_between_effect_and_record`, E22): en el primer intento de cada clave de
+  esas acciones, el ejecutor llama al servicio y cae antes de la transacción que registra la clave
+  (`EffectRecordCrashes`; el arnés envuelve el `ExecuteStep` con `experiments.harness.crashing`). El trabajo se
+  reintenta con el mismo `command_id` y la misma clave.
 """
 
 from __future__ import annotations
 
 import hashlib
+import threading
 import time
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
@@ -32,6 +41,8 @@ from confluent_kafka import ConsumerGroupTopicPartitions, TopicPartition
 from eda_retail.events.catalog import Action
 
 INJECTED_FAILURE = "injected_failure"
+# Comandos que admiten entrega concurrente (spec synthetic-data, «Entrega concurrente de comandos»)
+CONCURRENT_COMMANDS = frozenset({"ExecuteStep", "CreatePlan", "RevisePlan", "RegisterCarrierNotice", "SeedSampleData"})
 
 
 @dataclass(frozen=True)
@@ -43,6 +54,9 @@ class FaultPlan:
     crash_after: Mapping[str, int] = field(default_factory=dict)  # consumidor -> cae tras K mensajes
     empty_warehouses: tuple[str, ...] = ()
     step_delay_seconds: Mapping[str, float] = field(default_factory=dict)  # acción -> retraso base del resultado
+    concurrent_commands: Mapping[str, int] = field(default_factory=dict)  # tipo de comando -> hilos a la vez
+    reinvoke_steps: tuple[str, ...] = ()  # acciones cuyo ExecuteStep llega también con otro command_id
+    crash_between_effect_and_record: tuple[str, ...] = ()  # acciones que caen tras el efecto en su primer intento
 
     def __post_init__(self) -> None:
         if self.duplicates < 1:
@@ -62,6 +76,37 @@ class FaultPlan:
                 raise ValueError(f"acción fuera de la lista permitida: {action}")
             if seconds < 0:
                 raise ValueError(f"step_delay_seconds no puede ser negativo para {action}: {seconds}")
+        for command_type, threads in self.concurrent_commands.items():
+            if command_type not in CONCURRENT_COMMANDS:
+                raise ValueError(f"comando sin entrega concurrente: {command_type}")
+            if threads < 1:
+                raise ValueError(f"concurrent_commands debe ser al menos 1 para {command_type}")
+        for action in (*self.reinvoke_steps, *self.crash_between_effect_and_record):
+            if action not in allowed:
+                raise ValueError(f"acción fuera de la lista permitida: {action}")
+
+
+class EffectRecordCrash(RuntimeError):
+    """El ejecutor cae a propósito tras el efecto externo y antes de registrar su clave."""
+
+
+class EffectRecordCrashes:
+    """Decide la caída entre el efecto y el registro: el primer intento de cada clave de las acciones del plan.
+    `crashed` guarda las claves que ya cayeron (con su acción). Seguro entre hilos (varios workers)."""
+
+    def __init__(self, plan: FaultPlan) -> None:
+        self._actions = frozenset(plan.crash_between_effect_and_record)
+        self._lock = threading.Lock()
+        self.crashed: dict[str, str] = {}
+
+    def should_crash(self, action: str, key: str) -> bool:
+        if action not in self._actions:
+            return False
+        with self._lock:
+            if key in self.crashed:
+                return False
+            self.crashed[key] = action
+            return True
 
 
 def step_delay(seed: int, action: str, key: str, base: float) -> float:
