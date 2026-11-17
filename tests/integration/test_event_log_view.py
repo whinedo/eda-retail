@@ -156,12 +156,15 @@ def test_invalid_message_goes_to_the_event_log_dead_letter_once(settings, conn):
     assert row["raw_message"] == {"raw": "not json"}
     assert len(_rows(conn, incident)) == 1
 
-    relay = ComponentRelay.from_settings(settings, "event_log", outbox=False)
-    try:
-        assert relay.run_once() == 0
-        relay.publish_dead_letters()
-    finally:
-        relay.close()
+    # Como en test_component_outbox: la DLQ es el topic del test (el CI no crea `eda.dlq`).
+    # El relay no se cierra: cerraría la conexión del fixture.
+    producer = make_producer(settings.kafka_bootstrap_servers)
+    relay = ComponentRelay(conn, producer, "event_log", settings.events_topic,
+                           dlq_topic=settings.events_topic, outbox=False)
+    assert relay.run_once() == 0
+    while relay.publish_dead_letters():  # también las pendientes de otros tests de la misma base
+        pass
+    producer.flush(10)
     [row] = _dead_letters(settings, conn)
     assert row["published_at"] is not None
 
