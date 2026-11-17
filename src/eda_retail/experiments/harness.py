@@ -322,6 +322,7 @@ class RunConfig:
     step_timeout_seconds: float | None = None  # plazo de ExecuteStep; None: el de la configuración
     pending_notice_timeout_seconds: float = PENDING_NOTICE_TIMEOUT_S  # plazo de un aviso aparcado
     seed_orders: bool = True  # False: los pedidos se siembran después, con `Harness.seed_orders` (E17)
+    track_timeouts: bool = False  # anota los `ExecuteStep` cuyo plazo vence (`Harness.timed_out`, E11)
 
 
 def saga_deadlines(config: RunConfig) -> dict[str, float]:
@@ -400,6 +401,7 @@ class Harness:
         self._crash_lock = threading.Lock()
         self._projectors_paused = False
         self.delayed_results = 0  # resultados de pasos retrasados (E11)
+        self.timed_out: list[dict[str, Any]] = []  # pasos cuyo plazo venció con el paso pedido (E11)
         self._threads: list[threading.Thread] = []
         self._workers: list[JobWorker] = []
         self._threaded = set(THREADED_CONSUMERS)
@@ -483,6 +485,23 @@ class Harness:
                                                                             self._defer_result)},
                                                    mode == "full")
         return targets
+
+    def _record_timeouts(self) -> None:
+        """Los `ExecuteStep` que `expire_once` va a tratar como `timeout` en este turno: plazo vencido y sin
+        resolver con el paso aún `requested`. El orquestador y los plazos van en el mismo hilo, así que nada los
+        resuelve entre esta consulta y `expire_once`. El plazo no deja ningún evento en el log."""
+        with self._timer_conn.transaction():
+            rows = self._timer_conn.execute(
+                """
+                SELECT d.incident_id, d.step_id, (c.payload ->> 'plan_version')::int AS plan_version
+                FROM orchestrator.deadlines d
+                JOIN orchestrator.command_outbox c USING (command_id)
+                JOIN orchestrator.plan_steps s ON s.incident_id = d.incident_id AND s.step_id = d.step_id
+                WHERE d.kind = 'execute_step' AND d.resolved_at IS NULL AND d.expires_at <= now()
+                  AND s.status = 'requested'
+                """
+            ).fetchall()
+        self.timed_out += [dict(r) for r in rows]
 
     def _defer_result(self, schema: str, command_id: uuid.UUID, events: list[EventEnvelope], seconds: float) -> None:
         """Añade al outbox de `schema` los eventos de resultado de un paso `seconds` segundos después, cuando la
@@ -683,6 +702,8 @@ class Harness:
                                  backoff=self._dispatch_backoff):
                 break
             progressed += 1
+        if self.config.track_timeouts:
+            self._record_timeouts()
         progressed += expire_once(self._timer_conn, self.settings, self.rules)
         progressed += interpreter.expire_parked(self._timer_conn)
         return progressed

@@ -112,6 +112,17 @@ def _invariants(report: dict[str, Any], prefix: str = "metrics") -> list[Check]:
     return [_check(report, f"{prefix}.invariants.{name}.violations", "0", lambda v: v == 0) for name in ("I1", "I2")]
 
 
+def _e11(report: dict[str, Any]) -> list[Check]:
+    inv = lookup(report, "metrics.invariants")
+    broken = (MISSING if not isinstance(inv, dict)
+              else sorted(name for name, v in inv.items() if not isinstance(v, dict) or v.get("violations") != 0))
+    return [
+        Check("metrics.invariants (I1 a I5)", "[] (sin violaciones)", broken, isinstance(inv, dict) and broken == []),
+        _check(report, "metrics.stale_state_changes", "0", lambda v: v == 0),
+        _check(report, "metrics.compensations.requested_more_than_once", "0", lambda v: v == 0),
+    ]
+
+
 def _e17(report: dict[str, Any]) -> list[Check]:
     variants = ("order_registered", "expired", "projected")
     return [*(_check(report, f"metrics.holds.{variant}", "true", lambda v: v is True) for variant in variants),
@@ -178,6 +189,12 @@ CATALOG: dict[str, Entry] = {
         "el log y la traza.",
         "H7: para el 100 % de las seleccionadas se puede indicar qué agente propuso cada paso, con qué "
         "versión del plan y por qué.", _e7),
+    "e11": Entry(
+        "E11", "Mide los resultados que llegan tarde: un 50 % de fallos en `reserve_stock`, resultados retrasados "
+        "en `reserve_stock`, `reissue_shipment` y `file_claim` y un plazo de `ExecuteStep` corto, para que haya "
+        "resultados de una versión anterior del plan tras un `PlanRevised` y resultados después del plazo.",
+        "H11: ningún resultado obsoleto cambia el estado de la saga (salvo la compensación de una reserva cancelada "
+        "que se completa tarde, supuesto A4, que se pide una sola vez) e I1 a I5 no tienen violaciones.", _e11),
     "e17": Entry(
         "E17", "Mide los avisos aparcados con la proyección atrasada: con los proyectores parados y el plazo de "
         "aparcamiento acortado a 30 s, tres variantes: pedidos registrados después de aparcar los avisos, pedidos "

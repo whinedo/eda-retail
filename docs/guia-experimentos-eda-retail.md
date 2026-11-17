@@ -91,7 +91,7 @@ Las hipótesis nuevas se llaman como su experimento (H11, H12...). Los marcados 
 | E8 | Matriz de puntos de caída | Caída de cada componente en cada punto de la transacción | Recuperación sin duplicados ni pérdidas | En proceso |
 | E9 | Caída de Kafka | Broker parado y reiniciado | El outbox acumula y el relay publica al volver, sin pérdidas | Multiproceso |
 | E10 | Caída de PostgreSQL | Conexiones cortadas o base parada | Reintentos, sin estado a medias | Multiproceso |
-| E11 (S) | Entrega retrasada y replanes | Resultados tardíos, 50 % de fallos en `reserve_stock` | Eventos obsoletos ignorados, compensaciones correctas | En proceso |
+| E11 (S) | Entrega retrasada y replanes | Resultados tardíos, 50 % de fallos en `reserve_stock` | Eventos obsoletos ignorados, compensaciones correctas | Implementado |
 | E12 (S) | Ejecutor caído y colgado | `file_claim` en `down` y en `hang` | Plazos, aislamiento, cabeza de línea del dispatcher | Multiproceso |
 | E13 | Fallo de compensación | `release_stock` falla | Escalado `compensation_failed`, sin reembolso | En proceso |
 | E14 | Ráfaga y contrapresión | Pico de avisos, 503 de los ejecutores | Dispatcher y cola de trabajos se recuperan | En proceso |
@@ -119,16 +119,17 @@ Todo experimento de resiliencia comprueba, además de su hipótesis, estos cinco
 
 Si I1 o I2 se violan, la hipótesis no se da por cumplida aunque su criterio propio sí lo esté.
 
+**Implementación.** `experiments/invariants.py` los comprueba al terminar, con el sistema parado: I1 con el log (incidencias con `CarrierNoticeReceived` sin `IncidentResolved` ni `IncidentEscalated`), I2 con los efectos repetidos que mide E1, I3 con `executor_issue_refund.refunds` y con el orden de los `StepRequested` y `StepCompleted` del log (un `issue_refund` pedido con una compensación pedida y sin completar), I4 con cada `outbox` (filas sin publicar o cuyo evento no está en `event_log.events`) e I5 reconstruyendo cada vista desde el topic. E11, E17, E18 y E21 los incluyen en `metrics.invariants`; E21 los comprueba antes de sus observaciones y de su control, que repiten efectos a propósito.
+
 ## 5. Experimentos nuevos en detalle
 
 ### E11 Entrega retrasada y replanes forzados (H11)
 
 - **Objetivo.** Comprobar que los resultados de una `plan_version` anterior, o posteriores al plazo, no cambian el estado de la saga.
 - **Escenario.** 50 incidencias, 50 % de fallos en `reserve_stock`, planes con pasos en paralelo y retraso del resultado (`step_delay_seconds`) en `reserve_stock`, `reissue_shipment` y `file_claim`. Como Kafka mantiene el orden por incidencia dentro de la partición, los resultados obsoletos nacen del paralelismo y de los plazos, no del reordenamiento del bus.
-- **Mide.** `PlanRevised` por incidencia, resultados registrados como obsoletos, resultados tardíos tras el plazo, compensaciones pedidas y completadas, escaladas por motivo.
-- **Criterio.** H11: I1 a I5 sin violaciones y ningún resultado obsoleto modifica `orchestrator.plan_steps`.
-- **Necesita.** `step_delay_seconds` en `FaultPlan`.
-- **Ejecución prevista.** `uv run eda-experiment e11 --seed 42 --llm oracle`.
+- **Mide.** `PlanRevised` por incidencia, resultados obsoletos por versión y tras el plazo, los que cambiaron el estado de la saga fuera del supuesto A4 y las compensaciones A4, compensaciones pedidas y completadas, escaladas por motivo e I1 a I5.
+- **Criterio.** H11: I1 a I5 sin violaciones, ningún resultado obsoleto cambia el estado de la saga salvo la excepción A4 (el `StepCompleted` tardío de un `reserve_stock` cancelado se marca completado y pide su `release_stock`) y ninguna compensación se pide más de una vez.
+- **Implementación.** `uv run eda-expexecutor run e11`. El orquestador descarta los obsoletos sin registrarlos, así que se cuentan desde el log: obsoleto por versión si su `plan_version` es anterior a la vigente al consumirlo; tras el plazo si el harness anotó que su plazo venció con el paso pedido (el plazo no deja evento). Un obsoleto cambia el estado si el orquestador emite algún evento con él como causa. Retrasos base: `reserve_stock` 1 s, `reissue_shipment` 2 s y `file_claim` 6 s (jitter de 0,5 a 1,5), con un plazo de `ExecuteStep` de 4 s. El retraso deja ejecutar el efecto a su hora y añade su resultado al outbox del ejecutor más tarde.
 
 ### E12 Ejecutor caído y ejecutor colgado (H12)
 
