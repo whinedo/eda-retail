@@ -204,6 +204,8 @@ Lado de comandos (escritura) y lado de consultas (lectura). Los pasos (1) a (4) 
 | `resilience` | Reintentos, dead letter, recuperación y backpressure |
 | `llm-boundaries` | Validación de las salidas del LLM y límites de autonomía |
 | `observability-audit` | Trazas, coste por incidencia y auditoría |
+| `incident-metrics` | Proyector `operations`: hechos operativos por incidencia, consultas de operaciones y retraso de las vistas |
+| `operations-view` | Vista de operaciones del front (`#/analytics/operations`) |
 | `synthetic-data` | Generador de avisos e inyección de fallos |
 | `experiments` | Hipótesis, experimentos, métricas y base síncrona |
 

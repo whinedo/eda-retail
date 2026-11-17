@@ -4,7 +4,7 @@
 
 Ofrecer, dentro de la analítica del front, una segunda pantalla de operaciones que responde a «¿cómo funciona el sistema?»: cuántas incidencias se resuelven y cuántas se escalan y por qué, cuánto cuestan, cuánto tardan, cuánto replanifican, qué calidad tiene el LLM y cuán al día están las vistas. La vista de pedidos (spec `web-front`, «Vista de analítica de pedidos») responde a «¿cómo está cada pedido?» y sigue siendo la pantalla por defecto de la analítica. Como el resto del front, es una vista de la PoC y no parte de su lógica: solo lee proyecciones (specs `cqrs-views` e `incident-metrics`) y no escribe en el log ni salta el command handler.
 
-Mockups: pendientes de validar. Esta spec no los sustituye; se parte de los de `docs/front/` y de la vista de analítica de pedidos, de la que hereda cabecera, estilo y controles.
+La pantalla parte de la vista de analítica de pedidos, de la que hereda cabecera, estilo y controles; sus mockups siguen pendientes de validar.
 
 ## Requirements
 
@@ -256,15 +256,15 @@ La vista de operaciones MUST NOT escribir nada: sus endpoints son `GET`, solo le
 
 - **Navegación.** La analítica sigue teniendo una única entrada en la cabecera, y la vista de pedidos sigue siendo su pantalla por defecto; operaciones cuelga de ella con un enlace. Así no cambia la cabecera ni el recorrido que describe el manual.
 - **Rutas.** `#/analytics` (pedidos) y `#/analytics/operations` (operaciones).
-- **«Ver eventos».** Abrir la vista principal con el filtro de incidencia puesto es un comportamiento nuevo del front: hoy el filtro se escribe a mano. Hay que añadirlo a la spec `web-front` al implementarlo.
+- **«Ver eventos».** Abre la vista principal con el filtro de incidencia puesto; está en la spec `web-front`.
 - **Reseteo.** «Resetear simulación» no afecta a la analítica ni a esta vista, porque no borra datos y la analítica lee las proyecciones completas.
 - **Fuera de alcance.** El panel de resultados de experimentos (`experiments/results`), alarmas o umbrales, exportación a CSV y un historial por intervalos de tiempo.
 
-## Cambios a aplicar en otras specs al implementarla
+## Cambios aplicados en otras specs
 
-Esta spec no modifica las existentes. Para dejarlas coherentes hay que añadir, al implementar:
+Al implementarla se actualizaron:
 
-- `web-front`: en «Vista de analítica de pedidos», el enlace «Operaciones» junto al título; el filtro de incidencia por enlace en la vista principal; y las rutas de «API prevista».
-- `cqrs-views`: la nueva vista en «Vistas mínimas», con referencia a `incident-metrics`.
-- `experiments`: las vistas nuevas en la huella de reconstrucción del E4.
-- `README.md` y `docs/manual-usuario-eda-retail.md`: la lista de specs y la sección 9 del manual.
+- `web-front`: en «Vista de analítica de pedidos», el enlace «Operaciones» junto al título, el filtro de incidencia que pone «Ver eventos» en la vista principal y las rutas de `/api/operations/*`.
+- `cqrs-views`: la vista `operations` en «Vistas mínimas», con referencia a `incident-metrics`.
+- `experiments`: las vistas de `operations` en la huella de reconstrucción del E4.
+- `docs/README.md` y `docs/manual-usuario-eda-retail.md`: la lista de specs y la sección 9.6 del manual.

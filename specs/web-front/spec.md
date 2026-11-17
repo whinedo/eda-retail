@@ -214,6 +214,8 @@ La vista SHALL mostrar:
 
 La vista SHALL seguir las consideraciones de UX de la vista principal: la tabla MUST ser más ancha que su panel cuando no quepa, con desplazamiento horizontal a la derecha sin mover el resto de la pantalla y la cabecera fija en el desplazamiento vertical; SHALL actualizarse en vivo (un cambio aparece en menos de 2 segundos) con un control «Pausar»/«Reanudar»; y SHALL poder filtrarse por incidencia, como el panel de eventos. Solo lee la vista `order_status` (CQRS): no consulta el log ni las tablas de ningún componente.
 
+Junto a su título SHALL tener un enlace «Operaciones» que abre la vista de operaciones (`#/analytics/operations`, spec `operations-view`), sin añadir ningún enlace a la cabecera. Desde la tabla de incidencias de esa vista, «Ver eventos» SHALL abrir la vista principal con el `incident_id` de la fila ya puesto en el filtro **Incidencia** del panel de eventos.
+
 #### Scenario: Acceso desde la vista principal
 
 - **GIVEN** el front abierto en la vista principal
@@ -400,6 +402,7 @@ La cabecera SHALL ofrecer un enlace a la interfaz web de Jaeger, que se abre en 
 | `GET /api/health` | Kafka, PostgreSQL, Ollama y procesos |
 | `GET /api/analytics/orders?status=&incident_id=` | Contadores por estado y pedidos de `order_status`, con `applied` |
 | `GET /api/parked-notices` | Avisos aparcados de `parked_notices`, por plazo, con `applied` |
+| `GET /api/operations/summary`, `/incidents`, `/llm`, `/carriers`, `/freshness` | Vista de operaciones (spec `operations-view`, «API prevista») |
 | `GET /api/config` | Configuración para el front (`jaeger_ui_url`, `free_text_enabled`, `interactive_enabled`) |
 | `POST /api/commands` | Ejecuta un comando de la lista blanca; devuelve `run_id` |
 | `GET /api/commands/{run_id}/stream` | SSE con la salida y, al final, el código de salida |

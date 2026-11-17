@@ -17,8 +17,8 @@ Test runners: unit `uv run pytest -q --ignore=tests/integration -m "not integrat
 | T1 | S1 (projector, views, migration 0026, idempotency, rebuild), S4 | inline | done: projectors/operations.py, 0026, spec facts verified; integration tests in CI | bb2e322 |
 | T2 | S1 (queries, lag) | inline | done: queries/operations.py (p95 nearest-rank, lag_of, kafka_end_offsets 2 s); unit GREEN | bb2e322 |
 | T3 | S2 (API endpoints, read-only) | inline | done: 5 GET routes, 405 on POST, read-only SQL check; unit GREEN | bb2e322 |
-| T4 | S2 (front screen, route, link, live/pause, empty/error states) | inline | done: OperationsView, useOperations, route enum in App, link in OrderAnalytics, client methods; vitest 139 GREEN, typecheck clean; not checked visually in a browser | (this commit) |
-| T5 | S3 (other specs, README, manual) | inline | pending | |
+| T4 | S2 (front screen, route, link, live/pause, empty/error states) | inline | done: OperationsView, useOperations, route enum in App, link in OrderAnalytics, client methods; vitest 139 GREEN, typecheck clean; not checked visually in a browser | 50fff2d |
+| T5 | S3 (other specs, README, manual) | inline | done: web-front, cqrs-views, experiments E4, docs/README.md, manual §9.6, guide status of E16/E21/E23, migration 0026 test | (this commit) |
 
 ## Log
 
