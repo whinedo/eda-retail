@@ -15,12 +15,14 @@ def make_producer(bootstrap_servers: str) -> Producer:
     )
 
 
-def make_consumer(bootstrap_servers: str, group_id: str) -> Consumer:
-    return Consumer(
-        {
-            "bootstrap.servers": bootstrap_servers,
-            "group.id": group_id,
-            "enable.auto.commit": False,
-            "auto.offset.reset": "earliest",
-        }
-    )
+def make_consumer(bootstrap_servers: str, group_id: str, *, session_timeout_ms: int | None = None) -> Consumer:
+    """Consumidor sin auto commit. `session_timeout_ms`: el `session.timeout.ms` del grupo; None, el de librdkafka."""
+    config = {
+        "bootstrap.servers": bootstrap_servers,
+        "group.id": group_id,
+        "enable.auto.commit": False,
+        "auto.offset.reset": "earliest",
+    }
+    if session_timeout_ms is not None:
+        config["session.timeout.ms"] = session_timeout_ms
+    return Consumer(config)

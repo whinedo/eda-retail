@@ -16,6 +16,12 @@ ENV_FILE = ".env"
 POC_VERSIONS = (1, 2)  # 1: la primera versión; 2: añade el servidor de correo MCP y el agente A2A (design.md §15)
 
 
+def _env_optional_int(name: str) -> int | None:
+    """El entero de `name`, o None si no está definida o está vacía."""
+    raw = os.environ.get(name, "").strip()
+    return int(raw) if raw else None
+
+
 def _env_bool(name: str, default: bool) -> bool:
     raw = os.environ.get(name)
     if raw is None or raw == "":
@@ -57,6 +63,11 @@ class Settings:
     database_url: str = field(default_factory=_database_url)
     kafka_bootstrap_servers: str = field(
         default_factory=lambda: os.environ.get("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
+    )
+    # session.timeout.ms del consumidor del orquestador (KAFKA_SESSION_TIMEOUT_MS); sin definir, el de librdkafka
+    # (45 s). E16 lo acorta para congelar una instancia más que su sesión sin esperar tanto.
+    kafka_session_timeout_ms: int | None = field(
+        default_factory=lambda: _env_optional_int("KAFKA_SESSION_TIMEOUT_MS")
     )
     events_topic: str = field(default_factory=lambda: os.environ.get("EVENTS_TOPIC", "eda.events"))
     dlq_topic: str = field(default_factory=lambda: os.environ.get("DLQ_TOPIC", "eda.dlq"))

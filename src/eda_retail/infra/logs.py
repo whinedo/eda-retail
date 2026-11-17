@@ -10,11 +10,13 @@ import logging
 import os
 import sys
 
+FORMAT = "%(asctime)s %(levelname)s [{process}] %(message)s"  # el harness lo lee en modo multiproceso (E16)
+
 
 def setup_logging(process: str) -> None:
     logging.basicConfig(
         level=os.environ.get("LOG_LEVEL", "INFO").upper(),
-        format=f"%(asctime)s %(levelname)s [{process}] %(message)s",
+        format=FORMAT.format(process=process),
         stream=sys.stdout,
         force=True,
     )

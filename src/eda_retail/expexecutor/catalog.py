@@ -123,6 +123,19 @@ def _e11(report: dict[str, Any]) -> list[Check]:
     ]
 
 
+def _e16(report: dict[str, Any]) -> list[Check]:
+    inv = lookup(report, "metrics.invariants")
+    broken = (MISSING if not isinstance(inv, dict)
+              else sorted(name for name, v in inv.items() if not isinstance(v, dict) or v.get("violations") != 0))
+    return [
+        _check(report, "hypothesis.H16", "true", lambda v: v is True),
+        _check(report, "metrics.rebalance.reassigned_before_resume", "true", lambda v: v is True),
+        _check(report, "metrics.duplicate_commands", "[]", lambda v: v == []),
+        _check(report, "metrics.invalid_transitions", "[]", lambda v: v == []),
+        Check("metrics.invariants (I1 a I5)", "[] (sin violaciones)", broken, isinstance(inv, dict) and broken == []),
+    ]
+
+
 def _e17(report: dict[str, Any]) -> list[Check]:
     variants = ("order_registered", "expired", "projected")
     return [*(_check(report, f"metrics.holds.{variant}", "true", lambda v: v is True) for variant in variants),
@@ -253,6 +266,13 @@ CATALOG: dict[str, Entry] = {
         "más un margen, las demás terminan como sin fallo, cada compensación se completa una vez tras la "
         "recuperación e I1 a I5 sin violaciones. H12b (exploratoria): la p95 de las incidencias sin `file_claim` no "
         "supera el doble de la de una ejecución sin fallo; si no se cumple es un hallazgo.", _e12),
+    "e16": Entry(
+        "E16", "Mide un consumidor zombie en modo multiproceso: dos instancias del orquestador en el mismo grupo, "
+        "50 incidencias en curso y un `SIGSTOP` a la que posee más particiones durante más tiempo que "
+        "`session.timeout.ms`; después `SIGCONT`.",
+        "H16: Kafka reasigna las particiones de la congelada antes de que reanude, ningún paso tiene dos "
+        "`ExecuteStep` con `command_id` distinto en la misma versión del plan, no hay transiciones de saga "
+        "inválidas e I1 a I5 no tienen violaciones.", _e16),
     "e17": Entry(
         "E17", "Mide los avisos aparcados con la proyección atrasada: con los proyectores parados y el plazo de "
         "aparcamiento acortado a 30 s, tres variantes: pedidos registrados después de aparcar los avisos, pedidos "

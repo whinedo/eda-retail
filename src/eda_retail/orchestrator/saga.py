@@ -14,6 +14,9 @@ cancelado que sí reservó (supuesto A4): se marca completado y se compensa.
 
 from __future__ import annotations
 
+import logging
+import threading
+import time
 import uuid
 from dataclasses import dataclass, field
 from typing import Any
@@ -27,6 +30,8 @@ from eda_retail.events.envelope import EventEnvelope
 from eda_retail.infra import outbox, tracing
 from eda_retail.orchestrator import rules
 from eda_retail.rules import BusinessRules
+
+log = logging.getLogger("eda_retail.orchestrator.saga")
 
 SCHEMA = "orchestrator"
 PLAN_TIMEOUT = "plan_timeout"
@@ -250,8 +255,11 @@ def _now(conn: psycopg.Connection):
 
 def lock(conn: psycopg.Connection, settings: Settings, rules_: BusinessRules, incident_id: str,
          cause: uuid.UUID) -> Transition | None:
+    start = time.monotonic()
     row = conn.execute("SELECT * FROM orchestrator.incidents WHERE incident_id = %s FOR UPDATE",
                        (incident_id,)).fetchone()
+    # La espera al bloqueo de la incidencia, en el log del proceso (E16: transacciones que esperaron a otra instancia).
+    log.debug("bloqueo de %s: %.3f s en %s", incident_id, time.monotonic() - start, threading.current_thread().name)
     return Transition(conn, settings, rules_, dict(row), cause) if row is not None else None
 
 

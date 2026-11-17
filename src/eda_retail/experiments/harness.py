@@ -56,6 +56,7 @@ from __future__ import annotations
 import contextlib
 import json
 import logging
+import tempfile
 import threading
 import time
 import uuid
@@ -63,6 +64,7 @@ from collections import Counter
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, field, replace
 from decimal import Decimal
+from pathlib import Path
 from typing import Any, Self
 
 import psycopg
@@ -76,6 +78,7 @@ from eda_retail.events.catalog import build_event
 from eda_retail.events.envelope import EventEnvelope
 from eda_retail.events.ids import incident_id_for_notice
 from eda_retail.experiments.oracle import Oracle
+from eda_retail.experiments.processes import CommandGateway, OrchestratorProcess, start_orchestrators
 from eda_retail.infra import outbox
 from eda_retail.infra.backoff import Backoff
 from eda_retail.infra.command_client import CommandReply, CommandUnavailable
@@ -510,6 +513,14 @@ class RunConfig:
     job_workers: int = 1  # workers de trabajos por componente (E22: dos trabajos con la misma clave a la vez)
     command_timeout_seconds: float | None = None  # COMMAND_HTTP_TIMEOUT_S; None: el de la configuración (E12)
     dispatcher_thread: bool = False  # el dispatcher en su propio hilo, como en el orquestador (E12)
+    # Modo multiproceso (E16): instancias de `eda-orchestrator` en procesos propios en lugar del orquestador en
+    # proceso; los demás componentes siguen aquí y les atienden los comandos por REST (`processes.CommandGateway`).
+    orchestrator_processes: int = 0
+    session_timeout_ms: int | None = None  # KAFKA_SESSION_TIMEOUT_MS de esas instancias; None: el de librdkafka
+
+    @property
+    def external_orchestrator(self) -> bool:
+        return self.orchestrator_processes > 0
 
 
 def saga_deadlines(config: RunConfig) -> dict[str, float]:
@@ -584,6 +595,9 @@ class Harness:
         self._inbox_off: frozenset[str] = frozenset()  # consumidores sin inbox (control de E21)
         self.effect_crashes = EffectRecordCrashes(config.faults)  # caídas entre efecto y registro (E22)
         self.busy_claims = 0  # trabajos que encontraron su clave `in_progress` (E22)
+        self.processes: list[OrchestratorProcess] = []  # modo multiproceso (E16)
+        self._gateway: CommandGateway | None = None
+        self._process_dir: tempfile.TemporaryDirectory | None = None
         self._init_threads()
 
     def _init_threads(self) -> None:
@@ -605,6 +619,14 @@ class Harness:
             raise ValueError(f"modo de idempotencia desconocido: {self.config.idempotency}")
         self._database = isolated_database(self._base, self.name)
         url = self._database.__enter__()
+        try:
+            self._enter(url)
+        except BaseException:
+            self.__exit__(None, None, None)  # sin procesos, base de datos ni topic que queden atrás
+            raise
+        return self
+
+    def _enter(self, url: str) -> None:
         topic = f"eda.{self.name}"
         self._admin = AdminClient({"bootstrap.servers": self._base.kafka_bootstrap_servers})
         for fut in self._admin.create_topics([NewTopic(t, num_partitions=3, replication_factor=1)
@@ -619,11 +641,13 @@ class Harness:
         self._set_idempotency(self.config.idempotency)
         self._build()
         self._start_threads()
+        if self.config.external_orchestrator:
+            self._start_orchestrators()
         if self.config.seed_orders:
             self.seed_orders()
-        return self
 
     def __exit__(self, *exc: object) -> None:
+        self._stop_orchestrators()
         self._stop_threads()
         self._close_deliveries()
         for closable in self._closables:
@@ -633,8 +657,37 @@ class Harness:
             self.conn.close()
         self._database.__exit__(None, None, None)
         with contextlib.suppress(Exception):
-            for fut in self._admin.delete_topics([self.settings.events_topic, self.settings.dlq_topic]).values():
+            topic = f"eda.{self.name}"
+            for fut in self._admin.delete_topics([topic, f"{topic}.dlq"]).values():
                 fut.result(timeout=30)
+
+    # -- modo multiproceso (spec experiments, «Modo multiproceso del harness»; E16) ------------------
+    def _start_orchestrators(self) -> None:
+        """El servidor de comandos con los receptores del harness y las instancias del orquestador, que lo invocan."""
+        targets = {t: (v.schema, v.specs, v.inbox) for t, v in self.targets.items()}
+        self._gateway = CommandGateway(targets, lambda: connect(self.settings.database_url), self._tracked_call).start()
+        self._process_dir = tempfile.TemporaryDirectory(prefix=f"{self.name}-")
+        start_orchestrators(self.config.orchestrator_processes, self.settings, self._gateway.urls(),
+                            Path(self._process_dir.name), session_timeout_ms=self.config.session_timeout_ms,
+                            processes=self.processes)
+
+    def _tracked_call(self, call: Callable[[], Any]) -> Any:
+        with self._activity.working():
+            out = call()
+        self._activity.progressed()
+        return out
+
+    def _stop_orchestrators(self) -> None:
+        """Para las instancias (también las congeladas) antes que nada: siguen escribiendo en la base de datos."""
+        for process in self.processes:
+            with contextlib.suppress(Exception):
+                process.stop()
+        if self._gateway is not None:
+            with contextlib.suppress(Exception):
+                self._gateway.stop()
+        if self._process_dir is not None:
+            with contextlib.suppress(Exception):
+                self._process_dir.cleanup()
 
     def _set_idempotency(self, mode: str) -> None:
         """Restricciones de unicidad de negocio y deduplicación de los servicios simulados según el modo."""
@@ -740,7 +793,9 @@ class Harness:
         self._dispatcher_conn = self._connect()
         self._timer_conn = self._connect()
         self._dispatch_backoff = Backoff(0.01, 0.05, seed=self.config.seed)
-        self._relays = [ComponentRelay.from_settings(s, schema) for schema in PUBLISHERS]
+        # En modo multiproceso, cada instancia del orquestador publica su outbox con su relay, como en producción.
+        self._relays = [ComponentRelay.from_settings(s, schema) for schema in PUBLISHERS
+                        if not (schema == orchestrator.SCHEMA and self.config.external_orchestrator)]
         # El lado de lectura no tiene outbox: su relay solo publica sus dead letters en la DLQ.
         self._relays += [ComponentRelay.from_settings(s, schema, outbox=False) for schema in READ_SIDE]
         self._projectors = build_all()
@@ -755,14 +810,16 @@ class Harness:
         def settings_for(group: str) -> Settings:
             return replace(s, inbox_enabled=False) if group in self._inbox_off else s
 
-        return {
+        factories: dict[str, Callable[[], EventConsumer]] = {
             interpreter.SCHEMA: lambda: interpreter.build_consumer(
                 self._connect(), make_consumer(s.kafka_bootstrap_servers, interpreter.SCHEMA),
                 settings_for(interpreter.SCHEMA), self.llm, self.rules),
-            orchestrator.SCHEMA: lambda: orchestrator.build_consumer(
-                self._connect(), make_consumer(s.kafka_bootstrap_servers, orchestrator.SCHEMA),
-                settings_for(orchestrator.SCHEMA), self.rules),
         }
+        if not self.config.external_orchestrator:  # en modo multiproceso, el grupo es de las instancias
+            factories[orchestrator.SCHEMA] = lambda: orchestrator.build_consumer(
+                self._connect(), make_consumer(s.kafka_bootstrap_servers, orchestrator.SCHEMA),
+                settings_for(orchestrator.SCHEMA), self.rules)
+        return factories
 
     def _build_deliveries(self) -> None:
         self._deliveries = []
@@ -804,7 +861,7 @@ class Harness:
                                    run_once=self._tracked_job, name=f"harness-jobs-{target.schema}-{k}")
                 worker.start()
                 self._workers.append(worker)
-        if self.config.dispatcher_thread:
+        if self.config.dispatcher_thread and not self.config.external_orchestrator:
             thread = threading.Thread(target=self._dispatch, daemon=True, name="harness-dispatcher")
             thread.start()
             self._threads.append(thread)
@@ -915,7 +972,8 @@ class Harness:
                     progressed += 1
                     self._on_crash(i, delivery, factory, exc)
                     break
-        if not self.config.dispatcher_thread:  # con hilo propio, lo atiende `_dispatch`
+        external = self.config.external_orchestrator  # el dispatcher y los plazos son de las instancias
+        if not (self.config.dispatcher_thread or external):  # con hilo propio, lo atiende `_dispatch`
             for _ in range(TURN_COMMANDS):
                 if not dispatch_once(self._dispatcher_conn, self.settings, self.rules, invoke=self.commands,
                                      backoff=self._dispatch_backoff):
@@ -924,9 +982,10 @@ class Harness:
         recovered = self.commands.flush_recovered(self._result_freshness)
         self.recovered.update(recovered)
         progressed += sum(recovered.values())
-        if self.config.track_timeouts:
+        if self.config.track_timeouts and not external:
             self._record_timeouts()
-        progressed += expire_once(self._timer_conn, self.settings, self.rules)
+        if not external:
+            progressed += expire_once(self._timer_conn, self.settings, self.rules)
         progressed += interpreter.expire_parked(self._timer_conn)
         return progressed
 
@@ -1022,6 +1081,15 @@ class Harness:
             if not (self.step() or self._working() or self.step()):
                 return
 
+    def run_while(self, keep_going: Callable[[], bool], timeout: float, *,
+                  on_turn: Callable[[], Any] = lambda: None) -> float:
+        """Turnos mientras `keep_going()` y durante `timeout` como mucho; devuelve el tiempo que pasó."""
+        start = time.monotonic()
+        while keep_going() and time.monotonic() - start < timeout:
+            self._advance()
+            on_turn()
+        return time.monotonic() - start
+
     def catch_up_log(self, timeout: float = LOG_CATCH_UP_S) -> bool:
         """`event_log` lee hasta las marcas de agua altas de ahora (I4 busca ahí cada fila publicada). False si no
         llega en `timeout`."""
@@ -1032,9 +1100,10 @@ class Harness:
             return False
         return True
 
-    def run_until_closed(self) -> float:
+    def run_until_closed(self, *, on_turn: Callable[[], Any] = lambda: None) -> float:
         """Turnos hasta cerrar todas las incidencias, o hasta `idle_seconds` sin avance (con los hilos ociosos
-        y sin trabajos pendientes) o `timeout_seconds` en total."""
+        y sin trabajos pendientes) o `timeout_seconds` en total. `on_turn` se llama tras cada turno (E16 muestrea
+        el estado de la saga)."""
         start = last = time.monotonic()
         while self.closed() < self.config.incidents:
             now = time.monotonic()
@@ -1044,6 +1113,7 @@ class Harness:
                 last = now
             elif now - last > self.config.idle_seconds:
                 break
+            on_turn()
         # Un último repaso para que las vistas y el log reflejen todo lo publicado.
         self._settle()
         return time.monotonic() - start

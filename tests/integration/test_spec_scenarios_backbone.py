@@ -215,7 +215,7 @@ def test_the_result_arrives_as_an_event(base_settings, database_url, conn):
 class _NoKafka:
     """El intérprete se usa con `process`: sin Kafka."""
 
-    def subscribe(self, topics) -> None:
+    def subscribe(self, topics, **_callbacks) -> None:
         pass
 
 

@@ -119,7 +119,7 @@ Todo experimento de resiliencia comprueba, además de su hipótesis, estos cinco
 
 Si I1 o I2 se violan, la hipótesis no se da por cumplida aunque su criterio propio sí lo esté.
 
-**Implementación.** `experiments/invariants.py` los comprueba al terminar, con el sistema parado: I1 con el log (incidencias con `CarrierNoticeReceived` sin `IncidentResolved` ni `IncidentEscalated`), I2 con los efectos repetidos que mide E1, I3 con `executor_issue_refund.refunds` y con el orden de los `StepRequested` y `StepCompleted` del log (un `issue_refund` pedido con una compensación pedida y sin completar), I4 con cada `outbox` (filas sin publicar o cuyo evento no está en `event_log.events`) e I5 reconstruyendo cada vista desde el topic. E11, E17, E18, E21, E22 y E23 los incluyen en `metrics.invariants`; E21 los comprueba antes de sus observaciones y de su control, que repiten efectos a propósito.
+**Implementación.** `experiments/invariants.py` los comprueba al terminar, con el sistema parado: I1 con el log (incidencias con `CarrierNoticeReceived` sin `IncidentResolved` ni `IncidentEscalated`), I2 con los efectos repetidos que mide E1, I3 con `executor_issue_refund.refunds` y con el orden de los `StepRequested` y `StepCompleted` del log (un `issue_refund` pedido con una compensación pedida y sin completar), I4 con cada `outbox` (filas sin publicar o cuyo evento no está en `event_log.events`) e I5 reconstruyendo cada vista desde el topic. E11, E16, E17, E18, E21, E22 y E23 los incluyen en `metrics.invariants` (E16, con las instancias del orquestador aún en marcha y ociosas); E21 los comprueba antes de sus observaciones y de su control, que repiten efectos a propósito.
 
 ## 5. Experimentos nuevos en detalle
 
@@ -148,6 +148,7 @@ Si I1 o I2 se violan, la hipótesis no se da por cumplida aunque su criterio pro
 - **Mide.** Instante del rebalanceo, mensajes que procesó la zombie tras reanudar, solapamientos por incidencia, esperas al bloqueo de la incidencia, descartes del inbox, comandos con `command_id` distinto para el mismo paso.
 - **Criterio.** H16: sin transiciones inválidas, sin retrocesos de `completed` y sin comandos duplicados con `command_id` distinto; I1 a I5 sin violaciones.
 - **Necesita.** Modo multiproceso y congelación de procesos.
+- **Implementación.** `uv run eda-expexecutor run e16`, en modo multiproceso (`RunConfig.orchestrator_processes`): dos procesos `eda-orchestrator` (el módulo `eda_retail.orchestrator.cli` lanzado con el Python del harness, para que las señales lleguen a Python, con SIGINT activo para pararlas limpiamente) contra la base de datos y el topic de la ejecución, con `KAFKA_SESSION_TIMEOUT_MS` 6000 y su propio relay; el resto de componentes sigue en el harness con el cliente LLM simulado y atiende sus comandos por REST en un servidor HTTP local de la ejecución. Los resultados de `reserve_stock`, `file_claim` y `reissue_shipment` llegan con 3 s de retraso para que las incidencias sigan en curso; cuando el orquestador las tiene todas, se congela con `SIGSTOP` durante 12 s la instancia con más particiones y se reanuda con `SIGCONT`. Las medidas salen del log de cada instancia (rebalanceos, inicio y fin de cada mensaje con su partición y offset, esperas al bloqueo de la incidencia con `LOG_LEVEL=DEBUG`), de `orchestrator.command_outbox` y de un muestreo de `plan_steps` e `incidents` en cada turno del harness. Si la confirmación del offset falla al reanudar (la zombie ya no está en el grupo), el proceso termina, como en producción: el informe da su código de salida.
 
 ### E17 Proyección atrasada y avisos aparcados (H17)
 
@@ -197,7 +198,7 @@ Si I1 o I2 se violan, la hipótesis no se da por cumplida aunque su criterio pro
 
 ## 6. Limitaciones del arnés y orden de implantación
 
-**Limitaciones.** El arnés actual es en proceso: sirve para duplicados, retrasos, fallos por probabilidad, caída de un consumidor y almacenes vacíos, y todo corre en un mismo proceso, de modo que no puede reproducir congelaciones de procesos, rebalanceos reales ni cortes de Kafka y PostgreSQL. E9, E10 y E16 exigen un modo multiproceso (E12 se hace en proceso, con el dispatcher en su propio hilo) (procesos de `scripts/run-agents.sh`, `docker stop/pause`, `SIGSTOP` o un proxy tipo toxiproxy). Las propuestas de esta guía se basan en las specs, `design.md` y el código del arnés, no en haber ejecutado los experimentos.
+**Limitaciones.** El arnés actual es en proceso: sirve para duplicados, retrasos, fallos por probabilidad, caída de un consumidor y almacenes vacíos, y todo corre en un mismo proceso, de modo que no puede reproducir congelaciones de procesos, rebalanceos reales ni cortes de Kafka y PostgreSQL. E9, E10 y E16 exigen un modo multiproceso (E12 se hace en proceso, con el dispatcher en su propio hilo) (procesos de `scripts/run-agents.sh`, `docker stop/pause`, `SIGSTOP` o un proxy tipo toxiproxy). El modo multiproceso de E16 solo saca el orquestador a procesos propios: los componentes con LLM solo arrancan como proceso con Ollama. Las propuestas de esta guía se basan en las specs, `design.md` y el código del arnés, no en haber ejecutado los experimentos.
 
 **Orden sugerido.**
 
