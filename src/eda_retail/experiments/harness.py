@@ -296,6 +296,8 @@ class RunConfig:
     idle_seconds: float = 15.0  # sin ningún avance durante este tiempo, se da por terminada
     plan_timeout_seconds: float | None = None  # plazo de CreatePlan y RevisePlan; None: el de la configuración
     step_timeout_seconds: float | None = None  # plazo de ExecuteStep; None: el de la configuración
+    pending_notice_timeout_seconds: float = PENDING_NOTICE_TIMEOUT_S  # plazo de un aviso aparcado
+    seed_orders: bool = True  # False: los pedidos se siembran después, con `Harness.seed_orders` (E17)
 
 
 def saga_deadlines(config: RunConfig) -> dict[str, float]:
@@ -372,6 +374,7 @@ class Harness:
         self._activity = Activity()
         self._stop = threading.Event()
         self._crash_lock = threading.Lock()
+        self._projectors_paused = False
         self._threads: list[threading.Thread] = []
         self._workers: list[JobWorker] = []
         self._threaded = set(THREADED_CONSUMERS)
@@ -391,12 +394,14 @@ class Harness:
         self.settings = replace(self._base, database_url=url, events_topic=topic, dlq_topic=f"{topic}.dlq",
                                 inbox_enabled=self.config.idempotency != "none",
                                 step_backoff_base_seconds=0.01, step_backoff_max_seconds=0.05,
-                                pending_notice_timeout_s=PENDING_NOTICE_TIMEOUT_S, **saga_deadlines(self.config))
+                                pending_notice_timeout_s=self.config.pending_notice_timeout_seconds,
+                                **saga_deadlines(self.config))
         self.conn = connect(url)
         self._set_idempotency(self.config.idempotency)
         self._build()
         self._start_threads()
-        self._seed()
+        if self.config.seed_orders:
+            self.seed_orders()
         return self
 
     def __exit__(self, *exc: object) -> None:
@@ -547,24 +552,37 @@ class Harness:
             thread.join(JOIN_TIMEOUT_S)
         self._workers, self._threads = [], []
 
-    def _command(self, target: str, command_type: str, correlation_id: str, payload: dict[str, Any]) -> None:
-        """Comando de entrada (datos de ejemplo, avisos): directo a su handler, sin fallos inyectados."""
+    def _command(self, target: str, command_type: str, correlation_id: str, payload: dict[str, Any], *,
+                 check: bool = True) -> Any:
+        """Comando de entrada (datos de ejemplo, avisos): directo a su handler, sin fallos inyectados. Con `check`,
+        un rechazo es un error; sin él, devuelve la respuesta."""
         t = self.targets[target]
         command = CommandEnvelope(command_id=uuid.uuid4(), command_type=command_type, correlation_id=correlation_id,
                                   causation_id=None, payload=payload)
         response = execute_command(self._seed_conn, t.schema, command, t.specs[command_type])
-        if response.status_code != 202:
+        if check and response.status_code != 202:
             raise RuntimeError(f"{command_type} rechazado: {response.body}")
+        return response
 
-    def _seed(self) -> None:
-        """Siembra pedidos y existencias y espera a que `view_orders` los tenga (como un despliegue ya en marcha)."""
+    def seed_orders(self, *, wait: bool = True) -> None:
+        """Siembra pedidos y existencias. Con `wait`, espera a que `view_orders` los tenga (como un despliegue ya
+        en marcha); sin él, solo publica sus `OrderRegistered` (E17, con los proyectores parados)."""
         self._command("inventory", "SeedSampleData", inventory.SAMPLE_DATA_CORRELATION,
                       seed_payload(self.data, tuple(self.config.faults.empty_warehouses)))
         deadline = time.monotonic() + self.config.idle_seconds
-        while self._projected_orders() < len(self.data.orders) and time.monotonic() < deadline:
+        while wait and self.projected_orders() < len(self.data.orders) and time.monotonic() < deadline:
             self.step()
 
-    def _projected_orders(self) -> int:
+    # -- parada de proyectores (spec synthetic-data, «Parada de proyectores»; E17) ---------------
+    def pause_projectors(self) -> None:
+        """Los proyectores dejan de consumir; `event_log` y el resto de componentes siguen."""
+        self._projectors_paused = True
+
+    def resume_projectors(self) -> None:
+        self._projectors_paused = False
+
+    def projected_orders(self) -> int:
+        """Pedidos de la ejecución que ya están en `view_orders`."""
         row = self.conn.execute("SELECT count(*) AS n FROM views.view_orders WHERE order_id = ANY(%s)",
                                 ([o.order_id for o in self.data.orders],)).fetchone()
         self.conn.commit()
@@ -573,14 +591,22 @@ class Harness:
     # -- ejecución ---------------------------------------------------------------------------
     def send_notices(self) -> None:
         for n in self.data.notices:
-            self._command("intake", "RegisterCarrierNotice", incident_id_for_notice(n.carrier_notice_id),
-                          {"carrier_notice_id": n.carrier_notice_id, "carrier": n.carrier,
-                           "raw_text": n.raw_text(self.config.fmt)})
+            self._send_notice(n)
+
+    def _send_notice(self, n: Any, *, check: bool = True) -> Any:
+        return self._command("intake", "RegisterCarrierNotice", incident_id_for_notice(n.carrier_notice_id),
+                             {"carrier_notice_id": n.carrier_notice_id, "carrier": n.carrier,
+                              "raw_text": n.raw_text(self.config.fmt)}, check=check)
+
+    def resend_notice(self, index: int) -> Any:
+        """El transportista reenvía el aviso `index`: devuelve la respuesta de intake (un rechazo no es error)."""
+        return self._send_notice(self.data.notices[index], check=False)
 
     def step(self) -> int:
         """Un turno: relays, lado de lectura, consumidores, dispatcher y plazos. Devuelve cuánto avanzó."""
         progressed = sum(r.run_once() + r.publish_dead_letters() for r in self._relays)
-        progressed += sum(r.run_once(timeout=0) for r in self._readers)
+        readers = self._readers[:1] if self._projectors_paused else self._readers  # [0] es event_log
+        progressed += sum(r.run_once(timeout=0) for r in readers)
         for i, (delivery, factory) in enumerate(self._deliveries):
             if delivery.consumer.name in self._threaded:
                 continue  # tiene su propio hilo
