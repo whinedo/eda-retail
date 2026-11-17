@@ -95,7 +95,11 @@ def decode_checked(msg: Message) -> EventEnvelope:
     event_type = body.get("event_type") if isinstance(body.get("event_type"), str) else None
     try:
         envelope = decode_message(msg)
-        if envelope.event_type in CATALOG:
+        if (spec := CATALOG.get(envelope.event_type)) is not None:
+            if envelope.event_version > spec.version:
+                # Una versión posterior a la vigente no tiene upcaster: no se sabe leer (spec experiments, E18).
+                raise UpcastError(f"{envelope.event_type}: versión {envelope.event_version} desconocida "
+                                  f"(la vigente es la {spec.version})")
             validate_payload(envelope.event_type, envelope.payload)
     except (ValidationError, PayloadError, PersonalDataError, UpcastError, KeyError) as exc:
         cid = correlation_id if isinstance(correlation_id, str) else None
@@ -152,12 +156,16 @@ class EventConsumer:
     def event_id_of(msg: Message) -> uuid.UUID:
         return uuid.UUID(json.loads(msg.value())["event_id"])
 
+    def attends(self, event_type: str | None) -> bool:
+        """True si atiende el tipo; un mensaje sin `event_type` legible lo atienden todos (spec resilience)."""
+        return event_type is None or event_type in self._handlers
+
     def handle_message(self, msg: Message) -> Outcome:
         """Procesa el mensaje en una transacción. No confirma el offset."""
         try:
             event = decode_checked(msg)
         except InvalidMessage as bad:
-            if bad.event_type is not None and bad.event_type not in self._handlers:
+            if not self.attends(bad.event_type):
                 return Outcome.IGNORED  # no es para este consumidor
             return self._dead_letter(bad)
         if event.event_type not in self._handlers:

@@ -45,7 +45,7 @@ COMPONENTS: dict[str, Component] = {
     "orchestrator": Component(),
     **{f"executor_{action}": Component(effect_keys=True) for action in EXECUTOR_ACTIONS},
     "inventory": Component(effect_keys=True),
-    # Lado de lectura: consumen Kafka y no publican; sus tablas llegan con T3.
+    # Lado de lectura: consumen Kafka y no publican; sus tablas llegan con T3 y sus dead letters, con la 0024.
     "event_log": Component(publishes=False),
     "views": Component(publishes=False),
     # Segunda versión: el servidor de correo MCP no publica eventos; sus tablas, migración 0021.

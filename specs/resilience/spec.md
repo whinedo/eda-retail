@@ -31,12 +31,34 @@ Los consumidores SHALL confirmar el offset de Kafka manualmente y solo después 
 
 Un evento que agote sus reintentos o sea irrecuperable (esquema inválido, plan imposible) SHALL moverse al topic `eda.dlq` y a la tabla `dead_letters`, con el motivo y el `correlation_id`. El sistema MUST NOT descartarlo en silencio.
 
+Cada consumidor responde solo de los tipos que atiende: un evento inválido va a la dead letter de cada consumidor que atiende su `event_type`, y los demás consumidores lo ignoran y confirman el offset. Un mensaje del que no se puede leer el `event_type` (no es JSON, no es un objeto o le falta el campo) lo atienden todos. El lado de lectura también tiene dead letters: `event_log` atiende todos los tipos y cada proyector, los que proyecta; los guardan en `event_log.dead_letters` y `views.dead_letters`, en la misma transacción que su posición, y un relay que solo publica dead letters los lleva a `eda.dlq`. Un evento con la estructura común válida y un `event_type` que no está en el catálogo no es inválido (tolerant reader): los consumidores lo ignoran sin dead letter y `event_log` lo guarda como cualquier otro evento, de modo que no se descarta en silencio.
+
 #### Scenario: Evento con esquema inválido
 
 - **GIVEN** un evento que no cumple su esquema
 - **WHEN** el consumidor lo rechaza
 - **THEN** el evento pasa a la dead letter queue con el motivo `invalid_schema`
 - **AND** se publica `IncidentEscalated` si pertenece a una incidencia abierta
+
+#### Scenario: Evento inválido de un tipo que el consumidor no atiende
+
+- **GIVEN** un evento inválido de un `event_type` sin handler en el consumidor
+- **WHEN** lo recibe
+- **THEN** lo ignora, confirma el offset y no escribe en su `dead_letters`
+
+#### Scenario: Evento inválido en el lado de lectura
+
+- **GIVEN** un evento inválido de un tipo que proyecta un proyector
+- **WHEN** lo reciben `event_log` y ese proyector
+- **THEN** cada uno lo guarda en su `dead_letters` con el motivo `invalid_schema` y avanza su posición en la misma transacción
+- **AND** el evento no se escribe en `event_log.events` ni en las vistas
+
+#### Scenario: Evento de un tipo desconocido
+
+- **GIVEN** un evento con la estructura común válida y un `event_type` que no está en el catálogo
+- **WHEN** lo reciben los consumidores
+- **THEN** lo ignoran sin dead letter y confirman el offset
+- **AND** `event_log` lo guarda en `event_log.events`
 
 ### Requirement: Recuperación tras la caída de un consumidor
 

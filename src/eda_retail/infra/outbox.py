@@ -91,8 +91,10 @@ class ComponentRelay:
         topic: str,
         *,
         dlq_topic: str | None = None,
+        outbox: bool = True,
     ) -> None:
         self._conn = conn
+        self._has_outbox = outbox  # False: solo publica dead letters (lado de lectura, sin outbox)
         self._producer = producer
         self._schema = schema
         self._outbox = qualified(schema, "outbox")
@@ -101,17 +103,20 @@ class ComponentRelay:
         self._dlq_topic = dlq_topic
 
     @classmethod
-    def from_settings(cls, settings: Settings, schema: str) -> ComponentRelay:
+    def from_settings(cls, settings: Settings, schema: str, *, outbox: bool = True) -> ComponentRelay:
         return cls(
             connect(settings.database_url),
             make_producer(settings.kafka_bootstrap_servers),
             schema,
             settings.events_topic,
             dlq_topic=settings.dlq_topic,
+            outbox=outbox,
         )
 
     def run_once(self, batch_size: int = 100, flush_timeout: float = 30.0) -> int:
-        """Publica un lote de pendientes. Devuelve cuántos publicó (0 si no había)."""
+        """Publica un lote de pendientes. Devuelve cuántos publicó (0 si no había o no tiene outbox)."""
+        if not self._has_outbox:
+            return 0
         errors: list[KafkaError] = []
         positions: dict[int, tuple[int, int]] = {}
 
@@ -268,8 +273,11 @@ class RelayThread(threading.Thread):
         self.join(timeout)
 
 
-def start_relay(settings: Settings, schema: str) -> RelayThread:
-    """Arranca el relay del componente `schema` con su propia conexión y su propio productor."""
-    thread = RelayThread(ComponentRelay.from_settings(settings, schema))
+def start_relay(settings: Settings, schema: str, *, outbox: bool = True) -> RelayThread:
+    """Arranca el relay del componente `schema` con su propia conexión y su propio productor.
+
+    Con `outbox=False` solo publica las dead letters del esquema (lado de lectura: `event_log`, `views`).
+    """
+    thread = RelayThread(ComponentRelay.from_settings(settings, schema, outbox=outbox))
     thread.start()
     return thread

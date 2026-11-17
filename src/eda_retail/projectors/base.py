@@ -6,7 +6,8 @@ su vista, así que un mensaje que Kafka reentrega no se aplica otra vez. Además
 aplicado en `views.applied_events`: un evento que se vuelve a publicar (el mismo `event_id` con un
 offset nuevo, p. ej. al reproducir un outbox) tampoco cambia la vista (proyector idempotente).
 
-Un mensaje que no es un evento válido se salta, con su offset: no debe bloquear la vista.
+Un mensaje que no es un evento válido no se aplica, pero su offset avanza: no debe bloquear la vista.
+Si es de un tipo que el proyector atiende, va a `views.dead_letters` en la misma transacción.
 """
 
 from __future__ import annotations
@@ -24,7 +25,7 @@ from eda_retail.events.catalog import CATALOG, PayloadError, PersonalDataError, 
 from eda_retail.events.envelope import EventEnvelope
 from eda_retail.events.upcasters import UPCASTERS
 from eda_retail.events.versioning import Upcasters
-from eda_retail.infra import tracing
+from eda_retail.infra import dead_letters, tracing
 from eda_retail.infra.consumer import InvalidMessage, decode_checked
 from eda_retail.infra.db import connect
 from eda_retail.infra.kafka import make_consumer
@@ -63,8 +64,9 @@ class Projector:
                 validate_payload(event.event_type, event.payload)
             except (PayloadError, PersonalDataError) as exc:
                 # Evento envenenado: no puede aplicarse y no debe bloquear la vista para siempre.
-                log.warning("proyector %s: se salta el evento %s (%s): %s", self.name, event.event_id, position, exc)
                 trace.get_current_span().add_event("eda.invalid_event_skipped", {"eda.event_id": str(event.event_id)})
+                self._dead_letter(conn, position, exc, event_id=event.event_id, correlation_id=event.correlation_id,
+                                  raw=event.model_dump(mode="json"))
                 return False
         first_time = conn.execute(
             "INSERT INTO views.applied_events (projector, event_id) VALUES (%s, %s) ON CONFLICT DO NOTHING",
@@ -75,17 +77,33 @@ class Projector:
         handler(conn, position, event)
         return True
 
+    def attends(self, event_type: str | None) -> bool:
+        """True si el proyector atiende el tipo; un mensaje sin `event_type` legible lo atienden todos."""
+        return event_type is None or event_type in self._handlers
+
     def apply_message(self, conn: psycopg.Connection, msg: Message) -> None:
-        """`ApplyMessage` del consumidor posicionado."""
+        """`ApplyMessage` del consumidor posicionado.
+
+        Un mensaje inválido de un tipo que el proyector atiende va a `views.dead_letters` en la misma
+        transacción que su posición; el de un tipo que no atiende se ignora (spec resilience).
+        """
         try:
             event = decode_checked(msg)
         except InvalidMessage as bad:
-            log.warning("proyector %s: se salta un mensaje inválido (%s): %s", self.name, bad.event_type or "?", bad)
+            if self.attends(bad.event_type):
+                self._dead_letter(conn, position_of(msg), bad, event_id=bad.event_id,
+                                  correlation_id=bad.correlation_id, raw=bad.raw)
             return
         with tracing.tracer().start_as_current_span(
             f"projector {self.name}", attributes={"eda.projector": self.name, **tracing.event_attributes(event)}
         ):
             self.apply(conn, position_of(msg), event)
+
+    def _dead_letter(self, conn: psycopg.Connection, position: Position, error: Exception, *,
+                     event_id, correlation_id: str | None, raw: Any) -> None:
+        log.warning("proyector %s: mensaje inválido a dead letter (%s): %s", self.name, position, error)
+        dead_letters.record_at(conn, consumer=self.name, position=position, reason=dead_letters.INVALID_SCHEMA,
+                               event_id=event_id, correlation_id=correlation_id, raw=raw, schema=SCHEMA)
 
 
 def consumer_for(projector: Projector, settings: Settings, conn: psycopg.Connection | None = None) -> PositionedConsumer:

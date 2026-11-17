@@ -36,7 +36,7 @@ uv run eda-expexecutor delete --all
 - Los parámetros salen de la línea de comandos, de `experiments/config.py` (diccionario `EXPERIMENTS` por experimento) o del valor por defecto de `eda-experiment`, en ese orden, y el informe dice de dónde sale cada uno. El fichero se valida antes de ejecutar nada.
 - `report` regenera `results.md` sin repetir la ejecución; `delete <carpeta>` borra solo ese `results.md`, y `delete --all` borra todas las carpetas de ejecución de `experiments/results` (no toca `experiments/config.py`). Los resultados no están en el control de versiones.
 
-**Arnés actual.** Monta los componentes en un solo proceso contra PostgreSQL y Kafka reales: relays, proyectores, agentes, orquestador y ejecutores se atienden por turnos, y lo que tarda (el LLM, los servicios) corre en su propio hilo. La inyección de fallos (`FaultPlan`) admite hoy: duplicados de entrega (1 a N), retraso de la entrega, probabilidad de fallo por tipo de paso, caída de un consumidor tras K mensajes sin confirmar el último offset, almacenes sin stock y reinicio de los offsets de los grupos de consumidores al principio del topic (E21). La elección de los pasos que fallan depende de la semilla, la acción y la `idempotency_key`, no del orden de ejecución, así que es reproducible.
+**Arnés actual.** Monta los componentes en un solo proceso contra PostgreSQL y Kafka reales: relays, proyectores, agentes, orquestador y ejecutores se atienden por turnos, y lo que tarda (el LLM, los servicios) corre en su propio hilo. La inyección de fallos (`FaultPlan`) admite hoy: duplicados de entrega (1 a N), retraso de la entrega, probabilidad de fallo por tipo de paso, caída de un consumidor tras K mensajes sin confirmar el último offset, almacenes sin stock y reinicio de los offsets de los grupos de consumidores al principio del topic (E21). Los mensajes veneno (E18) se publican aparte, directamente en el topic (`synthetic/poison.py`). La elección de los pasos que fallan depende de la semilla, la acción y la `idempotency_key`, no del orden de ejecución, así que es reproducible.
 
 **Referencias de componentes** (para leer los informes): `PENDING_NOTICE_TIMEOUT_S` (300 s) aparca avisos; `SAGA_STEP_TIMEOUT_S` (60 s) y `SAGA_PLAN_TIMEOUT_S` (300 s) son los plazos de la saga; `COMMAND_HTTP_TIMEOUT_S` (5 s) es el timeout HTTP del dispatcher; `EXECUTOR_MAX_CONCURRENCY` (5) limita a los ejecutores; `JOB_LEASE_SECONDS`, `JOB_MAX_ATTEMPTS` y el backoff gobiernan los trabajos diferidos.
 
@@ -98,7 +98,7 @@ Las hipótesis nuevas se llaman como su experimento (H11, H12...). Los marcados 
 | E15 | Degradación del LLM | Latencia o salidas inválidas | `llm_output_invalid`, plazos, trabajos reintentados | En proceso |
 | E16 (S) | Consumidor zombie | `SIGSTOP` más allá de la sesión y rebalanceo | Sin transiciones inválidas ni comandos duplicados | Multiproceso |
 | E17 (S) | Proyección atrasada | Proyectores parados | Avisos aparcados, reanudación y escalado | En proceso |
-| E18 (S) | Mensajes veneno | Mensajes inválidos en mitad de la partición | DLQ sin bloquear la partición | En proceso |
+| E18 (S) | Mensajes veneno | Mensajes inválidos en mitad de la partición | DLQ sin bloquear la partición | Implementado |
 | E19 | Pérdida del topic | Topic vaciado y republicación desde el outbox | Se recupera el log sin repetir efectos | En proceso |
 | E20 | Dependencias de V2 | MCP de correo y agente A2A inestables | Timeouts, 401, tarjeta inválida | En proceso |
 | E21 (S) | Reproducción total del log | Offsets de todos los grupos al principio | 0 efectos, eventos y cambios de estado nuevos | En proceso |
@@ -158,9 +158,10 @@ Si I1 o I2 se violan, la hipótesis no se da por cumplida aunque su criterio pro
 ### E18 Mensajes veneno en mitad de la partición (H18)
 
 - **Objetivo.** Comprobar que un mensaje inválido ni detiene al consumidor ni se pierde.
-- **Escenario.** 100 incidencias; se inyectan en `eda.events`, en posiciones distintas: JSON inválido, evento sin `correlation_id`, `event_type` desconocido, `event_version` sin upcaster, payload fuera de schema, payload con datos personales y payload de 900 KB.
+- **Escenario.** 100 incidencias; se inyectan en `eda.events`, en posiciones distintas: JSON inválido, evento sin un campo obligatorio de la estructura común (`producer`), `event_type` desconocido, `event_version` sin upcaster, payload fuera de schema, payload con datos personales y payload de 900 KB.
 - **Mide.** Por tipo y por consumidor: presencia en `<componente>.dead_letters` y en `eda.dlq`, motivo, lag final, reintentos antes de saltar.
-- **Criterio.** H18: lag final 0 en todos los grupos, todo veneno en su DLQ exactamente una vez por consumidor y las 100 incidencias terminan.
+- **Criterio.** H18: lag final 0 en todos los grupos, todo veneno en la DLQ de cada consumidor que atiende su tipo exactamente una vez (y en ninguna más), el `event_type` desconocido en `event_log.events` sin dead letter, ninguna otra dead letter y las 100 incidencias terminan.
+- **Implementación.** `uv run eda-expexecutor run e18`. Los venenos de tipo legible son `ShipmentDelayed` con el `correlation_id` de una incidencia abierta (se inyectan cuando el orquestador ya tiene incidencias abiertas), repartidos por las particiones; los atienden el orquestador, `event_log` y los proyectores con handler para ese tipo, y el JSON inválido lo atienden todos. El lado de lectura guarda sus dead letters en `event_log.dead_letters` y `views.dead_letters` (migración 0024). La reconciliación se hace con las filas de cada `dead_letters` (`published_at` indica que el relay lo llevó a la DLQ) y el informe da también los mensajes del topic DLQ y si cada incidencia afectada se escaló con `invalid_schema` (solo se escala si sigue abierta al leer el veneno).
 - **Nota.** El consumidor trata de forma distinta un mensaje que incumple el schema (va a la DLQ y se confirma el offset) y un fallo del handler (la excepción se propaga y el offset no se confirma); el experimento observa también el segundo caso, que es el que puede producir un bucle de reintentos.
 
 ### E21 Reproducción total del log (H21)

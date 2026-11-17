@@ -43,6 +43,8 @@ def test_upgrade_creates_every_component_schema(scratch_db):
             assert {f"{name}.outbox", f"{name}.inbox", f"{name}.dead_letters"} <= tables
         assert (f"{name}.effect_keys" in tables) == component.effect_keys
         assert (f"{name}.command_jobs" in tables) == (name in JOB_COMPONENTS)
+    # El lado de lectura no publica eventos, pero guarda sus dead letters (migración 0024).
+    assert {"event_log.dead_letters", "views.dead_letters"} <= tables
 
 
 def test_no_foreign_key_crosses_schemas(scratch_db):

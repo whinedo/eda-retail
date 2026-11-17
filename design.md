@@ -230,7 +230,8 @@ loop:
 
 ```
 poll mensaje de Kafka (enable.auto.commit = false)
-validar esquema; si es inválido -> eda.dlq + <componente>.dead_letters, confirmar offset
+validar esquema; si es inválido y el consumidor atiende su event_type -> eda.dlq + <componente>.dead_letters,
+  confirmar offset (si no lo atiende, o el event_type no está en el catálogo, se ignora y se confirma)
 procesar en una transacción (sección 4)
 confirmar el offset solo tras el COMMIT
 ```
@@ -284,6 +285,8 @@ BEGIN
   UPDATE event_log.offsets SET "offset" = <offset del mensaje> WHERE "partition" = <partición>
 COMMIT
 ```
+
+**Mensajes inválidos en el lado de lectura.** `event_log` atiende todos los tipos y cada proyector, los que proyecta. Un mensaje inválido que atienden (no es JSON, no cumple la estructura común o el schema de su tipo, versión sin upcaster, datos personales) no se aplica: va a `event_log.dead_letters` o `views.dead_letters` en la misma transacción que la posición, identificado por (consumidor, topic, partición, offset) para que reaplicarlo (reconstrucción, E21) no cree otra fila. Un relay sin outbox, en el mismo proceso, solo publica esas dead letters en `eda.dlq`. Un `event_type` fuera del catálogo con la estructura común válida no es inválido (tolerant reader): `event_log` lo guarda y los proyectores lo ignoran.
 
 **Posición de las vistas.** Cada respuesta de una consulta incluye la posición aplicada de su vista (`applied`: offset por partición). El cliente que espera ver el efecto de un evento conoce su partición y su offset (los da la vista del log) y sabe si la vista ya lo incluye.
 

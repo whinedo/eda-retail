@@ -1,6 +1,6 @@
 """Componente de consulta `event_log` (spec cqrs-views, "Vista del log de eventos").
 
-Sin PostgreSQL ni Kafka: qué guarda de cada mensaje. La vista contra la base real está en
+Sin PostgreSQL ni Kafka: qué guarda de cada mensaje, en el log o en su dead letter. La vista contra la base real está en
 tests/integration/test_event_log_view.py.
 """
 
@@ -61,3 +61,49 @@ def test_message_with_personal_data_is_not_stored():
     body = _body(payload={"incident_id": "I-1", "order_ids": ["ana@example.com"], "cause": "delay",
                           "estimated_delay_hours": 24, "severity": "low"})
     assert store.envelope_of(FakeMessage(json.dumps(body).encode())) is None
+
+
+class FakeConn:
+    def __init__(self):
+        self.statements: list[tuple[str, tuple]] = []
+
+    def execute(self, sql, params=()):
+        self.statements.append((" ".join(sql.split()), params))
+        return self
+
+    rowcount = 1
+
+    def fetchone(self):
+        return {"seq": 1}
+
+    def inserts(self) -> list[str]:
+        return [s.split("(")[0].removeprefix("INSERT INTO ").strip() for s, _ in self.statements
+                if s.startswith("INSERT INTO")]
+
+
+def test_invalid_message_goes_to_the_event_log_dead_letter():
+    """Evento inválido en el lado de lectura: event_log lo guarda en su dead letter, no en el log"""
+    conn = FakeConn()
+    store.apply_message(conn, FakeMessage(b"not json"))  # type: ignore[arg-type]
+    assert conn.inserts() == ["event_log.dead_letters"]
+    [(sql, params)] = conn.statements
+    assert "ON CONFLICT (consumer, kafka_topic, kafka_partition, kafka_offset) DO NOTHING" in sql
+    assert params[0] == "event_log" and params[3] == "invalid_schema"
+    assert params[-3:] == ("eda.events", 0, 7)
+
+
+def test_personal_data_goes_to_the_dead_letter_and_not_to_the_log():
+    """Evento con datos personales: va a la dead letter y no se escribe en el log"""
+    body = _body(payload={"incident_id": "I-1", "order_ids": ["ana@example.com"], "cause": "delay",
+                          "estimated_delay_hours": 24, "severity": "low"})
+    conn = FakeConn()
+    store.apply_message(conn, FakeMessage(json.dumps(body).encode()))  # type: ignore[arg-type]
+    assert conn.inserts() == ["event_log.dead_letters"]
+    assert conn.statements[0][1][2] == "I-1"  # correlation_id
+
+
+def test_unknown_event_type_is_stored_in_the_log():
+    """Evento de un tipo desconocido: event_log lo guarda en event_log.events, sin dead letter"""
+    conn = FakeConn()
+    store.apply_message(conn, FakeMessage(json.dumps(_body(event_type="CarrierRenamed")).encode()))  # type: ignore[arg-type]
+    assert conn.inserts() == ["event_log.events"]

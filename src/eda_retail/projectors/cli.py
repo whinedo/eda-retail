@@ -15,8 +15,9 @@ import time
 from eda_retail.config import load_settings
 from eda_retail.infra.db import connect
 from eda_retail.infra.logs import setup_logging
+from eda_retail.infra.outbox import start_relay
 from eda_retail.infra.tracing import setup_tracing
-from eda_retail.projectors.base import consumer_for
+from eda_retail.projectors.base import SCHEMA, consumer_for
 from eda_retail.projectors.rebuild import rebuild
 from eda_retail.projectors.registry import PROJECTORS, build_all
 
@@ -33,6 +34,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def _run(settings, conn, idle_seconds: float) -> None:
     log = logging.getLogger("eda_retail.projector")
     consumers = [consumer_for(p, settings, conn) for p in build_all()]
+    relay = start_relay(settings, SCHEMA, outbox=False)  # publica views.dead_letters en eda.dlq
     try:
         while True:
             advanced = sum(c.run_once(timeout=0) for c in consumers)
@@ -41,6 +43,7 @@ def _run(settings, conn, idle_seconds: float) -> None:
             else:
                 time.sleep(idle_seconds)
     finally:
+        relay.stop(timeout=10)
         for c in consumers:
             c.close()
 

@@ -195,6 +195,23 @@ def test_relay_publishes_its_dead_letters_to_the_dlq():
     assert sql.startswith("UPDATE planner.dead_letters")
 
 
+def test_read_side_relay_publishes_only_its_dead_letters():
+    """Evento inválido en el lado de lectura: el relay sin outbox solo publica sus dead letters en la DLQ"""
+    row = {
+        "id": 1, "consumer": "event_log", "event_id": None, "correlation_id": None,
+        "reason": "invalid_schema", "raw_message": {"raw": "no json"}, "created_at": datetime.now(UTC),
+    }
+    conn = FakeConn([row])
+    producer = FakeProducer()
+    relay = outbox.ComponentRelay(conn, producer, "event_log", "eda.events", dlq_topic="eda.dlq", outbox=False)  # type: ignore[arg-type]
+
+    assert relay.run_once() == 0
+    assert conn.statements == []  # no lee ningún outbox: el lado de lectura no tiene
+    assert relay.publish_dead_letters() == 1
+    assert producer.produced[0]["topic"] == "eda.dlq"
+    assert json.loads(producer.produced[0]["value"])["component"] == "event_log"
+
+
 def test_replay_marks_its_own_outbox_as_pending():
     """Pérdida del topic: cada componente republica su outbox"""
     conn = FakeConn()
