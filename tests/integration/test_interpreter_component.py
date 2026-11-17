@@ -52,7 +52,7 @@ def _interpretation(order_ids, cause="delay", severity="low") -> dict:
 class _NoKafka:
     """El consumidor se usa con `process`: sin Kafka."""
 
-    def subscribe(self, topics) -> None:
+    def subscribe(self, topics, **_callbacks) -> None:
         pass
 
 

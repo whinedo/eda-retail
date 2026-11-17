@@ -3,7 +3,8 @@
 Un hilo consume los eventos (grupo e inbox `orchestrator`), otro publica su outbox (relay), otro
 invoca por REST los comandos de su `command_outbox` y otro trata los plazos vencidos. Todo su estado
 está en sus tablas, así que reiniciarlo no pierde nada (spec resilience, "Reinicio del orquestador").
-Una instancia basta.
+Una instancia basta; E16 arranca dos en el mismo grupo para congelar una (spec experiments, «E16 Consumidor
+zombie y rebalanceo»).
 """
 
 from __future__ import annotations
@@ -66,7 +67,9 @@ def main(argv: list[str] | None = None) -> None:
     for t in threads:
         t.start()
     consumer = build_consumer(connect(settings.database_url),
-                              make_consumer(settings.kafka_bootstrap_servers, group_id=SCHEMA), settings, rules)
+                              make_consumer(settings.kafka_bootstrap_servers, group_id=SCHEMA,
+                                            session_timeout_ms=settings.kafka_session_timeout_ms),
+                              settings, rules)
     try:
         consumer.run_forever()
     finally:

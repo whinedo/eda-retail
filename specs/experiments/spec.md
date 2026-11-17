@@ -158,7 +158,7 @@ Cada experimento nuevo SHALL ejecutarse con `uv run eda-experiment <exp> --seed 
 
 ### Requirement: Modo multiproceso del harness
 
-El harness SHALL ofrecer un modo multiproceso (`--mode multiprocess`) que arranque cada componente como proceso propio contra PostgreSQL y Kafka reales (los mismos procesos que `scripts/run-agents.sh`), con una base de datos y un topic propios por ejecución. Los experimentos E12 y E16 MUST usar ese modo; el modo en proceso actual sigue siendo el de E1 a E7 y el de los demás experimentos que no exijan procesos aparte.
+El harness SHALL ofrecer un modo multiproceso (`RunConfig.orchestrator_processes`) que arranque una o varias instancias del orquestador como procesos propios (`eda-orchestrator`, el mismo proceso que `scripts/run-agents.sh`) contra PostgreSQL y Kafka reales, con la base de datos y el topic propios de la ejecución. El resto de componentes sigue en el harness, con el cliente LLM simulado (los procesos de los componentes con LLM solo usan Ollama), y atiende los comandos de esas instancias por REST en un servidor HTTP local de la ejecución. El experimento E16 MUST usar ese modo; el modo en proceso sigue siendo el de E1 a E7 y el de los demás experimentos, E12 incluido.
 
 #### Scenario: Aislamiento de la ejecución
 

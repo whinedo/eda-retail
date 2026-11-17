@@ -10,7 +10,7 @@ from eda_retail.infra.consumer import EventConsumer, Outcome
 
 
 class _Kafka:
-    def subscribe(self, topics):
+    def subscribe(self, topics, **_callbacks):
         pass
 
 

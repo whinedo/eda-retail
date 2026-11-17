@@ -112,7 +112,7 @@ def test_invalid_schema_is_rejected(bad):
 
 
 class _Kafka:
-    def subscribe(self, topics):
+    def subscribe(self, topics, **_callbacks):
         self.topics = topics
 
 

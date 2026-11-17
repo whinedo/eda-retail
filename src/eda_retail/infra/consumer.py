@@ -127,7 +127,18 @@ class EventConsumer:
         self._kafka = kafka_consumer
         self._handlers = dict(handlers)
         self._inbox_enabled = inbox_enabled
-        self._kafka.subscribe([topic])
+        self._kafka.subscribe([topic], on_assign=self._assigned, on_revoke=self._revoked, on_lost=self._lost)
+
+    # Rebalanceos del grupo, en el log del proceso (E16 los lee para fechar el rebalanceo). Sin llamar a `assign`:
+    # tras el callback, la biblioteca aplica la asignación.
+    def _assigned(self, _consumer: Consumer, partitions: list[TopicPartition]) -> None:
+        log.info("%s: particiones asignadas %s", self.name, sorted(p.partition for p in partitions))
+
+    def _revoked(self, _consumer: Consumer, partitions: list[TopicPartition]) -> None:
+        log.info("%s: particiones revocadas %s", self.name, sorted(p.partition for p in partitions))
+
+    def _lost(self, _consumer: Consumer, partitions: list[TopicPartition]) -> None:
+        log.info("%s: particiones perdidas %s", self.name, sorted(p.partition for p in partitions))
 
     @classmethod
     def from_settings(
@@ -170,6 +181,7 @@ class EventConsumer:
             return self._dead_letter(bad)
         if event.event_type not in self._handlers:
             return Outcome.IGNORED
+        log.debug("-> %s %s p%d o%d", event.event_type, event.correlation_id, msg.partition(), msg.offset())
         headers = {k: v.decode() for k, v in (msg.headers() or []) if v is not None}
         attributes = tracing.event_attributes(event) | {
             "messaging.system": "kafka",
