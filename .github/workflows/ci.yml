@@ -7,7 +7,8 @@
 #   fast    -m "not slow"                          (unit and integration tests that are not whole experiments)
 #   slow-a  -m slow on SLOW_A                      (the experiment files listed below)
 #   slow-b  -m slow, ignoring SLOW_A               (every other slow test, wherever it lives)
-# The slow shards print the slowest tests (--durations) to rebalance SLOW_A when needed.
+# Every shard prints its slowest tests (--durations) to rebalance SLOW_A when needed. The shard commands mirror the
+# local pytest hook of .pre-commit-config.yaml (`uv run pytest -q`): keep them in sync.
 name: checks
 
 on:
@@ -85,7 +86,7 @@ jobs:
       - name: pytest (${{ matrix.shard }})
         run: |
           case "${{ matrix.shard }}" in
-            fast)   uv run pytest -q -m "not slow" ;;
+            fast)   uv run pytest -q -m "not slow" --durations=15 ;;
             slow-a) uv run pytest -q -m slow --durations=15 $SLOW_A ;;
             slow-b) uv run pytest -q -m slow --durations=15 $(printf -- '--ignore=%s ' $SLOW_A) ;;
           esac
@@ -95,7 +96,7 @@ jobs:
         run: docker compose logs --no-color postgres kafka
 
   checks:
-    if: always()
+    if: ${{ !cancelled() }}  # a run superseded by a newer push is cancelled, not failed
     needs: [hygiene, tests]
     runs-on: ubuntu-latest
     timeout-minutes: 5
