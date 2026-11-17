@@ -912,9 +912,11 @@ body.resizing {
   max-height: 60vh;
 }
 
+/* Una tabla más ancha que su sección se desplaza dentro de ella, sin invadir la de al lado. */
 .operations__section {
   padding: 4px 20px;
   min-width: 0;
+  overflow-x: auto;
 }
 
 .operations__section h3 {
@@ -928,8 +930,10 @@ body.resizing {
   gap: 12px;
 }
 
+/* Las tablas de las secciones son estrechas: no heredan el ancho mínimo de la tabla de eventos. */
 .operations__grid .events__table {
   width: 100%;
+  min-width: 0;
 }
 
 .operations__bars {
