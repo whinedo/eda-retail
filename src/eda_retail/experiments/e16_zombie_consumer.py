@@ -197,7 +197,7 @@ def run_e16(base: Settings, *, seed: int = 42, incidents: int = 50) -> Report:
         h.send_notices()
         h.run_while(lambda: in_course(h) < incidents, IN_COURSE_TIMEOUT_S, on_turn=sampler)
         victim = _victim(h.processes)
-        closed_at_freeze = h.closed()
+        closed_at_freeze, in_course_at_freeze = h.closed(), in_course(h)
         frozen = victim.freeze()
         h.run_while(lambda: True, FREEZE_S, on_turn=sampler)
         resumed = victim.resume()
@@ -211,7 +211,7 @@ def run_e16(base: Settings, *, seed: int = 42, incidents: int = 50) -> Report:
         metrics = {
             "closed": result.closed, "open": result.open, "escalated": result.escalated,
             "escalation_reasons": result.escalation_reasons, "elapsed_s": round(result.elapsed_seconds, 1),
-            "group_before_freeze": assignment, "in_course_at_freeze": in_course(h),
+            "group_before_freeze": assignment, "in_course_at_freeze": in_course_at_freeze,
             "closed_at_freeze": closed_at_freeze,
             "rebalance": moved,
             "taken_over": taken_over(logs, victim.name, moved["victim_partitions"], frozen, resumed),

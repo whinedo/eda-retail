@@ -8,6 +8,10 @@ orquestadores por REST en `CommandGateway`, un servidor HTTP local con un prefij
 Cada instancia escribe su log en un fichero; `read_log` lo convierte en registros: rebalanceos del grupo, mensajes
 procesados (inicio y fin) y esperas al bloqueo de la incidencia. La congelación (spec synthetic-data, «Congelación de
 un proceso») es `SIGSTOP` y la reanudación `SIGCONT`.
+
+Los comandos que llegan por `CommandGateway` no pasan por `InProcessCommands`: los fallos de entrega del `FaultPlan`
+(`duplicates`, `concurrent_commands`, `reinvoke_steps`, `executor_faults`) no se aplican en este modo; los de las specs
+de los receptores (fallos, retrasos y caídas de los ejecutores) sí.
 """
 
 from __future__ import annotations
@@ -41,7 +45,7 @@ TARGET_URL_ENV = {
     "executor_reissue_shipment": "EXECUTOR_REISSUE_SHIPMENT_URL", "executor_issue_refund": "EXECUTOR_ISSUE_REFUND_URL",
 }
 START_TIMEOUT_S = 10.0
-STOP_TIMEOUT_S = 10.0
+STOP_TIMEOUT_S = 20.0  # el orquestador para su relay (10 s) y sus hilos (5 s) antes de salir
 
 _LINE = re.compile(r"^(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d,\d{3}) (\w+) \[orchestrator\] (.*)$")
 _REBALANCE = re.compile(r"^orchestrator: particiones (asignadas|revocadas|perdidas) \[([\d, ]*)\]$")
@@ -158,11 +162,14 @@ class OrchestratorProcess:
         return self.resumed_at[-1]
 
     def stop(self) -> int | None:
-        """Lo para (reanudándolo antes, por si está congelado) y devuelve su código de salida."""
+        """Lo para (reanudándolo antes, por si está congelado) y devuelve su código de salida. Con `SIGINT`, no
+        `SIGTERM`: el `KeyboardInterrupt` deja que `cli.main` cierre el consumidor y salga del grupo; con `SIGTERM`
+        el proceso muere sin hacerlo y su miembro sigue en el grupo `orchestrator` hasta que vence su sesión,
+        retrasando el rebalanceo de las ejecuciones siguientes."""
         if self.alive():
             with contextlib.suppress(ProcessLookupError):
                 os.kill(self.pid, signal.SIGCONT)
-                self.popen.terminate()
+                self.popen.send_signal(signal.SIGINT)
             try:
                 self.popen.wait(STOP_TIMEOUT_S)
             except subprocess.TimeoutExpired:
@@ -175,11 +182,13 @@ class OrchestratorProcess:
 
 
 def start_orchestrators(n: int, settings: Settings, urls: Mapping[str, str], log_dir: Path, *,
-                        session_timeout_ms: int | None) -> list[OrchestratorProcess]:
+                        session_timeout_ms: int | None,
+                        processes: list[OrchestratorProcess] | None = None) -> list[OrchestratorProcess]:
     """Arranca `n` instancias (`orchestrator-a`, `orchestrator-b`...) con el intérprete de Python de este proceso:
-    las señales llegan a Python, no a un lanzador como `uv run`."""
+    las señales llegan a Python, no a un lanzador como `uv run`. Las añade a `processes` según arrancan, para que
+    quien las pare las encuentre aunque falle el arranque de una posterior."""
     env = orchestrator_env(settings, urls, session_timeout_ms=session_timeout_ms)
-    processes = []
+    processes = [] if processes is None else processes
     for i in range(n):
         name = f"orchestrator-{chr(ord('a') + i)}"
         log_path = log_dir / f"{name}.log"

@@ -205,3 +205,17 @@ def test_command_gateway_routes_by_target_prefix():
             assert error.value.code == 404 and body in error.value.read()
     finally:
         gateway.stop()
+
+
+def test_stop_lets_the_process_run_its_cleanup(tmp_path: Path):
+    """Al parar una instancia (también congelada) su `finally` se ejecuta: el consumidor sale del grupo"""
+    marker = tmp_path / "closed"
+    code = ("import pathlib, time\n"
+            "try:\n    time.sleep(60)\n"
+            f"finally:\n    pathlib.Path({str(marker)!r}).write_text('ok')\n")
+    popen = subprocess.Popen([sys.executable, "-c", code])
+    process = OrchestratorProcess("orchestrator-a", popen, tmp_path / "a.log")
+    time.sleep(0.3)
+    process.freeze()
+    process.stop()
+    assert marker.read_text() == "ok"

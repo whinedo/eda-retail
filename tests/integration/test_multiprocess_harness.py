@@ -60,7 +60,7 @@ def test_run_isolation(base_settings):
 def test_aborted_run_leaves_nothing_behind(base_settings):
     """Aislamiento de la ejecución: una ejecución abortada también para sus procesos y borra su base de datos y su
     topic"""
-    config = RunConfig(seed=7, incidents=1, orchestrator_processes=1)
+    config = RunConfig(seed=7, incidents=1, orchestrator_processes=1, session_timeout_ms=6000)
     with pytest.raises(RuntimeError, match="abortada"), Harness(base_settings, config) as h:
         name, topic, processes = h.name, h.settings.events_topic, list(h.processes)
         raise RuntimeError("abortada")

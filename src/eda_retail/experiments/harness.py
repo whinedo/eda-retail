@@ -667,9 +667,9 @@ class Harness:
         targets = {t: (v.schema, v.specs, v.inbox) for t, v in self.targets.items()}
         self._gateway = CommandGateway(targets, lambda: connect(self.settings.database_url), self._tracked_call).start()
         self._process_dir = tempfile.TemporaryDirectory(prefix=f"{self.name}-")
-        self.processes = start_orchestrators(self.config.orchestrator_processes, self.settings, self._gateway.urls(),
-                                             Path(self._process_dir.name),
-                                             session_timeout_ms=self.config.session_timeout_ms)
+        start_orchestrators(self.config.orchestrator_processes, self.settings, self._gateway.urls(),
+                            Path(self._process_dir.name), session_timeout_ms=self.config.session_timeout_ms,
+                            processes=self.processes)
 
     def _tracked_call(self, call: Callable[[], Any]) -> Any:
         with self._activity.working():
