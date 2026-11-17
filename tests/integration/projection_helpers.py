@@ -127,6 +127,24 @@ class History:
     def resolved(self, outcome: str = "resolved") -> EventEnvelope:
         return self._add("IncidentResolved", {"incident_id": self.incident, "outcome": outcome}, "orchestrator")
 
+    def notice(self, carrier: str = "SEUR", raw_text: str = "aviso") -> EventEnvelope:
+        return self._add("CarrierNoticeReceived", {"carrier_notice_id": f"N-{self.incident}", "carrier": carrier,
+                                                   "raw_text": raw_text}, "intake")
+
+    def stock_released(self, reservation_id: str = "R1") -> EventEnvelope:
+        return self._add("StockReleased", {"reservation_id": reservation_id}, "inventory")
+
+    def llm_call(self, agent: str = "planner", tokens_in: int = 100, tokens_out: int = 20, latency_ms: int = 1000,
+                 passed: bool = True) -> EventEnvelope:
+        return self._add("LlmCallRecorded", {"incident_id": self.incident, "agent": agent, "model": "fake",
+                                             "tokens_in": tokens_in, "tokens_out": tokens_out,
+                                             "latency_ms": latency_ms, "validation_passed": passed, "attempt": 1},
+                         agent)
+
+    def carrier_consulted(self, outcome: str = "answered", rounds: int = 1, latency_ms: int = 100) -> EventEnvelope:
+        return self._add("CarrierConsulted", {"incident_id": self.incident, "outcome": outcome, "rounds": rounds,
+                                              "latency_ms": latency_ms}, "planner")
+
 
 
 

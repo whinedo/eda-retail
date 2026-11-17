@@ -11,6 +11,7 @@ import re
 from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager
 from dataclasses import asdict
+from datetime import datetime
 from pathlib import Path
 from typing import Annotated
 
@@ -23,6 +24,17 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 from eda_retail.config import load_settings
 from eda_retail.llm.ollama_client import DEFAULT_HOST as DEFAULT_OLLAMA_HOST
 from eda_retail.projectors.order_status import OrderStatus
+from eda_retail.queries.cost_per_incident import Prices
+from eda_retail.queries.operations import (
+    MAX_INCIDENTS,
+    IncidentState,
+    get_carrier_operations,
+    get_freshness,
+    get_incident_metrics,
+    get_llm_stats,
+    get_operations_summary,
+    kafka_end_offsets,
+)
 from eda_retail.queries.order_status import get_order_status
 from eda_retail.queries.parked_notices import get_parked_notices
 from eda_retail.web import topology as topo
@@ -185,6 +197,52 @@ def create_app(
         """Vista de analítica de pedidos (spec web-front): solo lee `order_status` (CQRS)."""
         view = get_order_status(conn, status=status, incident_id=incident_id or None, topic=settings.events_topic)
         return {"counts": view.counts, "orders": [asdict(o) for o in view.orders], "applied": view.applied}
+
+    # -- vista de operaciones (spec operations-view): solo GET sobre las vistas de incident-metrics ----------------
+    prices = Prices.from_settings(settings)
+
+    @app.get("/api/operations/summary")
+    def operations_summary(conn: Conn, incident_id: str | None = None) -> dict:
+        view = get_operations_summary(conn, prices, incident_id=incident_id or None, topic=settings.events_topic)
+        return asdict(view)
+
+    @app.get("/api/operations/incidents")
+    def operations_incidents(
+        conn: Conn,
+        state: IncidentState | None = None,
+        reason: str | None = None,
+        incident_id: str | None = None,
+        limit: Annotated[int, Query(ge=1, le=MAX_INCIDENTS)] = MAX_INCIDENTS,
+        before: str | None = None,
+    ) -> dict:
+        """Una página de incidencias; `before` es el `next_before` de la página anterior."""
+        cursor = None
+        if before:
+            at, _, incident = before.partition("|")
+            try:
+                cursor = (datetime.fromisoformat(at), incident)
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail="before no válido") from exc
+        page = get_incident_metrics(conn, prices, state=state, escalation_reason=reason or None,
+                                    incident_id=incident_id or None, limit=limit, before=cursor,
+                                    topic=settings.events_topic)
+        last = page.incidents[-1] if page.incidents else None
+        return {"incidents": [asdict(r) for r in page.incidents], "applied": page.applied,
+                "next_before": f"{last.last_event_at.isoformat()}|{last.incident_id}" if page.has_more and last
+                else None}
+
+    @app.get("/api/operations/llm")
+    def operations_llm(conn: Conn) -> dict:
+        return asdict(get_llm_stats(conn, topic=settings.events_topic))
+
+    @app.get("/api/operations/carriers")
+    def operations_carriers(conn: Conn) -> dict:
+        return asdict(get_carrier_operations(conn, topic=settings.events_topic))
+
+    @app.get("/api/operations/freshness")
+    def operations_freshness(conn: Conn) -> dict:
+        return asdict(get_freshness(conn, lambda t: kafka_end_offsets(settings.kafka_bootstrap_servers, t),
+                                    topic=settings.events_topic))
 
     @app.get("/api/parked-notices")
     def parked_notices(conn: Conn) -> dict:
