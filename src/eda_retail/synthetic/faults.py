@@ -25,6 +25,10 @@
   esas acciones, el ejecutor llama al servicio y cae antes de la transacción que registra la clave
   (`EffectRecordCrashes`; el arnés envuelve el `ExecuteStep` con `experiments.harness.crashing`). El trabajo se
   reintenta con el mismo `command_id` y la misma clave.
+- Ejecutor caído o colgado (`executor_faults`, E12): el sistema destino de un comando queda `down` (rechaza la
+  conexión: `CommandUnavailable` al momento) o `hang` (acepta la petición y no responde: se espera el timeout del
+  comando). El intervalo empieza con el primer comando a ese sistema (y acción, si se da) y dura `duration_s` (sin
+  ella, para siempre); `ExecutorOutage` lo decide y el arnés lo aplica en `InProcessCommands`.
 """
 
 from __future__ import annotations
@@ -41,6 +45,19 @@ from confluent_kafka import ConsumerGroupTopicPartitions, TopicPartition
 from eda_retail.events.catalog import Action
 
 INJECTED_FAILURE = "injected_failure"
+EXECUTOR_MODES = ("down", "hang")
+
+
+@dataclass(frozen=True)
+class ExecutorFault:
+    """Un sistema destino (`schema`: `executor_file_claim`, `inventory`…) caído o colgado (spec synthetic-data,
+    «Ejecutor caído o colgado»). Con `action`, solo los `ExecuteStep` de esa acción abren el intervalo y lo
+    sufren; `duration_s` None: para siempre."""
+
+    target: str
+    mode: str
+    action: str | None = None
+    duration_s: float | None = None
 # Comandos que admiten entrega concurrente (spec synthetic-data, «Entrega concurrente de comandos»)
 CONCURRENT_COMMANDS = frozenset({"ExecuteStep", "CreatePlan", "RevisePlan", "RegisterCarrierNotice", "SeedSampleData"})
 
@@ -57,6 +74,7 @@ class FaultPlan:
     concurrent_commands: Mapping[str, int] = field(default_factory=dict)  # tipo de comando -> hilos a la vez
     reinvoke_steps: tuple[str, ...] = ()  # acciones cuyo ExecuteStep llega también con otro command_id
     crash_between_effect_and_record: tuple[str, ...] = ()  # acciones que caen tras el efecto en su primer intento
+    executor_faults: tuple[ExecutorFault, ...] = ()  # sistemas destino caídos o colgados
 
     def __post_init__(self) -> None:
         if self.duplicates < 1:
@@ -84,6 +102,44 @@ class FaultPlan:
         for action in (*self.reinvoke_steps, *self.crash_between_effect_and_record):
             if action not in allowed:
                 raise ValueError(f"acción fuera de la lista permitida: {action}")
+        for fault in self.executor_faults:
+            if fault.mode not in EXECUTOR_MODES:
+                raise ValueError(f"modo de ejecutor desconocido: {fault.mode}")
+            if fault.duration_s is not None and fault.duration_s <= 0:
+                raise ValueError(f"duration_s debe ser positivo para {fault.target}: {fault.duration_s}")
+            if fault.action is not None and fault.action not in allowed:
+                raise ValueError(f"acción fuera de la lista permitida: {fault.action}")
+
+
+class ExecutorOutage:
+    """Intervalos de `executor_faults`: cada uno se abre con el primer comando que encaja y dura `duration_s`.
+    Seguro entre hilos (el dispatcher puede ir en su propio hilo)."""
+
+    def __init__(self, plan: FaultPlan, *, clock: Callable[[], float] = time.monotonic) -> None:
+        self._faults = plan.executor_faults
+        self._clock = clock
+        self._lock = threading.Lock()
+        self._opened: dict[ExecutorFault, float] = {}
+
+    def _matches(self, fault: ExecutorFault, target: str, action: str | None) -> bool:
+        return fault.target == target and (fault.action is None or fault.action == action)
+
+    def _open(self, fault: ExecutorFault, now: float) -> bool:
+        start = self._opened.setdefault(fault, now)
+        return fault.duration_s is None or now < start + fault.duration_s
+
+    def active(self, target: str, action: str | None) -> ExecutorFault | None:
+        """El fallo que sufre ahora un comando a `target` (y `action`), abriendo su intervalo si es el primero."""
+        now = self._clock()
+        with self._lock:
+            return next((f for f in self._faults if self._matches(f, target, action) and self._open(f, now)), None)
+
+    def ended(self, target: str) -> bool:
+        """Algún intervalo de `target` se abrió y ya terminó (el ejecutor se recuperó)."""
+        now = self._clock()
+        with self._lock:
+            return any(f.target == target and f in self._opened and f.duration_s is not None
+                       and now >= self._opened[f] + f.duration_s for f in self._faults)
 
 
 class EffectRecordCrash(RuntimeError):

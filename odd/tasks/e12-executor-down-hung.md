@@ -1,0 +1,30 @@
+# E12 executor down and hung
+
+Objective: implement the «Ejecutor caído o colgado» injection (in-process mode) and experiment E12 (H12a, H12b). Branch `feat/e12-executor-down-hung` from main 687d880; delivery `single-pr` (one PR per experiment, user rule).
+Test runners: `uv run pytest -q --ignore=tests/integration -m "not integration and not slow"` (unit); integration and experiments only in CI (sharded; new slow files land in `slow-b`).
+
+## Specs
+
+- S1 "Después, E12." Requirement specs/experiments «E12 Ejecutor caído y ejecutor colgado (H12)», scenarios «Ejecutor caído para siempre», «Ejecutor colgado», «Recuperación del ejecutor», «Compensación de un paso con plazo vencido», each with a test. Verbatim hypothesis: "H12a (vivacidad) toda incidencia que usa el ejecutor afectado termina escalada o resuelta dentro de `SAGA_STEP_TIMEOUT_S` más un margen, y las que no lo usan terminan como siempre; H12b (aislamiento) la latencia p95 de las incidencias que no usan el ejecutor afectado no supera el doble de la de una ejecución sin fallo." H12b is exploratory: "un resultado negativo de H12b es un hallazgo y no un fallo del experimento, y el informe lo MUST decir."
+- S2 Injection specs/synthetic-data «Ejecutor caído o colgado», verbatim: "`down` (rechaza la conexión) y `hang` (acepta la conexión y no responde nunca). En el modo en proceso se simula haciendo que `InProcessCommands` lance `CommandUnavailable` o espere el timeout".
+- S3 User decision (2026-11-17): E12 runs in-process ("En proceso"), and the E12 spec is corrected in this PR: it currently says "El experimento SHALL ejecutarse en modo multiproceso".
+
+Design (assumptions):
+
+- `ExecutorFault(target, mode, action=None, duration_s=None)` in `FaultPlan.executor_faults`: the window opens at the first command delivered to that target (and action, if given) and lasts `duration_s` (None: forever). `down` raises `CommandUnavailable` at once; `hang` keeps the request (backlog) and waits the command timeout before raising it. When a `hang` window ends, the backlog runs once (the stuck process answers what it had accepted), so late results arrive stale or to steps still current.
+- The dispatcher runs in its own thread for E12 (`RunConfig.dispatcher_thread`), as in `orchestrator/cli.py`; otherwise a hang would also freeze relays and projectors in the harness turn and distort H12b. Deadlines and the rest stay in the turn.
+- Variants: `baseline` (no fault), `down`, `hang`, `hang_recovery` (recovers after 1.5 × step timeout) on `executor_file_claim`, and `compensation`: `reissue_shipment` always fails, so the replan drops the completed reserve and the saga asks `release_stock` (`-comp`) while `inventory` is down for half a step timeout from the first release.
+- H12a: no incident left open; every incident using `file_claim` closes within `SAGA_STEP_TIMEOUT_S` + margin (baseline max latency + `MARGIN_S`); incidents not using it end with the same status as in `baseline`. H12b: p95 latency of incidents not using `file_claim` ≤ 2 × their p95 in `baseline`.
+- Seed 42 gives 18 of 50 incidents with `file_claim` (36 %), not "aproximadamente la mitad"; the report gives the share.
+
+## Tasks
+
+| ID | Specs | Route | Status | Commit |
+| --- | --- | --- | --- | --- |
+| T1 | S2 | inline | pending | |
+| T2 | S1, S3 | inline | pending | |
+
+## Log
+
+- L1 (2026-11-17) User request, verbatim: "Sí, empieza E12" (plan: "2. Después, E12."). Decision on the mode clash, verbatim answer: "En proceso (Recommended)".
+- L2 (2026-11-17) Map: dispatcher `dispatch_once` takes one due command (`LIMIT 1`), starts the deadline at first send and retries `CommandUnavailable` with backoff (orchestrator/dispatcher.py); `expire_once` fails a timed-out step with `timeout` and marks its pending command `expired`; compensation only for completed `reserve_stock` (orchestrator/rules.py); production runs dispatcher and expiry in their own threads (orchestrator/cli.py); `StockReleased` carries `reservation_id`.
