@@ -133,6 +133,28 @@ La inyección SHALL permitir entregar un mismo comando desde N hilos (o procesos
 - **THEN** el experimento registra una ejecución del servicio de correo con la clave K
 - **AND** el siguiente intento llega con el mismo `command_id` y la misma clave K
 
+### Requirement: Reenvío de avisos del transportista
+
+La inyección SHALL permitir reenviar un aviso ya registrado de 1 a N veces con el mismo `carrier_notice_id`, en orden o a la vez (cada envío desde su hilo y con su conexión), con un `command_id` nuevo en cada envío, y SHALL decidir con la semilla cuántas veces y de qué forma se reenvía cada aviso.
+
+#### Scenario: Avisos reenviados en orden y a la vez
+
+- **GIVEN** una semilla y 20 avisos
+- **WHEN** se genera el plan de reenvíos
+- **THEN** cada aviso se reenvía de 1 a 5 veces, unos en orden y otros a la vez
+- **AND** la misma semilla da el mismo plan
+
+### Requirement: Pedido compartido entre avisos
+
+El generador SHALL poder dar a una parte de los pedidos un segundo aviso con otro `carrier_notice_id` y las mismas etiquetas (causa, gravedad, retraso y plan esperado), sin repetir pedidos en los datos de ejemplo.
+
+#### Scenario: Segundo aviso de un pedido
+
+- **GIVEN** un conjunto de 12 avisos
+- **WHEN** se genera con pedidos compartidos
+- **THEN** uno de cada cuatro pedidos tiene un segundo aviso con otro `carrier_notice_id` y las mismas etiquetas
+- **AND** los pedidos de los datos de ejemplo no se repiten
+
 ### Requirement: Fallos reproducibles
 
 La inyección de fallos MUST ser determinista dada una semilla.

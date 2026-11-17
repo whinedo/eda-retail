@@ -681,6 +681,36 @@ class Harness:
         """El transportista reenvía el aviso `index`: devuelve la respuesta de intake (un rechazo no es error)."""
         return self._send_notice(self.data.notices[index], check=False)
 
+    def resend_notice_concurrently(self, index: int, times: int) -> list[Any]:
+        """El transportista reenvía el aviso `index` `times` veces a la vez, cada envío desde su hilo y con su
+        conexión (spec synthetic-data, «Reenvío de avisos del transportista»); devuelve las respuestas de intake."""
+        n, t = self.data.notices[index], self.targets["intake"]
+        payload = {"carrier_notice_id": n.carrier_notice_id, "carrier": n.carrier,
+                   "raw_text": n.raw_text(self.config.fmt)}
+        barrier = threading.Barrier(times)
+        responses: list[Any] = [None] * times
+        errors: list[BaseException] = []
+
+        def send(i: int) -> None:
+            command = CommandEnvelope(command_id=uuid.uuid4(), command_type="RegisterCarrierNotice",
+                                      correlation_id=incident_id_for_notice(n.carrier_notice_id),
+                                      causation_id=None, payload=payload)
+            try:
+                with connect(self.settings.database_url) as conn:
+                    barrier.wait(timeout=JOIN_TIMEOUT_S)
+                    responses[i] = execute_command(conn, t.schema, command, t.specs["RegisterCarrierNotice"])
+            except BaseException as exc:  # noqa: BLE001 — se relanza en el hilo que llama
+                errors.append(exc)
+
+        threads = [threading.Thread(target=send, args=(i,), name=f"resend-{index}-{i}") for i in range(times)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(JOIN_TIMEOUT_S)
+        if errors:
+            raise errors[0]
+        return responses
+
     def step(self) -> int:
         """Un turno: relays, lado de lectura, consumidores, dispatcher y plazos. Devuelve cuánto avanzó."""
         progressed = sum(r.run_once() + r.publish_dead_letters() for r in self._relays)
