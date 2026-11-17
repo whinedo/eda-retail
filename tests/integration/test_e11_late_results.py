@@ -3,6 +3,8 @@ synthetic-data), de punta a punta con el LLM oráculo. Una sola ejecución de E1
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from eda_retail.experiments.e11_late_results import run_e11
@@ -40,10 +42,15 @@ def test_refund_with_pending_compensations(report):
 
 def test_report_with_invariants(report):
     """Informe con invariantes"""
-    assert set(report.metrics["invariants"]) == {"I1", "I2", "I3", "I4", "I5"}
+    invariants = report.metrics["invariants"]
+    assert set(invariants) == {"I1", "I2", "I3", "I4", "I5"}
+    broken = {name: inv for name, inv in invariants.items() if inv["violations"] != 0}
+    assert broken == {}, json.dumps(broken, default=str)
 
 
 def test_h11(report):
     """Cumplimiento de H11"""
     assert report.metrics["open"] == 0
-    assert report.hypothesis == {"H11": True}
+    detail = {k: report.metrics[k] for k in ("stale_results", "stale_state_changes", "stale_state_change_detail",
+                                             "a4_compensations", "compensations", "timeouts", "delayed_results")}
+    assert report.hypothesis == {"H11": True}, json.dumps(detail, default=str)
