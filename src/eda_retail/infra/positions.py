@@ -18,7 +18,7 @@ from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 
 import psycopg
-from confluent_kafka import OFFSET_BEGINNING, Consumer, Message, TopicPartition
+from confluent_kafka import OFFSET_BEGINNING, Consumer, KafkaError, KafkaException, Message, TopicPartition
 
 from eda_retail.infra.schemas import qualified
 
@@ -30,6 +30,25 @@ ApplyMessage = Callable[[psycopg.Connection, Message], None]
 
 _TRACE_HEADERS = ("traceparent", "tracestate")
 _METADATA_TIMEOUT = 10.0
+# Errores de Kafka transitorios al pedir una marca de agua: la partición aún no tiene líder (p. ej. justo después de
+# crear el topic) o el cliente aún no conoce su metadata. `retriable()` no los marca, así que van en una lista.
+_TRANSIENT_WATERMARK_ERRORS = frozenset({KafkaError.NOT_LEADER_FOR_PARTITION, KafkaError.LEADER_NOT_AVAILABLE,
+                                         KafkaError.UNKNOWN_TOPIC_OR_PART})
+_WATERMARK_RETRY_S = 0.2
+
+
+def high_watermark(kafka: Consumer, tp: TopicPartition, *, timeout: float = _METADATA_TIMEOUT,
+                   sleep: Callable[[float], None] = time.sleep) -> int:
+    """La marca de agua alta de `tp`. Reintenta los errores transitorios de líder y metadata hasta `timeout`
+    segundos; otro error, o el mismo más allá del plazo, se propaga."""
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            return kafka.get_watermark_offsets(tp, timeout=timeout)[1]
+        except KafkaException as exc:
+            if exc.args[0].code() not in _TRANSIENT_WATERMARK_ERRORS or time.monotonic() >= deadline:
+                raise
+            sleep(_WATERMARK_RETRY_S)
 
 
 @dataclass(frozen=True)
@@ -167,10 +186,7 @@ class PositionedConsumer:
         return applied
 
     def high_watermarks(self) -> dict[int, int]:
-        return {
-            p: self._kafka.get_watermark_offsets(TopicPartition(self._topic, p), timeout=_METADATA_TIMEOUT)[1]
-            for p in self.partitions()
-        }
+        return {p: high_watermark(self._kafka, TopicPartition(self._topic, p)) for p in self.partitions()}
 
     def catch_up(self, timeout: float = 60.0) -> int:
         """Consume hasta las marcas de agua altas de ahora; devuelve cuántos mensajes aplicó."""
