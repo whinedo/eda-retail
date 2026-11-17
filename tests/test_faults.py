@@ -316,9 +316,11 @@ def test_outage_window_opens_at_the_first_command_and_ends_after_its_duration():
     assert outage.active("inventory", "release_stock").mode == "down"  # abre a los 200 s
     clock.now = 202.9
     assert outage.active("inventory", "release_stock").mode == "down"
+    assert outage.recovering("inventory") and not outage.ended("inventory")
     clock.now = 203.0
     assert outage.active("inventory", "release_stock") is None and outage.ended("inventory")
+    assert not outage.recovering("inventory")
     assert outage.active("executor_file_claim", "file_claim").mode == "hang"
     clock.now = 10_000.0
     assert outage.active("executor_file_claim", "file_claim").mode == "hang"  # para siempre
-    assert not outage.ended("executor_file_claim")
+    assert not outage.ended("executor_file_claim") and not outage.recovering("executor_file_claim")

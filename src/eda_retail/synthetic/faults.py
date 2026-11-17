@@ -134,6 +134,13 @@ class ExecutorOutage:
         with self._lock:
             return next((f for f in self._faults if self._matches(f, target, action) and self._open(f, now)), None)
 
+    def recovering(self, target: str) -> bool:
+        """Algún intervalo de `target` está abierto y terminará (tiene duración): el ejecutor se recuperará."""
+        now = self._clock()
+        with self._lock:
+            return any(f.target == target and f in self._opened and f.duration_s is not None
+                       and now < self._opened[f] + f.duration_s for f in self._faults)
+
     def ended(self, target: str) -> bool:
         """Algún intervalo de `target` se abrió y ya terminó (el ejecutor se recuperó)."""
         now = self._clock()

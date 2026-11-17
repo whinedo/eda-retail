@@ -279,6 +279,7 @@ def test_hung_executor_waits_the_timeout_and_keeps_the_request(executed):
                      payload=CLAIM, timeout=5)
     assert executed == [] and slept == [5, 5]
     assert commands.hang_wait_s == {"executor_file_claim": 10}
+    assert not commands.awaiting_recovery()  # colgado para siempre: no se espera a que vuelva
     assert [c.command_id for c in commands.backlog["executor_file_claim"]] == [command_id]
 
 
@@ -293,8 +294,10 @@ def test_recovered_executor_answers_its_backlog_once(executed):
     with pytest.raises(CommandUnavailable):
         _invoke(commands, CLAIM, command_id)
     assert commands.flush_recovered(lambda c: "current") == {}  # aún colgado
+    assert commands.awaiting_recovery()  # el arnés sigue hasta atenderlo
     clock[0] = 6.0
     assert commands.flush_recovered(lambda c: "stale") == {"stale": 1}
     assert commands.flush_recovered(lambda c: "stale") == {}  # una sola vez
+    assert not commands.awaiting_recovery()
     _invoke(commands, CLAIM)
     assert executed[0][1] == command_id and len(executed) == 2

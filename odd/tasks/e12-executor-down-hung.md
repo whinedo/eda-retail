@@ -13,7 +13,8 @@ Design (assumptions):
 
 - `ExecutorFault(target, mode, action=None, duration_s=None)` in `FaultPlan.executor_faults`: the window opens at the first command delivered to that target (and action, if given) and lasts `duration_s` (None: forever). `down` raises `CommandUnavailable` at once; `hang` keeps the request (backlog) and waits the command timeout before raising it. When a `hang` window ends, the backlog runs once (the stuck process answers what it had accepted), so late results arrive stale or to steps still current.
 - The dispatcher runs in its own thread for E12 (`RunConfig.dispatcher_thread`), as in `orchestrator/cli.py`; otherwise a hang would also freeze relays and projectors in the harness turn and distort H12b. Deadlines and the rest stay in the turn.
-- Variants: `baseline` (no fault), `down`, `hang`, `hang_recovery` (recovers after 1.5 × step timeout) on `executor_file_claim`, and `compensation`: `reissue_shipment` always fails, so the replan drops the completed reserve and the saga asks `release_stock` (`-comp`) while `inventory` is down for half a step timeout from the first release.
+- Variants: `baseline` (no fault), `down`, `hang`, `hang_recovery` (recovers after 1.5 × step timeout) on `executor_file_claim`, and `compensation`: `inventory` down from the first reserve for 1.5 × step timeout, so the reserve times out, the saga derives its `release_stock` `-comp` (orchestrator/saga.py `fail`: a timed-out compensable step) and it completes when `inventory` is back, before its own deadline. A release with no reservation completes without effect.
+- The harness keeps working while a hung executor that will recover has accepted requests (`awaiting_recovery`), so the backlog is answered even if every incident already closed.
 - H12a: no incident left open; every incident using `file_claim` closes within `SAGA_STEP_TIMEOUT_S` + margin (baseline max latency + `MARGIN_S`); incidents not using it end with the same status as in `baseline`. H12b: p95 latency of incidents not using `file_claim` ≤ 2 × their p95 in `baseline`.
 - Seed 42 gives 18 of 50 incidents with `file_claim` (36 %), not "aproximadamente la mitad"; the report gives the share.
 
@@ -21,10 +22,12 @@ Design (assumptions):
 
 | ID | Specs | Route | Status | Commit |
 | --- | --- | --- | --- | --- |
-| T1 | S2 | inline | pending | |
-| T2 | S1, S3 | inline | pending | |
+| T1 | S2 | inline | done | 6bcc9e5 |
+| T2 | S1, S3 | inline | done | next commit |
 
 ## Log
 
 - L1 (2026-11-17) User request, verbatim: "Sí, empieza E12" (plan: "2. Después, E12."). Decision on the mode clash, verbatim answer: "En proceso (Recommended)".
 - L2 (2026-11-17) Map: dispatcher `dispatch_once` takes one due command (`LIMIT 1`), starts the deadline at first send and retries `CommandUnavailable` with backoff (orchestrator/dispatcher.py); `expire_once` fails a timed-out step with `timeout` and marks its pending command `expired`; compensation only for completed `reserve_stock` (orchestrator/rules.py); production runs dispatcher and expiry in their own threads (orchestrator/cli.py); `StockReleased` carries `reservation_id`.
+- L3 (2026-11-17) T1 6bcc9e5: `ExecutorFault`, `ExecutorOutage`, `InProcessCommands` down/hang/backlog/`flush_recovered`, `RunConfig.dispatcher_thread` and `command_timeout_seconds`. RED observed (5 failed), GREEN.
+- L4 (2026-11-17) T2: experiment `e12_executor_down_hung.py`, CLI, expexecutor (checks H12a only; H12b exploratory), guide, spec E12 now says in-process (user decision). Compensation variant reworked after reading `Saga.fail`: the saga already compensates a timed-out `reserve_stock`. `awaiting_recovery` added after noticing the run could end before the recovery. Unit tests of the experiment written after the code (no observed RED). Unit 722 passed, ruff ok. Integration (seed 7, 6 incidents) CI only. Open point for the user: seed 42 gives 18/50 incidents with `file_claim`, the spec says "aproximadamente la mitad".

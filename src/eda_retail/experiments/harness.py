@@ -453,6 +453,12 @@ class InProcessCommands:
             self._sleep(timeout)
         raise CommandUnavailable(f"{target.schema} {fault.mode}")
 
+    def awaiting_recovery(self) -> bool:
+        """Algún ejecutor colgado tiene peticiones aceptadas y se recuperará: el arnés debe seguir hasta atenderlas."""
+        with self._lock:
+            pending = [schema for schema, kept in self.backlog.items() if kept]
+        return any(self._outage.recovering(schema) or self._outage.ended(schema) for schema in pending)
+
     def flush_recovered(self, classify: Callable[[CommandEnvelope], str]) -> dict[str, int]:
         """Un ejecutor colgado que se recupera atiende una vez lo que tenía aceptado. `classify` dice, antes de
         atenderlo, si el resultado llegará obsoleto o a un paso vigente; devuelve el recuento."""
@@ -992,7 +998,9 @@ class Harness:
 
     def _working(self) -> bool:
         """Algún hilo atiende un mensaje o un trabajo, o quedan trabajos por hacer."""
-        return self._activity.busy > 0 or self._open_jobs() > 0
+        commands = getattr(self, "commands", None)  # sin montar (tests de los hilos) no hay comandos
+        return (self._activity.busy > 0 or self._open_jobs() > 0
+                or (commands is not None and commands.awaiting_recovery()))
 
     def _advance(self) -> bool:
         """Un turno; True si avanzó algo, en el turno o en los hilos, o si los hilos siguen trabajando."""
