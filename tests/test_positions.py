@@ -126,14 +126,23 @@ def test_high_watermark_retries_while_the_partition_has_no_leader():
     assert kafka.calls == 3 and len(slept) == 2
 
 
-def test_high_watermark_does_not_retry_other_errors_or_past_the_timeout():
-    """Otro error de Kafka, o el mismo error transitorio más allá del plazo, se propaga"""
+def test_high_watermark_does_not_retry_other_errors():
+    """Otro error de Kafka se propaga al primer intento, sin reintentar"""
     import pytest
     from confluent_kafka import KafkaError, KafkaException, TopicPartition
 
-    with pytest.raises(KafkaException):
-        positions.high_watermark(_Watermarks(KafkaError._ALL_BROKERS_DOWN), TopicPartition("t", 0), timeout=10,
-                                 sleep=lambda s: None)
-    with pytest.raises(KafkaException):
-        positions.high_watermark(_Watermarks(*[KafkaError.NOT_LEADER_FOR_PARTITION] * 1000), TopicPartition("t", 0),
-                                 timeout=0, sleep=lambda s: None)
+    kafka = _Watermarks(KafkaError._ALL_BROKERS_DOWN)
+    with pytest.raises(KafkaException) as exc:
+        positions.high_watermark(kafka, TopicPartition("t", 0), timeout=10, sleep=lambda s: None)
+    assert exc.value.args[0].code() == KafkaError._ALL_BROKERS_DOWN and kafka.calls == 1
+
+
+def test_high_watermark_gives_up_at_the_timeout():
+    """El error transitorio más allá del plazo se propaga tal cual"""
+    import pytest
+    from confluent_kafka import KafkaError, KafkaException, TopicPartition
+
+    kafka = _Watermarks(*[KafkaError.NOT_LEADER_FOR_PARTITION] * 1000)
+    with pytest.raises(KafkaException) as exc:
+        positions.high_watermark(kafka, TopicPartition("t", 0), timeout=0, sleep=lambda s: None)
+    assert exc.value.args[0].code() == KafkaError.NOT_LEADER_FOR_PARTITION and kafka.calls == 1
