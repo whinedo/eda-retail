@@ -390,8 +390,8 @@ El sistema SHALL cumplir la hipótesis H22: el mismo comando entregado a la vez 
 #### Scenario: Dos ejecutores a la vez
 
 - **GIVEN** 8 hilos que entregan el mismo `ExecuteStep` con el mismo `command_id`
-- **WHEN** todos intentan registrar la clave
-- **THEN** solo uno ejecuta el efecto
+- **WHEN** las 8 entregas llegan a la vez al inbox del ejecutor
+- **THEN** el inbox registra una sola entrega, que crea el único trabajo que registra la clave, y solo ese ejecuta el efecto
 - **AND** todos reciben la misma respuesta y se escribe un solo `StepCompleted`
 
 #### Scenario: Comando concurrente con trabajo diferido
