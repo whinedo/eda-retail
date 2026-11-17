@@ -186,7 +186,38 @@ def _measure(h: Harness) -> dict[str, Any]:
             "file_claim_commands": summarize_commands(commands, hang_wait_s=h.commands.hang_wait_s[TARGET]),
             "file_claim_steps": summarize_claim_steps(claim_steps),
             "recovered_results": dict(h.recovered),
-            "compensation": summarize_compensations(steps, releases, attempts)}
+            "compensation": summarize_compensations(steps, releases, attempts),
+            "compensation_trace": _compensation_trace(h)}
+
+
+def _compensation_trace(h: Harness) -> dict[str, Any]:
+    """Diagnóstico (el CI no sube informes): en las incidencias con compensación, cada paso de stock con su comando
+    y sus plazos, y los eventos de esos pasos, con los instantes en segundos desde que se abrió la incidencia."""
+    steps = _rows(h, """
+        SELECT s.incident_id, s.step_id, s.status, s.error, s.origin_plan_version, i.plan_version AS incident_version,
+               c.status AS command_status, c.attempts, c.response, c.payload->>'plan_version' AS command_version,
+               round(extract(epoch FROM c.created_at - i.opened_at)::numeric, 2)::float AS enqueued_s,
+               round(extract(epoch FROM d.expires_at - make_interval(secs => d.timeout_s) - i.opened_at)::numeric,
+                     2)::float AS first_send_s,
+               round(extract(epoch FROM d.expires_at - i.opened_at)::numeric, 2)::float AS expires_s,
+               round(extract(epoch FROM d.resolved_at - i.opened_at)::numeric, 2)::float AS resolved_s
+        FROM orchestrator.plan_steps s JOIN orchestrator.incidents i USING (incident_id)
+        LEFT JOIN orchestrator.command_outbox c ON c.incident_id = s.incident_id AND c.command_type = 'ExecuteStep'
+                                               AND c.payload->>'step_id' = s.step_id
+        LEFT JOIN orchestrator.deadlines d ON d.command_id = c.command_id
+        WHERE s.action IN ('reserve_stock', 'release_stock') AND s.incident_id IN
+              (SELECT incident_id FROM orchestrator.plan_steps WHERE compensates IS NOT NULL)
+        ORDER BY s.incident_id, c.created_at""")
+    events = _rows(h, """
+        SELECT e.correlation_id AS incident_id, e.event_type, e.payload->>'step_id' AS step_id,
+               e.payload->>'plan_version' AS plan_version, e.payload->>'error' AS error,
+               round(extract(epoch FROM e.occurred_at - i.opened_at)::numeric, 2)::float AS at_s
+        FROM event_log.events e JOIN orchestrator.incidents i ON i.incident_id = e.correlation_id
+        WHERE e.correlation_id IN (SELECT incident_id FROM orchestrator.plan_steps WHERE compensates IS NOT NULL)
+          AND e.event_type IN ('StepRequested', 'StepCompleted', 'StepFailed', 'StepCancelled', 'PlanRevised',
+                               'IncidentEscalated', 'IncidentResolved')
+        ORDER BY e.correlation_id, e.occurred_at""")
+    return {"steps": steps, "events": events}
 
 
 def run_variant(base: Settings, variant: str, *, seed: int, incidents: int) -> dict[str, Any]:
