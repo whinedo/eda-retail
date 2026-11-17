@@ -107,6 +107,28 @@ def test_states_after_a_compensation(conn, settings):
     assert status.step("S3-comp")["status"] == "completed"
 
 
+def test_compensation_requested_before_a_revision_in_the_view(conn, settings):
+    """Compensación pedida antes de una revisión: la vista la marca completed con su StepCompleted de la versión 1,
+    como la saga"""
+    history = History()
+    history.delayed()
+    history.plan_created(LOSS_PLAN)
+    history.requested(LOSS_PLAN[2])
+    history.failed("S3", "timeout", producer="orchestrator")
+    history.requested({"step_id": "S3-comp", "action": "release_stock", "params": {"order_id": "P1"}})
+    refund = {"step_id": "S5", "action": "issue_refund", "params": {"order_id": "P1", "amount": "10"},
+              "depends_on": []}
+    history.plan_revised([*LOSS_PLAN[:2], refund])
+    history.completed("S3-comp", {"released": False}, plan_version=1, producer="inventory")
+    history.completed("S1", {"message_id": "M1"}, plan_version=1)  # un obsoleto que no es compensación
+    _project(settings, conn, history)
+
+    status = _status(settings, conn, history.incident)
+    assert status.plan_version == 2
+    assert status.step("S3-comp")["status"] == "completed"
+    assert status.step("S1")["status"] == "pending"
+
+
 def test_duplicate_event_in_projector(conn, settings):
     """Evento duplicado en un proyector"""
     history = History()

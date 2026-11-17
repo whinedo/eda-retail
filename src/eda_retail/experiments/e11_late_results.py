@@ -53,7 +53,8 @@ def classify(events: Iterable[Mapping[str, Any]], timed_out: Iterable[Mapping[st
         elif e["event_type"] == "StepRequested":
             action[(incident, p["step_id"])] = p["action"]
         elif e["event_type"] in RESULTS and e["producer"] != ORCHESTRATOR:
-            old = p["plan_version"] < version.get(incident, 0)
+            # Una compensación aún pedida no es obsoleta por la versión (spec incident-planning, «Eventos obsoletos»).
+            old = p["plan_version"] < version.get(incident, 0) and not p["step_id"].endswith(COMPENSATION_SUFFIX)
             late = (incident, p["step_id"], p["plan_version"]) in expired
             if old or late:
                 stale[e["event_id"]] = {"incident_id": incident, "step_id": p["step_id"], "event_type": e["event_type"],
