@@ -39,6 +39,10 @@ from eda_retail.config import Settings
 from eda_retail.infra.commands import CommandEnvelope, CommandResponse, CommandSpec, command_router, execute_command
 
 ORCHESTRATOR_MODULE = "eda_retail.orchestrator.cli"
+# Como `python -m <módulo>`, pero con SIGINT convertido en `KeyboardInterrupt` aunque este proceso lo ignore (lanzado
+# en segundo plano): `OrchestratorProcess.stop` lo usa para que el orquestador cierre su consumidor y salga del grupo.
+LAUNCHER = ("import runpy, signal; signal.signal(signal.SIGINT, signal.default_int_handler); "
+            f"runpy.run_module({ORCHESTRATOR_MODULE!r}, run_name='__main__', alter_sys=True)")
 TARGET_URL_ENV = {
     "intake": "INTAKE_URL", "inventory": "INVENTORY_URL", "planner": "PLANNER_URL", "replanner": "REPLANNER_URL",
     "executor_notify_customer": "EXECUTOR_NOTIFY_CUSTOMER_URL", "executor_file_claim": "EXECUTOR_FILE_CLAIM_URL",
@@ -193,7 +197,7 @@ def start_orchestrators(n: int, settings: Settings, urls: Mapping[str, str], log
         name = f"orchestrator-{chr(ord('a') + i)}"
         log_path = log_dir / f"{name}.log"
         with log_path.open("wb") as out:
-            popen = subprocess.Popen([sys.executable, "-m", ORCHESTRATOR_MODULE], cwd=log_dir, env=env,
+            popen = subprocess.Popen([sys.executable, "-c", LAUNCHER], cwd=log_dir, env=env,
                                      stdout=out, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL)
         processes.append(OrchestratorProcess(name, popen, log_path))
     return processes

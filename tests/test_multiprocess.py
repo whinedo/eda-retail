@@ -219,3 +219,24 @@ def test_stop_lets_the_process_run_its_cleanup(tmp_path: Path):
     process.freeze()
     process.stop()
     assert marker.read_text() == "ok"
+
+
+def test_launcher_runs_the_orchestrator_module_with_sigint_enabled(tmp_path: Path):
+    """El lanzador de las instancias convierte SIGINT en `KeyboardInterrupt` aunque el padre lo ignore"""
+    import signal
+
+    from eda_retail.experiments.processes import LAUNCHER, ORCHESTRATOR_MODULE
+
+    assert ORCHESTRATOR_MODULE in LAUNCHER
+    marker = tmp_path / "closed"
+    code = LAUNCHER.split("; runpy.run_module")[0] + (
+        f"; import pathlib, time\ntry:\n    time.sleep(60)\nfinally:\n    pathlib.Path({str(marker)!r}).write_text('ok')\n")
+    previous = signal.signal(signal.SIGINT, signal.SIG_IGN)
+    try:
+        popen = subprocess.Popen([sys.executable, "-c", code])  # hereda SIGINT ignorado
+    finally:
+        signal.signal(signal.SIGINT, previous)
+    process = OrchestratorProcess("orchestrator-a", popen, tmp_path / "a.log")
+    time.sleep(0.5)
+    process.stop()
+    assert marker.read_text() == "ok"
