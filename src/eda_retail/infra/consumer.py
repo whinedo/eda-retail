@@ -95,7 +95,11 @@ def decode_checked(msg: Message) -> EventEnvelope:
     event_type = body.get("event_type") if isinstance(body.get("event_type"), str) else None
     try:
         envelope = decode_message(msg)
-        if envelope.event_type in CATALOG:
+        if (spec := CATALOG.get(envelope.event_type)) is not None:
+            if envelope.event_version > spec.version:
+                # Una versión posterior a la vigente no tiene upcaster: no se sabe leer (spec experiments, E18).
+                raise UpcastError(f"{envelope.event_type}: versión {envelope.event_version} desconocida "
+                                  f"(la vigente es la {spec.version})")
             validate_payload(envelope.event_type, envelope.payload)
     except (ValidationError, PayloadError, PersonalDataError, UpcastError, KeyError) as exc:
         cid = correlation_id if isinstance(correlation_id, str) else None
