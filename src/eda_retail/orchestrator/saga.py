@@ -230,6 +230,16 @@ class Transition:
         self.advance()
 
 
+def stale_result(step: dict[str, Any], result_version: int, current_version: int) -> bool:
+    """Un `StepCompleted` o `StepFailed` obsoleto: su paso ya no está `requested`, o es de una `plan_version`
+    anterior a la vigente (spec incident-planning, «Eventos obsoletos»). Una compensación aún pedida no lo es por la
+    versión: la deriva el código, una revisión no la cancela ni la vuelve a pedir, y sin su resultado solo podría
+    vencer su plazo («Compensación pedida antes de una revisión»)."""
+    if step["status"] != "requested":
+        return True
+    return result_version < current_version and not step["compensates"]
+
+
 def _plan_step(step: dict[str, Any]) -> dict[str, Any]:
     return {k: step[k] for k in ("step_id", "action", "params", "depends_on", "status", "origin_plan_version")}
 
@@ -329,8 +339,7 @@ class Saga:
         step = t.step(p["step_id"]) if t is not None else None
         if t is None or step is None or t.incident["status"] == "resolved":
             return
-        stale = p["plan_version"] < t.incident["plan_version"] or step["status"] != "requested"
-        if stale:
+        if stale_result(step, p["plan_version"], t.incident["plan_version"]):
             if step["status"] == "cancelled" and step["action"] in rules.COMPENSATIONS:  # supuesto A4
                 t.set_step(step["step_id"], "completed", result=p["result"])
                 t.insert_steps(rules.compensations([{**step, "result": p["result"]}],
@@ -351,8 +360,8 @@ class Saga:
         step = t.step(p["step_id"]) if t is not None else None
         if t is None or step is None or t.incident["status"] == "resolved":
             return
-        if p["plan_version"] < t.incident["plan_version"] or step["status"] != "requested":
-            return  # versión antigua: no decide
+        if stale_result(step, p["plan_version"], t.incident["plan_version"]):
+            return  # versión antigua o paso ya resuelto: no decide
         t.fail(step, error=p["error"], retryable=p["retryable"], attempts=p["attempts"])
         t.flush()
 

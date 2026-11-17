@@ -47,6 +47,22 @@ def test_result_of_an_old_version_after_a_revision():
     assert m["stale_state_changes"] == 0
 
 
+def test_result_of_a_compensation_requested_before_a_revision_is_not_stale():
+    """Compensación pedida antes de una revisión: su resultado de la versión anterior no es obsoleto y lo que el
+    orquestador hace con él no cuenta como cambio por un obsoleto"""
+    log = Log()
+    log.plan(1)
+    log.requested("S3", "reserve_stock", 1)
+    log.requested("S3-comp", "release_stock", 1)
+    log.plan(2, "PlanRevised")
+    done = log.add("StepCompleted", "inventory", step_id="S3-comp", plan_version=1)
+    log.requested("S5", "issue_refund", 2, cause=done)
+    m = classify(log.events, [])
+    assert m["stale_results"]["total"] == 0
+    assert m["stale_state_changes"] == 0
+    assert m["compensations"] == {"requested": 1, "completed": 1, "requested_more_than_once": 0}
+
+
 def test_stale_result_that_changes_the_saga_is_counted():
     log = Log()
     log.plan(1)

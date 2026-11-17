@@ -92,7 +92,7 @@ Las hipótesis nuevas se llaman como su experimento (H11, H12...). Los marcados 
 | E9 | Caída de Kafka | Broker parado y reiniciado | El outbox acumula y el relay publica al volver, sin pérdidas | Multiproceso |
 | E10 | Caída de PostgreSQL | Conexiones cortadas o base parada | Reintentos, sin estado a medias | Multiproceso |
 | E11 (S) | Entrega retrasada y replanes | Resultados tardíos, 50 % de fallos en `reserve_stock` | Eventos obsoletos ignorados, compensaciones correctas | Implementado |
-| E12 (S) | Ejecutor caído y colgado | `file_claim` en `down` y en `hang` | Plazos, aislamiento, cabeza de línea del dispatcher | Multiproceso |
+| E12 (S) | Ejecutor caído y colgado | `file_claim` en `down` y en `hang` | Plazos, aislamiento, cabeza de línea del dispatcher | Implementado (en proceso) |
 | E13 | Fallo de compensación | `release_stock` falla | Escalado `compensation_failed`, sin reembolso | En proceso |
 | E14 | Ráfaga y contrapresión | Pico de avisos, 503 de los ejecutores | Dispatcher y cola de trabajos se recuperan | En proceso |
 | E15 | Degradación del LLM | Latencia o salidas inválidas | `llm_output_invalid`, plazos, trabajos reintentados | En proceso |
@@ -129,16 +129,17 @@ Si I1 o I2 se violan, la hipótesis no se da por cumplida aunque su criterio pro
 - **Escenario.** 50 incidencias, 50 % de fallos en `reserve_stock`, planes con pasos en paralelo y retraso del resultado (`step_delay_seconds`) en `reserve_stock`, `reissue_shipment` y `file_claim`. Como Kafka mantiene el orden por incidencia dentro de la partición, los resultados obsoletos nacen del paralelismo y de los plazos, no del reordenamiento del bus.
 - **Mide.** `PlanRevised` por incidencia, resultados obsoletos por versión y tras el plazo, los que cambiaron el estado de la saga fuera del supuesto A4 y las compensaciones A4, compensaciones pedidas y completadas, escaladas por motivo e I1 a I5.
 - **Criterio.** H11: I1 a I5 sin violaciones, ningún resultado obsoleto cambia el estado de la saga salvo la excepción A4 (el `StepCompleted` tardío de un `reserve_stock` cancelado se marca completado y pide su `release_stock`) y ninguna compensación se pide más de una vez.
-- **Implementación.** `uv run eda-expexecutor run e11`. El orquestador descarta los obsoletos sin registrarlos, así que se cuentan desde el log: obsoleto por versión si su `plan_version` es anterior a la vigente al consumirlo; tras el plazo si el harness anotó que su plazo venció con el paso pedido (el plazo no deja evento). Un obsoleto cambia el estado si el orquestador emite algún evento con él como causa. Retrasos base: `reserve_stock` 1 s, `reissue_shipment` 2 s y `file_claim` 6 s (jitter de 0,5 a 1,5), con un plazo de `ExecuteStep` de 4 s. El retraso deja ejecutar el efecto a su hora y añade su resultado al outbox del ejecutor más tarde.
+- **Implementación.** `uv run eda-expexecutor run e11`. El orquestador descarta los obsoletos sin registrarlos, así que se cuentan desde el log: obsoleto por versión si su `plan_version` es anterior a la vigente al consumirlo, salvo el de una compensación (`-comp`), que la saga trata mientras siga pedida; tras el plazo si el harness anotó que su plazo venció con el paso pedido (el plazo no deja evento). Un obsoleto cambia el estado si el orquestador emite algún evento con él como causa. Retrasos base: `reserve_stock` 1 s, `reissue_shipment` 2 s y `file_claim` 6 s (jitter de 0,5 a 1,5), con un plazo de `ExecuteStep` de 4 s. El retraso deja ejecutar el efecto a su hora y añade su resultado al outbox del ejecutor más tarde.
 
 ### E12 Ejecutor caído y ejecutor colgado (H12)
 
 - **Objetivo.** Comprobar la vivacidad ante un ejecutor permanentemente fuera y medir el aislamiento entre incidencias.
-- **Escenario.** Multiproceso, 50 incidencias (la mitad con `file_claim`), `file_claim` en `down`, en `hang` (acepta la conexión y no responde) y en `hang` con recuperación.
+- **Escenario.** En proceso, 50 incidencias (con la semilla 42, 18 llevan `file_claim`), `file_claim` en `down`, en `hang` (acepta la conexión y no responde) y en `hang` con recuperación.
 - **Hipótesis a contrastar.** El dispatcher invoca un comando por turno (`LIMIT 1`): con `hang`, cada intento ocupa `COMMAND_HTTP_TIMEOUT_S` (5 s) y puede retrasar los comandos de otras incidencias (cabeza de línea). Es una suposición a verificar, no un hecho conocido.
 - **Mide.** Intentos por comando, tiempo del dispatcher esperando al ejecutor, latencia p95 de las incidencias que no usan `file_claim`, escaladas por `step_timeout`, resultados obsoletos tras la recuperación.
 - **Criterio.** H12a (vivacidad, obligatoria): todo termina dentro de `SAGA_STEP_TIMEOUT_S` más margen. H12b (aislamiento, exploratoria): p95 de las no afectadas ≤ 2 × el de una ejecución sin fallo; un resultado negativo es un hallazgo que se documenta.
-- **Necesita.** Modo multiproceso y modos `down`/`hang` de ejecutor.
+- **Necesita.** Modos `down`/`hang` de ejecutor y el dispatcher en su propio hilo.
+- **Implementación.** `uv run eda-expexecutor run e12`, en proceso: `executor_faults` del `FaultPlan` deja el sistema destino `down` (`CommandUnavailable` al momento) o `hang` (acepta la petición, se espera `COMMAND_HTTP_TIMEOUT_S` y queda en un backlog), durante un intervalo que empieza con el primer comando o para siempre. Al recuperarse, el ejecutor colgado atiende una vez lo que tenía aceptado y el informe cuenta los resultados obsoletos y vigentes. El dispatcher va en su propio hilo (`RunConfig.dispatcher_thread`), como en el orquestador: un ejecutor colgado lo bloquea a él y no a los relays ni al lado de lectura. Variantes: `baseline`, `down`, `hang`, `hang_recovery` y `compensation` (`inventory` cae con la primera reserva durante 1,5 plazos: la reserva vence, la saga deriva su `release_stock` `-comp` y este se completa cuando `inventory` vuelve). Plazos cortos: `SAGA_STEP_TIMEOUT_S` 6 s y `COMMAND_HTTP_TIMEOUT_S` 1 s.
 
 ### E16 Consumidor zombie y rebalanceo (H16)
 
@@ -196,13 +197,13 @@ Si I1 o I2 se violan, la hipótesis no se da por cumplida aunque su criterio pro
 
 ## 6. Limitaciones del arnés y orden de implantación
 
-**Limitaciones.** El arnés actual es en proceso: sirve para duplicados, retrasos, fallos por probabilidad, caída de un consumidor y almacenes vacíos, y todo corre en un mismo proceso, de modo que no puede reproducir congelaciones de procesos, rebalanceos reales ni cortes de Kafka y PostgreSQL. E9, E10, E12 y E16 exigen un modo multiproceso (procesos de `scripts/run-agents.sh`, `docker stop/pause`, `SIGSTOP` o un proxy tipo toxiproxy). Las propuestas de esta guía se basan en las specs, `design.md` y el código del arnés, no en haber ejecutado los experimentos.
+**Limitaciones.** El arnés actual es en proceso: sirve para duplicados, retrasos, fallos por probabilidad, caída de un consumidor y almacenes vacíos, y todo corre en un mismo proceso, de modo que no puede reproducir congelaciones de procesos, rebalanceos reales ni cortes de Kafka y PostgreSQL. E9, E10 y E16 exigen un modo multiproceso (E12 se hace en proceso, con el dispatcher en su propio hilo) (procesos de `scripts/run-agents.sh`, `docker stop/pause`, `SIGSTOP` o un proxy tipo toxiproxy). Las propuestas de esta guía se basan en las specs, `design.md` y el código del arnés, no en haber ejecutado los experimentos.
 
 **Orden sugerido.**
 
 1. En proceso y con poco trabajo nuevo: E21, E23, E17, E18 y E11, que reutilizan el arnés con extensiones pequeñas (reinicio de offsets, replan forzado, parada de proyectores, inyección de veneno, retraso por acción).
 2. E22: requiere hilos con conexiones propias y un punto de caída nuevo en los ejecutores.
-3. Con modo multiproceso: E12 y E16 (y después E9 y E10).
+3. E12, en proceso con el dispatcher en su propio hilo. Con modo multiproceso: E16 (y después E9 y E10).
 4. El resto (E8, E13, E14, E15, E19, E20) según el interés del trabajo.
 
 Los ficheros de especificación de los experimentos (S) están en `specs-experimentos-resiliencia.md`, en formato OpenSpec (Purpose, Requirements, Scenarios con GIVEN/WHEN/THEN).

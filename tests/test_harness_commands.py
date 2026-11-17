@@ -236,3 +236,68 @@ def test_busy_claims_are_counted_and_retried():
     with pytest.raises(EffectInProgress):
         spec.handle(None, None, None, None)
     assert counted == [1]
+
+
+# --- Ejecutor caído o colgado (E12) ------------------------------------------------------------
+
+
+def _outage_commands(fault, clock, slept):
+    from eda_retail.synthetic.faults import FaultPlan as Plan
+
+    target = harness.Target("executor_file_claim", {"ExecuteStep": None}, True)
+    return harness.InProcessCommands(None, {"http://x": target}, Plan(executor_faults=(fault,)), set(),
+                                     connect=lambda: None, clock=clock, sleep=slept.append)
+
+
+CLAIM = {"action": "file_claim", "step_id": "S2", "idempotency_key": "K2"}
+
+
+def test_executor_down_rejects_the_connection(executed):
+    """Ejecutor caído: la llamada falla al momento con CommandUnavailable y el comando no llega al ejecutor"""
+    from eda_retail.synthetic.faults import ExecutorFault
+
+    slept = []
+    commands = _outage_commands(ExecutorFault("executor_file_claim", "down"), lambda: 0.0, slept)
+    with pytest.raises(CommandUnavailable):
+        _invoke(commands, CLAIM)
+    assert executed == [] and slept == []
+
+
+def test_hung_executor_waits_the_timeout_and_keeps_the_request(executed):
+    """Ejecutor colgado (spec synthetic-data): con `COMMAND_HTTP_TIMEOUT_S` de 5 s, la petición vence a los 5 s con
+    CommandUnavailable; se anota el tiempo de espera y la petición queda aceptada sin respuesta. Que el dispatcher la
+    reprograme con backoff y el mismo `command_id` lo prueba
+    `test_unavailable_system_is_retried_with_the_same_command_id` (integración)."""
+    from eda_retail.synthetic.faults import ExecutorFault
+
+    slept = []
+    commands = _outage_commands(ExecutorFault("executor_file_claim", "hang"), lambda: 0.0, slept)
+    command_id = uuid.uuid4()
+    for _ in range(2):  # el dispatcher reintenta con el mismo command_id
+        with pytest.raises(CommandUnavailable):
+            commands("http://x", "ExecuteStep", command_id=command_id, correlation_id="I-1", causation_id=None,
+                     payload=CLAIM, timeout=5)
+    assert executed == [] and slept == [5, 5]
+    assert commands.hang_wait_s == {"executor_file_claim": 10}
+    assert not commands.awaiting_recovery()  # colgado para siempre: no se espera a que vuelva
+    assert [c.command_id for c in commands.backlog["executor_file_claim"]] == [command_id]
+
+
+def test_recovered_executor_answers_its_backlog_once(executed):
+    """Recuperación del ejecutor: al terminar el intervalo, el ejecutor atiende una vez lo que tenía aceptado, y los
+    comandos siguientes llegan con normalidad"""
+    from eda_retail.synthetic.faults import ExecutorFault
+
+    clock, slept = [0.0], []
+    commands = _outage_commands(ExecutorFault("executor_file_claim", "hang", duration_s=5), lambda: clock[0], slept)
+    command_id = uuid.uuid4()
+    with pytest.raises(CommandUnavailable):
+        _invoke(commands, CLAIM, command_id)
+    assert commands.flush_recovered(lambda c: "current") == {}  # aún colgado
+    assert commands.awaiting_recovery()  # el arnés sigue hasta atenderlo
+    clock[0] = 6.0
+    assert commands.flush_recovered(lambda c: "stale") == {"stale": 1}
+    assert commands.flush_recovered(lambda c: "stale") == {}  # una sola vez
+    assert not commands.awaiting_recovery()
+    _invoke(commands, CLAIM)
+    assert executed[0][1] == command_id and len(executed) == 2

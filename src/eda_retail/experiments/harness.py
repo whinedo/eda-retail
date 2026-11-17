@@ -33,6 +33,10 @@ Fallos (spec experiments; L55):
   el registro de su clave (`crashing`). `InProcessCommands.deliveries` anota las respuestas de cada entrega,
   `busy_claims` las claves que un trabajo encontró `in_progress` y `RunConfig.job_workers` da varios workers por
   componente para que dos trabajos con la misma clave corran a la vez.
+- E12 (spec synthetic-data, «Ejecutor caído o colgado»): `executor_faults` deja un sistema destino `down` o `hang`
+  durante un intervalo o para siempre (`InProcessCommands`); al recuperarse, el sistema colgado atiende una vez lo
+  que tenía aceptado (`flush_recovered`, en cada turno). Con `RunConfig.dispatcher_thread`, el dispatcher va en su
+  propio hilo, como en el orquestador, y un ejecutor colgado no para los relays ni el lado de lectura.
 
 Modos de idempotencia (E1, supuesto A3):
 - `full`: inbox en los consumidores y en los comandos, `effect_keys` y servicios con clave.
@@ -109,6 +113,7 @@ from eda_retail.synthetic.faults import (
     ConsumerCrashed,
     EffectRecordCrash,
     EffectRecordCrashes,
+    ExecutorOutage,
     FaultPlan,
     FaultyDelivery,
     group_lag,
@@ -366,19 +371,27 @@ def deliver_concurrently(connect: Callable[[], Any], calls: list[Callable[[Any],
 class InProcessCommands:
     """Sustituye a `command_client.invoke`: ejecuta el comando con el handler de su sistema, sin HTTP.
 
-    `connect` abre la conexión de cada hilo en una entrega concurrente (E22)."""
+    `connect` abre la conexión de cada hilo en una entrega concurrente (E22) y al atender lo que un ejecutor
+    colgado tenía aceptado (E12). Con `executor_faults` (E12), un sistema `down` rechaza la llamada y uno `hang` la
+    acepta sin responder: se espera `timeout` con `sleep` y la petición queda en `backlog` hasta que se recupera.
+    `hang_wait_s` suma lo que el que invoca esperó a cada sistema colgado."""
 
     def __init__(self, conn: psycopg.Connection, targets: dict[str, Target], plan: FaultPlan,
-                 crashed: set[str], *, connect: Callable[[], Any] | None = None) -> None:
+                 crashed: set[str], *, connect: Callable[[], Any] | None = None,
+                 clock: Callable[[], float] = time.monotonic, sleep: Callable[[float], Any] = time.sleep) -> None:
         self._conn = conn
         self._targets = targets
         self._plan = plan
         self._crashed = crashed
         self._connect = connect
+        self._sleep = sleep
+        self._outage = ExecutorOutage(plan, clock=clock)
         self._handled: Counter[str] = Counter()
         self._lock = threading.Lock()
         self.crashes = 0
         self.deliveries: list[CommandDelivery] = []
+        self.backlog: dict[str, list[CommandEnvelope]] = {}
+        self.hang_wait_s: Counter[str] = Counter()
 
     def deliver(self, target: Target, command: CommandEnvelope, *, conn: psycopg.Connection | None = None,
                 entry: bool = False) -> Any:
@@ -418,10 +431,55 @@ class InProcessCommands:
                  causation_id: uuid.UUID | None, payload: dict[str, Any], timeout: float) -> CommandReply:
         command = CommandEnvelope(command_id=command_id, command_type=command_type, correlation_id=correlation_id,
                                   causation_id=causation_id, payload=payload)
-        response = self.deliver(self._targets[url], command)
+        target = self._targets[url]
+        self._suffer_outage(target, command, timeout)
+        response = self.deliver(target, command)
         if command_type == "ExecuteStep" and response.status_code == 202:
             self._crash_after_commit(f"executor-{payload['action']}")
         return CommandReply(response.status_code, response.body, response.replayed)
+
+    def _suffer_outage(self, target: Target, command: CommandEnvelope, timeout: float) -> None:
+        """E12: el sistema destino está caído (falla al momento) o colgado (acepta la petición, la guarda y no
+        responde en `timeout`)."""
+        fault = self._outage.active(target.schema, command.payload.get("action"))
+        if fault is None:
+            return
+        if fault.mode == "hang":
+            with self._lock:
+                kept = self.backlog.setdefault(target.schema, [])
+                if all(c.command_id != command.command_id for c in kept):
+                    kept.append(command)
+                self.hang_wait_s[target.schema] += timeout
+            self._sleep(timeout)
+        raise CommandUnavailable(f"{target.schema} {fault.mode}")
+
+    def awaiting_recovery(self) -> bool:
+        """Algún ejecutor colgado tiene peticiones aceptadas y se recuperará: el arnés debe seguir hasta atenderlas."""
+        with self._lock:
+            pending = [schema for schema, kept in self.backlog.items() if kept]
+        return any(self._outage.recovering(schema) or self._outage.ended(schema) for schema in pending)
+
+    def flush_recovered(self, classify: Callable[[CommandEnvelope], str]) -> dict[str, int]:
+        """Un ejecutor colgado que se recupera atiende una vez lo que tenía aceptado. `classify` dice, antes de
+        atenderlo, si el resultado llegará obsoleto o a un paso vigente; devuelve el recuento."""
+        with self._lock:
+            ready = {schema: kept for schema, kept in self.backlog.items() if kept and self._outage.ended(schema)}
+            for schema in ready:
+                self.backlog[schema] = []
+        counts: Counter[str] = Counter()
+        targets = {t.schema: t for t in self._targets.values()}
+        for schema, kept in ready.items():
+            for command in kept:
+                counts[classify(command)] += 1
+                conn = self._connect()
+                try:
+                    target = targets[schema]
+                    execute_command(conn, schema, command, target.specs[command.command_type],
+                                    inbox_enabled=target.inbox)
+                finally:
+                    if conn is not None:
+                        conn.close()
+        return dict(counts)
 
     def _crash_after_commit(self, name: str) -> None:
         """E2: el ejecutor cae con la transacción confirmada y sin responder; la saga lo reinvoca."""
@@ -450,6 +508,8 @@ class RunConfig:
     seed_orders: bool = True  # False: los pedidos se siembran después, con `Harness.seed_orders` (E17)
     track_timeouts: bool = False  # anota los `ExecuteStep` cuyo plazo vence (`Harness.timed_out`, E11)
     job_workers: int = 1  # workers de trabajos por componente (E22: dos trabajos con la misma clave a la vez)
+    command_timeout_seconds: float | None = None  # COMMAND_HTTP_TIMEOUT_S; None: el de la configuración (E12)
+    dispatcher_thread: bool = False  # el dispatcher en su propio hilo, como en el orquestador (E12)
 
 
 def saga_deadlines(config: RunConfig) -> dict[str, float]:
@@ -459,6 +519,8 @@ def saga_deadlines(config: RunConfig) -> dict[str, float]:
         out["saga_plan_timeout_s"] = config.plan_timeout_seconds
     if config.step_timeout_seconds is not None:
         out["saga_step_timeout_s"] = config.step_timeout_seconds
+    if config.command_timeout_seconds is not None:
+        out["command_http_timeout_s"] = config.command_timeout_seconds
     return out
 
 
@@ -531,6 +593,7 @@ class Harness:
         self._projectors_paused = False
         self.delayed_results = 0  # resultados de pasos retrasados (E11)
         self.timed_out: list[dict[str, Any]] = []  # pasos cuyo plazo venció con el paso pedido (E11)
+        self.recovered: Counter[str] = Counter()  # resultados de un ejecutor colgado que se recupera (E12)
         self._threads: list[threading.Thread] = []
         self._workers: list[JobWorker] = []
         self._threaded = set(THREADED_CONSUMERS)
@@ -671,7 +734,8 @@ class Harness:
         self.targets = self._targets()
         self.commands = InProcessCommands(self._connect(), {target_url(s, t): v for t, v in self.targets.items()},
                                           self.config.faults, self._crashed,
-                                          connect=lambda: connect(s.database_url))
+                                          connect=lambda: connect(s.database_url),
+                                          sleep=lambda seconds: self._stop.wait(seconds))
         self._seed_conn = self._connect()
         self._dispatcher_conn = self._connect()
         self._timer_conn = self._connect()
@@ -740,6 +804,10 @@ class Harness:
                                    run_once=self._tracked_job, name=f"harness-jobs-{target.schema}-{k}")
                 worker.start()
                 self._workers.append(worker)
+        if self.config.dispatcher_thread:
+            thread = threading.Thread(target=self._dispatch, daemon=True, name="harness-dispatcher")
+            thread.start()
+            self._threads.append(thread)
         for i, (delivery, _) in enumerate(self._deliveries):
             if delivery.consumer.name in self._threaded:
                 thread = threading.Thread(target=self._consume, args=(i,), daemon=True,
@@ -847,16 +915,44 @@ class Harness:
                     progressed += 1
                     self._on_crash(i, delivery, factory, exc)
                     break
-        for _ in range(TURN_COMMANDS):
-            if not dispatch_once(self._dispatcher_conn, self.settings, self.rules, invoke=self.commands,
-                                 backoff=self._dispatch_backoff):
-                break
-            progressed += 1
+        if not self.config.dispatcher_thread:  # con hilo propio, lo atiende `_dispatch`
+            for _ in range(TURN_COMMANDS):
+                if not dispatch_once(self._dispatcher_conn, self.settings, self.rules, invoke=self.commands,
+                                     backoff=self._dispatch_backoff):
+                    break
+                progressed += 1
+        recovered = self.commands.flush_recovered(self._result_freshness)
+        self.recovered.update(recovered)
+        progressed += sum(recovered.values())
         if self.config.track_timeouts:
             self._record_timeouts()
         progressed += expire_once(self._timer_conn, self.settings, self.rules)
         progressed += interpreter.expire_parked(self._timer_conn)
         return progressed
+
+    def _result_freshness(self, command: CommandEnvelope) -> str:
+        """E12: el resultado del comando llegará `stale` si su plazo ya se resolvió (venció o llegó otro resultado),
+        o `current` si el paso aún lo espera."""
+        with self._timer_conn.transaction():
+            row = self._timer_conn.execute("SELECT resolved_at FROM orchestrator.deadlines WHERE command_id = %s",
+                                           (command.command_id,)).fetchone()
+        return "stale" if row is None or row["resolved_at"] is not None else "current"
+
+    def _dispatch(self) -> None:
+        """El dispatcher en su propio hilo y con su conexión, como el hilo `command-dispatcher` del orquestador: un
+        ejecutor colgado lo bloquea a él, no a los relays ni al lado de lectura. Cuenta como trabajo en curso."""
+        conn = connect(self.settings.database_url)
+        try:
+            while not self._stop.is_set():
+                with self._activity.working():
+                    did = dispatch_once(conn, self.settings, self.rules, invoke=self.commands,
+                                        backoff=self._dispatch_backoff)
+                if did:
+                    self._activity.progressed()
+                else:
+                    self._stop.wait(JOB_POLL_S)
+        finally:
+            conn.close()
 
     def _record(self, delivery: FaultyDelivery, outcome: Any) -> None:
         if outcome is None:
@@ -902,7 +998,9 @@ class Harness:
 
     def _working(self) -> bool:
         """Algún hilo atiende un mensaje o un trabajo, o quedan trabajos por hacer."""
-        return self._activity.busy > 0 or self._open_jobs() > 0
+        commands = getattr(self, "commands", None)  # sin montar (tests de los hilos) no hay comandos
+        return (self._activity.busy > 0 or self._open_jobs() > 0
+                or (commands is not None and commands.awaiting_recovery()))
 
     def _advance(self) -> bool:
         """Un turno; True si avanzó algo, en el turno o en los hilos, o si los hilos siguen trabajando."""
@@ -1039,7 +1137,8 @@ class Harness:
             self.targets = self._targets(idempotency)
             self.commands = InProcessCommands(self._connect(), {target_url(self.settings, t): v for t, v in
                                                                 self.targets.items()}, self.config.faults, self._crashed,
-                                              connect=lambda: connect(self.settings.database_url))
+                                              connect=lambda: connect(self.settings.database_url),
+                                              sleep=lambda seconds: self._stop.wait(seconds))
             self._init_threads()
             self._start_threads()
         rows = self.conn.execute(

@@ -279,3 +279,48 @@ def test_no_crash_when_the_effect_already_existed():
     wrapped = harness.crashing(spec, EffectRecordCrashes(FaultPlan(crash_between_effect_and_record=("notify_customer",))))
     command = SimpleNamespace(command_id=uuid.uuid4())
     assert wrapped.prepare(command, _notify("K")).stored == {"message_id": "M-1"}
+
+
+def test_executor_fault_rejects_invalid_values():
+    """Ejecutor caído o colgado: modo `down` o `hang`, duración positiva o para siempre, acción permitida"""
+    from eda_retail.synthetic.faults import ExecutorFault
+
+    with pytest.raises(ValueError):
+        FaultPlan(executor_faults=(ExecutorFault("executor_file_claim", "slow"),))
+    with pytest.raises(ValueError):
+        FaultPlan(executor_faults=(ExecutorFault("executor_file_claim", "down", duration_s=0),))
+    with pytest.raises(ValueError):
+        FaultPlan(executor_faults=(ExecutorFault("inventory", "down", action="delete_order"),))
+    FaultPlan(executor_faults=(ExecutorFault("inventory", "down", action="release_stock", duration_s=3),))
+
+
+class _Clock:
+    def __init__(self) -> None:
+        self.now = 100.0
+
+    def __call__(self) -> float:
+        return self.now
+
+
+def test_outage_window_opens_at_the_first_command_and_ends_after_its_duration():
+    """El intervalo empieza con el primer comando a ese ejecutor (y acción) y dura `duration_s`; sin duración, para
+    siempre"""
+    from eda_retail.synthetic.faults import ExecutorFault, ExecutorOutage
+
+    clock = _Clock()
+    outage = ExecutorOutage(FaultPlan(executor_faults=(
+        ExecutorFault("inventory", "down", action="release_stock", duration_s=3),
+        ExecutorFault("executor_file_claim", "hang"))), clock=clock)
+    assert outage.active("inventory", "reserve_stock") is None  # otra acción: no abre el intervalo
+    clock.now = 200.0
+    assert outage.active("inventory", "release_stock").mode == "down"  # abre a los 200 s
+    clock.now = 202.9
+    assert outage.active("inventory", "release_stock").mode == "down"
+    assert outage.recovering("inventory") and not outage.ended("inventory")
+    clock.now = 203.0
+    assert outage.active("inventory", "release_stock") is None and outage.ended("inventory")
+    assert not outage.recovering("inventory")
+    assert outage.active("executor_file_claim", "file_claim").mode == "hang"
+    clock.now = 10_000.0
+    assert outage.active("executor_file_claim", "file_claim").mode == "hang"  # para siempre
+    assert not outage.ended("executor_file_claim") and not outage.recovering("executor_file_claim")

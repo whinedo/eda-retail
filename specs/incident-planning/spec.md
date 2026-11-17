@@ -294,7 +294,7 @@ Cuando todos los pasos del plan vigente estén completados, el sistema SHALL pub
 
 ### Requirement: Eventos obsoletos
 
-El sistema MUST ignorar los `StepCompleted` y `StepFailed` de una `plan_version` anterior a la vigente, salvo para auditoría.
+El sistema MUST ignorar los `StepCompleted` y `StepFailed` de una `plan_version` anterior a la vigente, salvo para auditoría. La excepción es una compensación aún pedida (`requested`): la deriva el código y una revisión no la cancela ni la vuelve a pedir, así que su resultado se trata aunque traiga la versión en la que se pidió; si no, una compensación pedida justo antes de un `PlanRevised` solo podría terminar por su plazo, con `compensation_failed`.
 
 #### Scenario: Resultado de una versión antigua
 
@@ -302,3 +302,16 @@ El sistema MUST ignorar los `StepCompleted` y `StepFailed` de una `plan_version`
 - **WHEN** llega un `StepFailed` generado por la versión 1
 - **THEN** el sistema no lo usa para decidir
 - **AND** queda registrado solo en el inbox del orquestador, sin cambiar el estado de la saga
+
+#### Scenario: Compensación pedida antes de una revisión
+
+- **GIVEN** un `reserve_stock` cuyo plazo venció, con su compensación `-comp` pedida en la versión 1, y un `PlanRevised` que lleva el plan a la versión 2
+- **WHEN** llega el `StepCompleted` de la compensación con la versión 1
+- **THEN** la compensación pasa a `completed` y el paso original a `compensated`
+- **AND** la saga sigue, y el `issue_refund` retenido puede pedirse
+
+#### Scenario: Compensación pedida antes de una revisión que falla
+
+- **GIVEN** la misma compensación pedida en la versión 1 con el plan en la versión 2
+- **WHEN** llega su `StepFailed` con la versión 1 y los reintentos agotados
+- **THEN** el sistema publica `IncidentEscalated` con el motivo `compensation_failed` y no emite `issue_refund`

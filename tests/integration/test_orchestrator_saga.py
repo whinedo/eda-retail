@@ -273,6 +273,43 @@ def test_an_old_version_result_does_not_decide(conn, saga):
     assert (_statuses(conn, incident), len(_commands(conn, incident))) == before
 
 
+def _compensation_before_a_revision(conn, saga, settings) -> str:
+    """La reserva vence su plazo, la saga pide su -comp con la versión 1 y enseguida llega la versión 2."""
+    incident = _open(conn, saga, [_step("S3", "reserve_stock"), _step("S4", "reissue_shipment", ["S3"])])
+    _expire(conn, incident, "execute_step")
+    expire_once(conn, settings, RULES)
+    assert _statuses(conn, incident)["S3-comp"] == "requested"
+    _deliver(conn, saga, "PlanRevised", incident, {
+        "incident_id": incident, "plan_version": 2, "reason": "reserva sin respuesta",
+        "steps": [_step("S5", "issue_refund", amount=10)],
+    }, producer="replanner")
+    assert _incident_row(conn, incident)["plan_version"] == 2
+    assert _statuses(conn, incident)["S3-comp"] == "requested"
+    return incident
+
+
+def test_compensation_requested_before_a_revision_completes(conn, saga, settings):
+    """Compensación pedida antes de una revisión: su StepCompleted de la versión 1 la completa y libera el
+    reembolso"""
+    incident = _compensation_before_a_revision(conn, saga, settings)
+
+    _completed(conn, saga, incident, "S3-comp", plan_version=1, result={"released": False})
+
+    statuses = _statuses(conn, incident)
+    assert statuses["S3-comp"] == "completed" and statuses["S3"] == "compensated"
+    assert "S5" in _executed(conn, incident)
+
+
+def test_compensation_requested_before_a_revision_fails(conn, saga, settings):
+    """Compensación pedida antes de una revisión: su StepFailed de la versión 1 escala con compensation_failed"""
+    incident = _compensation_before_a_revision(conn, saga, settings)
+
+    _failed(conn, saga, incident, "S3-comp", plan_version=1, error="timeout", retryable=True)
+
+    assert _incident_row(conn, incident)["reason"] == "compensation_failed"
+    assert "S5" not in _executed(conn, incident)
+
+
 def test_planner_without_answer_escalates(conn, saga, settings):
     """Planificador sin respuesta: escalado con plan_timeout"""
     incident = _open(conn, saga)

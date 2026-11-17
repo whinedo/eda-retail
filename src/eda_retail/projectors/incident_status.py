@@ -108,10 +108,16 @@ def _step_requested(conn: psycopg.Connection, position: Position, event: EventEn
 
 
 def _stale(conn: psycopg.Connection, event: EventEnvelope) -> bool:
+    """Resultado de una versión anterior a la de la vista, salvo el de una compensación aún pedida: la saga lo trata
+    (spec incident-planning, «Eventos obsoletos»)."""
     row = conn.execute(
-        "SELECT plan_version FROM views.view_incident_status WHERE incident_id = %s", (event.correlation_id,)
+        "SELECT plan_version, steps FROM views.view_incident_status WHERE incident_id = %s", (event.correlation_id,)
     ).fetchone()
-    return row is not None and event.payload["plan_version"] < row["plan_version"]
+    if row is None or event.payload["plan_version"] >= row["plan_version"]:
+        return False
+    step_id = event.payload["step_id"]
+    return not (step_id.endswith(COMPENSATION_SUFFIX)
+                and any(s["step_id"] == step_id and s["status"] == "requested" for s in row["steps"] or []))
 
 
 def _step_completed(conn: psycopg.Connection, position: Position, event: EventEnvelope) -> None:

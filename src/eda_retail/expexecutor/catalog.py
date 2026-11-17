@@ -156,6 +156,20 @@ def _e21(report: dict[str, Any]) -> list[Check]:
     ]
 
 
+E12_VARIANTS = ("down", "hang", "hang_recovery", "compensation")
+
+
+def _e12(report: dict[str, Any]) -> list[Check]:
+    """H12a (obligatoria) por variante e I1 e I2; H12b es exploratoria y no se comprueba."""
+    checks = [_check(report, "hypothesis.H12a", "true", lambda v: v is True)]
+    for variant in ("baseline", *E12_VARIANTS):
+        prefix = f"metrics.variants.{variant}"
+        if variant != "baseline":
+            checks.append(_check(report, f"{prefix}.h12a", "true", lambda v: v is True))
+        checks += _invariants(report, prefix)
+    return checks
+
+
 E22_VARIANTS = ("execute_step_2", "execute_step_4", "execute_step_8", "other_commands", "same_key",
                 "effect_record_crash")
 E22_SERVICE_ACTIONS = ("notify_customer", "file_claim", "reserve_stock", "reissue_shipment", "issue_refund")
@@ -231,6 +245,14 @@ CATALOG: dict[str, Entry] = {
         "resultados de una versión anterior del plan tras un `PlanRevised` y resultados después del plazo.",
         "H11: ningún resultado obsoleto cambia el estado de la saga (salvo la compensación de una reserva cancelada "
         "que se completa tarde, supuesto A4, que se pide una sola vez) e I1 a I5 no tienen violaciones.", _e11),
+    "e12": Entry(
+        "E12", "Mide la vivacidad y el aislamiento con un ejecutor fuera, en proceso y con el dispatcher en su "
+        "propio hilo: 50 incidencias con `file_claim` en `down`, en `hang` y en `hang` con recuperación, y "
+        "`inventory` caído más que el plazo de `reserve_stock`, cuya compensación se completa al volver.",
+        "H12a: ninguna incidencia queda abierta, las que usan `file_claim` cierran dentro de `SAGA_STEP_TIMEOUT_S` "
+        "más un margen, las demás terminan como sin fallo, cada compensación se completa una vez tras la "
+        "recuperación e I1 a I5 sin violaciones. H12b (exploratoria): la p95 de las incidencias sin `file_claim` no "
+        "supera el doble de la de una ejecución sin fallo; si no se cumple es un hallazgo.", _e12),
     "e17": Entry(
         "E17", "Mide los avisos aparcados con la proyección atrasada: con los proyectores parados y el plazo de "
         "aparcamiento acortado a 30 s, tres variantes: pedidos registrados después de aparcar los avisos, pedidos "
