@@ -9,15 +9,19 @@
   ejecutan. El fallo es de negocio (no reintentable): fuerza la revisión del plan, y el
   efecto no se ejecuta (el arnés envuelve el `ExecuteStep` con `experiments.harness.failing`).
 - Existencias (`empty_warehouses` del plan): el arnés siembra a 0 esos almacenes.
+- Offsets (`reset_group_offsets`): con el sistema parado, lleva los grupos de consumidores al principio
+  del topic para reproducir el log completo (E21); `group_lag` dice cuánto les falta por leer.
 """
 
 from __future__ import annotations
 
 import hashlib
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import Any, Protocol
+
+from confluent_kafka import ConsumerGroupTopicPartitions, TopicPartition
 
 from eda_retail.events.catalog import Action
 
@@ -104,3 +108,22 @@ class FaultyDelivery:
             raise ConsumerCrashed(f"{name} cae tras {self._handled} mensajes")
         self.consumer.commit(msg)
         return outcome
+
+
+def reset_group_offsets(admin: Any, groups: Iterable[str], topic: str, partitions: Iterable[int],
+                        timeout: float = 30.0) -> None:
+    """Lleva los offsets de cada grupo al offset 0 de cada partición de `topic` (spec synthetic-data,
+    «Reinicio de offsets de un grupo»). Con el sistema parado: Kafka no cambia los offsets de un grupo
+    con miembros activos. Una petición por grupo, que es lo que admite la API de administración."""
+    parts = [TopicPartition(topic, p, 0) for p in sorted(partitions)]
+    for group in groups:
+        for future in admin.alter_consumer_group_offsets([ConsumerGroupTopicPartitions(group, parts)]).values():
+            future.result(timeout=timeout)
+
+
+def group_lag(admin: Any, group: str, topic: str, highs: Mapping[int, int], timeout: float = 30.0) -> int:
+    """Mensajes que le faltan al grupo hasta las marcas de agua altas (`highs`, por partición)."""
+    request = ConsumerGroupTopicPartitions(group, [TopicPartition(topic, p) for p in sorted(highs)])
+    [future] = admin.list_consumer_group_offsets([request]).values()
+    committed = {tp.partition: max(tp.offset, 0) for tp in future.result(timeout=timeout).topic_partitions}
+    return sum(max(0, high - committed.get(p, 0)) for p, high in highs.items())

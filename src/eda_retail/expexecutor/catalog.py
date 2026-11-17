@@ -107,6 +107,16 @@ def _e7(report: dict[str, Any]) -> list[Check]:
     ]
 
 
+def _e21(report: dict[str, Any]) -> list[Check]:
+    return [
+        _check(report, "metrics.replay.changed", "false", lambda v: v is False),
+        _check(report, "metrics.replay.lag", "0", lambda v: v == 0),
+        _check(report, "metrics.replay.inbox_matches", "true", lambda v: v is True),
+        _check(report, "metrics.old_commands.not_replayed", "0", lambda v: v == 0),
+        _check(report, "metrics.control.new_executions", "> 0", lambda v: isinstance(v, int) and v > 0),
+    ]
+
+
 CATALOG: dict[str, Entry] = {
     "e1": Entry(
         "E1", "Mide si los efectos se duplican cuando cada evento y cada comando llegan 2 y 3 veces, con "
@@ -140,4 +150,11 @@ CATALOG: dict[str, Entry] = {
         "el log y la traza.",
         "H7: para el 100 % de las seleccionadas se puede indicar qué agente propuso cada paso, con qué "
         "versión del plan y por qué.", _e7),
+    "e21": Entry(
+        "E21", "Mide la reproducción total del log: con las incidencias cerradas y el sistema parado, se llevan "
+        "los offsets de todos los grupos al principio de `eda.events` y se vuelve a consumir hasta que el lag "
+        "sea 0; se entregan otra vez los `ExecuteStep` antiguos y, como control, se reentregan a los ejecutores "
+        "sin inbox de comandos ni `effect_keys`.",
+        "H21: reproducir el log no produce ningún efecto, evento ni cambio de estado nuevos, y la variante de "
+        "control sin idempotencia en los efectos sí repite algún efecto.", _e21),
 }

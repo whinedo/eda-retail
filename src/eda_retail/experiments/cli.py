@@ -22,6 +22,7 @@ from eda_retail.experiments.e4_rebuild import run_e4
 from eda_retail.experiments.e5_plan_quality import run_e5
 from eda_retail.experiments.e6_compare import run_e6
 from eda_retail.experiments.e7_audit import run_e7
+from eda_retail.experiments.e21_replay import run_e21
 from eda_retail.experiments.oracle import Oracle
 from eda_retail.experiments.report import Report, write_report
 from eda_retail.infra.logs import setup_logging
@@ -29,9 +30,10 @@ from eda_retail.llm.ollama_client import OllamaClient
 
 EXPERIMENTS: dict[str, Callable[..., Report]] = {
     "e1": run_e1, "e2": run_e2, "e3": run_e3, "e4": run_e4, "e5": run_e5, "e6": run_e6, "e7": run_e7,
+    "e21": run_e21,
 }
 # Tamaño del escenario de cada experimento en la spec (E7 elige 10 de ellas al azar).
-DEFAULT_INCIDENTS = {"e1": 50, "e2": 50, "e3": 30, "e4": 200, "e5": 40, "e6": 50, "e7": 50}
+DEFAULT_INCIDENTS = {"e1": 50, "e2": 50, "e3": 30, "e4": 200, "e5": 40, "e6": 50, "e7": 50, "e21": 50}
 LLM_EXPERIMENTS = {"e5", "e6"}  # con LLM real y repeticiones (spec «Repetición para el componente no determinista»)
 LLMS = {"oracle": lambda data, repetition: Oracle(data).client()}
 LLM_CHOICES = ("ollama", "oracle")
@@ -44,7 +46,7 @@ def ollama_factory(seed: int, temperature: float) -> Callable[..., Any]:
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Experimentos de la PoC (E1 a E7)")
+    parser = argparse.ArgumentParser(description="Experimentos de la PoC (E1 a E7 y E21)")
     parser.add_argument("experiment", choices=sorted(EXPERIMENTS))
     parser.add_argument("--seed", type=int, default=42, help="semilla del generador y de los fallos (42)")
     parser.add_argument("--incidents", type=int, help="número de incidencias (por defecto, el de la spec)")

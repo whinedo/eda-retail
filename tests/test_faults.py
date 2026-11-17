@@ -128,3 +128,28 @@ def test_non_idempotent_service_repeats_the_effect():
     plain = FakeService("mail", "M", idempotent=False)
     assert plain.call("k") != plain.call("k")
     assert plain.executions == {"k": 2}
+
+
+class FakeAdmin:
+    def __init__(self):
+        self.altered = []
+
+    def alter_consumer_group_offsets(self, requests):
+        class Done:
+            def result(self, timeout):
+                return None
+
+        [request] = requests  # Kafka admite un solo grupo por petición
+        self.altered.append((request.group_id,
+                             [(tp.topic, tp.partition, tp.offset) for tp in request.topic_partitions]))
+        return {request.group_id: Done()}
+
+
+def test_reset_group_offsets_to_the_beginning():
+    """Grupo reiniciado al principio: los offsets de cada grupo vuelven al 0 de cada partición"""
+    from eda_retail.synthetic.faults import reset_group_offsets
+
+    admin = FakeAdmin()
+    reset_group_offsets(admin, ["interpreter", "orchestrator"], "eda.t", [2, 0, 1])
+    parts = [("eda.t", 0, 0), ("eda.t", 1, 0), ("eda.t", 2, 0)]
+    assert admin.altered == [("interpreter", parts), ("orchestrator", parts)]

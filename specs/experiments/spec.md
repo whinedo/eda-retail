@@ -323,7 +323,7 @@ El sistema SHALL cumplir la hipótesis H18: un mensaje inválido en mitad de una
 
 ### Requirement: E21 Reproducción total del log (H21)
 
-El sistema SHALL cumplir la hipótesis H21: reproducir el log completo ante todos los consumidores y los ejecutores no produce ningún efecto nuevo, ningún evento nuevo y ningún cambio de estado. El escenario son 50 incidencias cerradas con un 30 % de fallos en `reserve_stock` (para que haya revisiones y compensaciones); con el sistema parado se llevan los offsets de todos los grupos al principio de `eda.events` y se arranca de nuevo hasta que el lag sea 0. Como control, una variante `inbox_off` desactiva el inbox de un consumidor (el orquestador, y después el intérprete) y MUST producir efectos o eventos nuevos, para demostrar que el experimento detecta la ausencia de idempotencia. El informe MUST comparar, antes y después, las ejecuciones del servicio simulado por `idempotency_key`, el número de filas de cada `outbox`, `inbox` y `command_outbox`, la huella de `orchestrator.plan_steps` y de cada vista, y el número de mensajes descartados por el inbox.
+El sistema SHALL cumplir la hipótesis H21: reproducir el log completo ante todos los consumidores y los ejecutores no produce ningún efecto nuevo, ningún evento nuevo y ningún cambio de estado. El escenario son 50 incidencias cerradas con un 30 % de fallos en `reserve_stock` (para que haya revisiones y compensaciones); con el sistema parado se llevan los offsets de todos los grupos al principio de `eda.events` y se arranca de nuevo hasta que el lag sea 0. Como control, una variante `no_effect_keys` reentrega los `ExecuteStep` antiguos a los ejecutores sin inbox de comandos ni `effect_keys` (el modo de E1) y MUST producir efectos repetidos, para demostrar que el experimento detecta la ausencia de idempotencia. Desactivar el inbox de un solo consumidor no sirve de control: la saga descarta por estado los eventos de incidencias cerradas y los resultados obsoletos, y el intérprete deduplica cada aviso con el inbox de comandos de `OpenIncident`. Por eso la variante `inbox_off` (el orquestador, y después el intérprete) se mantiene como observación, fuera de H21. El informe MUST comparar, antes y después, las ejecuciones del servicio simulado por `idempotency_key`, el número de filas de cada `outbox`, `inbox` y `command_outbox`, la huella de `orchestrator.plan_steps` y de cada vista, y el número de mensajes descartados por el inbox.
 
 #### Scenario: Reproducción con inbox activo
 
@@ -345,11 +345,17 @@ El sistema SHALL cumplir la hipótesis H21: reproducir el log completo ante todo
 - **WHEN** los atienden
 - **THEN** devuelven la respuesta guardada y no se crea ninguna reserva ni reembolso nuevo, también tras vencer los plazos de la saga («Duplicado tardío» de la spec `idempotency`)
 
-#### Scenario: Control sin inbox
+#### Scenario: Control sin idempotencia en los efectos
 
-- **GIVEN** la variante `inbox_off` en el orquestador
+- **GIVEN** la variante de control `no_effect_keys`: los ejecutores sin inbox de comandos ni `effect_keys`
+- **WHEN** se reentregan los `ExecuteStep` antiguos con su `command_id` original
+- **THEN** el experimento detecta efectos repetidos en los servicios simulados
+
+#### Scenario: Reproducción sin el inbox de un consumidor
+
+- **GIVEN** la variante `inbox_off` en el orquestador, y después en el intérprete
 - **WHEN** se reproduce el log
-- **THEN** el experimento detecta comandos o eventos nuevos y lo informa como observación, fuera de H21
+- **THEN** el informe anota lo que cambia como observación, fuera de H21
 
 #### Scenario: Cumplimiento de H21
 

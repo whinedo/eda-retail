@@ -324,3 +324,15 @@ def test_existing_effect_lookups_per_step_follow_effect_keys_enabled():
                               RULES)["ExecuteStep"].prepare
         assert on._existing is not None, action
         assert off._existing is None, action
+
+
+def test_without_effect_keys_the_stored_result_is_not_read():
+    """EFFECT_KEYS_ENABLED=false apaga también la lectura del resultado guardado de la clave (E1, control de E21)"""
+    from dataclasses import replace
+
+    from eda_retail.config import load_settings
+    from eda_retail.step_executors import component
+
+    settings = replace(load_settings(), database_url="postgresql://nadie@127.0.0.1:1/ninguna", effect_keys_enabled=False)
+    lookup = component.completed_lookup(settings, "executor_issue_refund")
+    assert lookup("cualquier-clave") is None  # sin conectarse: la base de datos no existe

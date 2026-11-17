@@ -64,6 +64,11 @@ def caught_up(applied: Mapping[int, int], highs: Mapping[int, int]) -> bool:
     return all(applied.get(p, -1) >= high - 1 for p, high in highs.items() if high > 0)
 
 
+def pending_messages(consumed: Mapping[int, int], highs: Mapping[int, int]) -> int:
+    """Mensajes que faltan por leer hasta la marca de agua alta de cada partición (el lag)."""
+    return sum(max(0, high - 1 - consumed.get(p, -1)) for p, high in highs.items())
+
+
 class PositionedConsumer:
     """Consume `topic` y aplica cada mensaje junto con su offset en una transacción de PostgreSQL."""
 
@@ -106,6 +111,17 @@ class PositionedConsumer:
         self._kafka.assign([TopicPartition(self._topic, p, offset) for p, offset in start.items()])
         self._consumed = dict(stored)
         self._assigned = True
+
+    def rewind(self) -> None:
+        """Vuelve a leer todas las particiones desde el offset 0 sin tocar la posición guardada: lo ya
+        aplicado se descarta en `handle` (reproducción del log, E21)."""
+        self._kafka.assign([TopicPartition(self._topic, p, 0) for p in self.partitions()])
+        self._consumed = {}
+        self._assigned = True
+
+    def lag(self) -> int:
+        """Mensajes que faltan por leer hasta las marcas de agua altas de ahora."""
+        return pending_messages(self._consumed, self.high_watermarks())
 
     # -- aplicación ----------------------------------------------------------------------
     def handle(self, msg: Message) -> bool:
