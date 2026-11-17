@@ -1,6 +1,7 @@
 # Same checks as the required CI job: run before closing a feature with
 #   uv run pre-commit run --all-files
-# pytest needs PostgreSQL and Kafka from `docker compose up -d`.
+# pytest needs PostgreSQL and Kafka from `docker compose up -d`. In CI the pytest hook is skipped and the suite runs
+# in parallel shards (.github/workflows/ci.yml): a change to its `entry` must be mirrored there.
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v6.0.0
