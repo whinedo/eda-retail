@@ -297,4 +297,3 @@ def get_freshness(conn: psycopg.Connection, end_offsets: Callable[[str], dict[in
     ends = end_offsets(topic)
     return Freshness([ConsumerLag(name, lag_of(done, ends).partitions, lag_of(done, ends).lag)
                       for name, done in sorted(positions.items())])
-
