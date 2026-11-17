@@ -11,6 +11,10 @@
 - Existencias (`empty_warehouses` del plan): el arnés siembra a 0 esos almacenes.
 - Offsets (`reset_group_offsets`): con el sistema parado, lleva los grupos de consumidores al principio
   del topic para reproducir el log completo (E21); `group_lag` dice cuánto les falta por leer.
+- Resultados retrasados (`step_delay_seconds`, E11): el efecto del paso se ejecuta a su hora, pero sus
+  eventos de resultado se añaden al outbox del ejecutor `step_delay` segundos después (`base` por un jitter
+  determinista dada la semilla, la acción y la `idempotency_key`; el arnés envuelve el `ExecuteStep` con
+  `experiments.harness.delaying`).
 - Mensajes veneno (E18): se publican directamente en el topic con `synthetic.poison`.
 - Proyectores (E17): el arnés los para y los reanuda (`Harness.pause_projectors`, `resume_projectors`).
 """
@@ -38,6 +42,7 @@ class FaultPlan:
     fail_probability: Mapping[str, float] = field(default_factory=dict)  # acción -> probabilidad
     crash_after: Mapping[str, int] = field(default_factory=dict)  # consumidor -> cae tras K mensajes
     empty_warehouses: tuple[str, ...] = ()
+    step_delay_seconds: Mapping[str, float] = field(default_factory=dict)  # acción -> retraso base del resultado
 
     def __post_init__(self) -> None:
         if self.duplicates < 1:
@@ -52,6 +57,19 @@ class FaultPlan:
                 raise ValueError(f"probabilidad fuera de [0, 1] para {action}: {p}")
         if any(k < 1 for k in self.crash_after.values()):
             raise ValueError("crash_after debe ser al menos 1")
+        for action, seconds in self.step_delay_seconds.items():
+            if action not in allowed:
+                raise ValueError(f"acción fuera de la lista permitida: {action}")
+            if seconds < 0:
+                raise ValueError(f"step_delay_seconds no puede ser negativo para {action}: {seconds}")
+
+
+def step_delay(seed: int, action: str, key: str, base: float) -> float:
+    """Retraso del resultado del paso con esa clave: `base` por un jitter determinista en [0,5, 1,5)."""
+    if base <= 0.0:
+        return 0.0
+    digest = hashlib.sha256(f"{seed}:delay:{action}:{key}".encode()).digest()
+    return base * (0.5 + int.from_bytes(digest[:8], "big") / 2**64)
 
 
 def should_fail(seed: int, action: str, key: str, probability: float) -> bool:

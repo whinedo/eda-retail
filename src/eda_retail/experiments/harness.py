@@ -62,8 +62,10 @@ from mcp.server.mcpserver import MCPServer
 from eda_retail.config import Settings
 from eda_retail.event_log import cli as event_log
 from eda_retail.events.catalog import build_event
+from eda_retail.events.envelope import EventEnvelope
 from eda_retail.events.ids import incident_id_for_notice
 from eda_retail.experiments.oracle import Oracle
+from eda_retail.infra import outbox
 from eda_retail.infra.backoff import Backoff
 from eda_retail.infra.command_client import CommandReply, CommandUnavailable
 from eda_retail.infra.commands import Accepted, CommandEnvelope, CommandSpec, execute_command
@@ -101,6 +103,7 @@ from eda_retail.synthetic.faults import (
     group_lag,
     reset_group_offsets,
     should_fail,
+    step_delay,
 )
 from eda_retail.synthetic.generator import Dataset, generate
 
@@ -197,6 +200,27 @@ def failing(spec: CommandSpec, producer: str, plan: FaultPlan) -> CommandSpec:
         }, correlation_id=command.correlation_id, causation_id=command.command_id, producer=producer)])
 
     return replace(spec, prepare=prepare, handle=handle)
+
+
+# (esquema del ejecutor, command_id, eventos de resultado, segundos): los añade a su outbox más tarde.
+DeferResult = Callable[[str, uuid.UUID, list[EventEnvelope], float], None]
+
+
+def delaying(spec: CommandSpec, schema: str, plan: FaultPlan, defer: DeferResult) -> CommandSpec:
+    """`ExecuteStep` cuyo resultado llega tarde (spec synthetic-data, «Inyección de entrega retrasada por acción»):
+    el efecto se ejecuta a su hora y en su transacción, pero sus eventos (`StepCompleted` o `StepFailed`) no van
+    al outbox con ella: `defer` los añade `step_delay` segundos después."""
+
+    def handle(conn: psycopg.Connection, command: CommandEnvelope, payload: Any, prepared: Any) -> Any:
+        outcome = spec.handle(conn, command, payload, prepared)
+        seconds = step_delay(plan.seed, payload.action, payload.idempotency_key,
+                             plan.step_delay_seconds.get(payload.action, 0.0))
+        if seconds <= 0 or not isinstance(outcome, Accepted) or not outcome.events:
+            return outcome
+        defer(schema, command.command_id, list(outcome.events), seconds)
+        return replace(outcome, events=[])
+
+    return replace(spec, handle=handle)
 
 
 class Activity:
@@ -375,6 +399,7 @@ class Harness:
         self._stop = threading.Event()
         self._crash_lock = threading.Lock()
         self._projectors_paused = False
+        self.delayed_results = 0  # resultados de pasos retrasados (E11)
         self._threads: list[threading.Thread] = []
         self._workers: list[JobWorker] = []
         self._threaded = set(THREADED_CONSUMERS)
@@ -443,8 +468,9 @@ class Harness:
             "planner": Target(planner.SCHEMA, planner.specs(s, self.llm, self.rules, carrier=self._carrier),
                               mode != "none"),
             "replanner": Target(replanner.SCHEMA, replanner.specs(s, self.llm, self.rules), mode != "none"),
-            "inventory": Target(inventory.SCHEMA, dict(inventory.specs(effects), ExecuteStep=failing(
-                inventory.specs(effects)["ExecuteStep"], inventory.SCHEMA, plan)), mode == "full"),
+            "inventory": Target(inventory.SCHEMA, dict(inventory.specs(effects), ExecuteStep=delaying(failing(
+                inventory.specs(effects)["ExecuteStep"], inventory.SCHEMA, plan), inventory.SCHEMA, plan,
+                self._defer_result)), mode == "full"),
         }
         mail_server = mail_server_for(self.services, s.poc_version)
         for action in EXECUTOR_ACTIONS:
@@ -452,9 +478,40 @@ class Harness:
                                         service=getattr(self.services, SERVICE_OF[action]),
                                         mail_server=mail_server)["ExecuteStep"]
             targets[f"executor_{action}"] = Target(f"executor_{action}",
-                                                   {"ExecuteStep": failing(spec, f"executor-{action}", plan)},
+                                                   {"ExecuteStep": delaying(failing(spec, f"executor-{action}", plan),
+                                                                            f"executor_{action}", plan,
+                                                                            self._defer_result)},
                                                    mode == "full")
         return targets
+
+    def _defer_result(self, schema: str, command_id: uuid.UUID, events: list[EventEnvelope], seconds: float) -> None:
+        """Añade al outbox de `schema` los eventos de resultado de un paso `seconds` segundos después, cuando la
+        transacción del comando ya está confirmada (su fila de inbox existe). Cuenta como trabajo en curso."""
+        url = self.settings.database_url
+        with self._crash_lock:
+            self.delayed_results += 1
+
+        def run() -> None:
+            with self._activity.working():
+                time.sleep(seconds)
+                conn = connect(url)
+                try:
+                    end = time.monotonic() + JOIN_TIMEOUT_S
+                    while time.monotonic() < end:
+                        with conn.transaction():
+                            if conn.execute(f"SELECT 1 FROM {qualified(schema, 'inbox')} WHERE message_id = %s",
+                                            (command_id,)).fetchone() is not None:
+                                outbox.append(conn, schema, events)
+                                break
+                        time.sleep(IDLE_SLEEP_S)
+                    else:
+                        log.warning("resultado retrasado de %s descartado: el comando %s no se confirmó",
+                                    schema, command_id)
+                finally:
+                    conn.close()
+            self._activity.progressed()
+
+        threading.Thread(target=run, daemon=True, name=f"harness-delay-{schema}").start()
 
     def _build(self) -> None:
         s = self.settings
