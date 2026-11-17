@@ -182,3 +182,26 @@ def test_freeze_and_resume_a_process(tmp_path: Path):
     finally:
         code = process.stop()
     assert not process.alive() and code is not None
+
+
+def test_command_gateway_routes_by_target_prefix():
+    """El servidor de comandos del harness atiende `<base>/<destino>/commands/<Comando>`: un comando que el destino
+    no conoce es un 404 de ese destino, y un destino que no existe no tiene ruta"""
+    import urllib.error
+    import urllib.request
+
+    from eda_retail.experiments.processes import CommandGateway
+
+    gateway = CommandGateway({"inventory": ("inventory", {}, True)}, connect=lambda: None,  # type: ignore[arg-type]
+                             track=lambda call: call()).start()
+    try:
+        assert gateway.urls() == {"inventory": f"{gateway.base_url}/inventory"}
+        for url, body in ((f"{gateway.urls()['inventory']}/commands/Nope", b"unknown_command"),
+                          (f"{gateway.base_url}/planner/commands/CreatePlan", b"Not Found")):
+            request = urllib.request.Request(url, data=b"{}", headers={"Content-Type": "application/json"},
+                                             method="POST")
+            with pytest.raises(urllib.error.HTTPError) as error:
+                urllib.request.urlopen(request, timeout=5)
+            assert error.value.code == 404 and body in error.value.read()
+    finally:
+        gateway.stop()

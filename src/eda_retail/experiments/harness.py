@@ -1081,6 +1081,15 @@ class Harness:
             if not (self.step() or self._working() or self.step()):
                 return
 
+    def run_while(self, keep_going: Callable[[], bool], timeout: float, *,
+                  on_turn: Callable[[], Any] = lambda: None) -> float:
+        """Turnos mientras `keep_going()` y durante `timeout` como mucho; devuelve el tiempo que pasó."""
+        start = time.monotonic()
+        while keep_going() and time.monotonic() - start < timeout:
+            self._advance()
+            on_turn()
+        return time.monotonic() - start
+
     def catch_up_log(self, timeout: float = LOG_CATCH_UP_S) -> bool:
         """`event_log` lee hasta las marcas de agua altas de ahora (I4 busca ahí cada fila publicada). False si no
         llega en `timeout`."""
@@ -1091,9 +1100,10 @@ class Harness:
             return False
         return True
 
-    def run_until_closed(self) -> float:
+    def run_until_closed(self, *, on_turn: Callable[[], Any] = lambda: None) -> float:
         """Turnos hasta cerrar todas las incidencias, o hasta `idle_seconds` sin avance (con los hilos ociosos
-        y sin trabajos pendientes) o `timeout_seconds` en total."""
+        y sin trabajos pendientes) o `timeout_seconds` en total. `on_turn` se llama tras cada turno (E16 muestrea
+        el estado de la saga)."""
         start = last = time.monotonic()
         while self.closed() < self.config.incidents:
             now = time.monotonic()
@@ -1103,6 +1113,7 @@ class Harness:
                 last = now
             elif now - last > self.config.idle_seconds:
                 break
+            on_turn()
         # Un último repaso para que las vistas y el log reflejen todo lo publicado.
         self._settle()
         return time.monotonic() - start

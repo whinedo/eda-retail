@@ -27,10 +27,10 @@ Decision (L3): only the orchestrators run as separate processes.
 
 | ID | Specs | Route | Status | Commit |
 | --- | --- | --- | --- | --- |
-| T1 | S1, S4 | inline | done: harness `orchestrator_processes`, `processes.py` (CommandGateway, start_orchestrators), spec rewritten; unit GREEN, integration in CI | (this commit) |
-| T2 | S2 | inline | done: `OrchestratorProcess.freeze/resume` (SIGSTOP/SIGCONT), unit test on a real process | (this commit) |
-| T3 | S3 (instance identity, processing and lock-wait record, configurable session timeout) | inline | done: KAFKA_SESSION_TIMEOUT_MS, rebalance/start/lock-wait log lines parsed by `read_log`; instance identity = process log file | (this commit) |
-| T4 | S3 (experiment, invalid-transition check, report, CLI, guide) | inline | pending | |
+| T1 | S1, S4 | inline | done: harness `orchestrator_processes`, `processes.py` (CommandGateway, start_orchestrators), spec rewritten; unit GREEN, integration in CI | 2d8aaa5 |
+| T2 | S2 | inline | done: `OrchestratorProcess.freeze/resume` (SIGSTOP/SIGCONT), unit test on a real process | 2d8aaa5 |
+| T3 | S3 (instance identity, processing and lock-wait record, configurable session timeout) | inline | done: KAFKA_SESSION_TIMEOUT_MS, rebalance/start/lock-wait log lines parsed by `read_log`; instance identity = process log file | 2d8aaa5 |
+| T4 | S3 (experiment, invalid-transition check, report, CLI, guide) | inline | done: `e16_zombie_consumer.py` (SagaSampler, rebalance, zombie, double_processed, overlaps, lock_waits, h16), CLI, expexecutor, guide; unit GREEN, integration in CI (10 incidents) | (this commit) |
 | T5 | Risk items, whole document | delegated verifier | pending | |
 
 ## Log
@@ -39,3 +39,4 @@ Decision (L3): only the orchestrators run as separate processes.
 - L2 (2026-11-17) Created after merging #81 (f4bcbb6). Map above from a read-only explorer.
 - L3 (2026-11-17) User decision on how LLM components run in multiprocess mode, verbatim: "Solo orquestadores aparte".
 - L4 (2026-11-17) T1-T3 implemented. Design: the external instances run their own outbox relay (the harness drops its orchestrator relay); receivers stay in process behind a local HTTP gateway (`command_router` per target prefix); no production behavior change beyond optional session timeout and DEBUG/INFO log lines. A zombie whose Kafka commit fails after SIGCONT keeps today's behavior (the process exits); E16 reports its exit code.
+- L5 (2026-11-17) T4 implemented. Invalid transitions = a sampled step leaving `completed` other than to `compensating`/`compensated`, or a closed incident changing status. Integration test runs 10 incidents (CI time), the CLI default is 50.
