@@ -179,7 +179,7 @@ def test_unknown_incident_query(conn):
 
 
 def test_invalid_event_does_not_block_the_view(conn, settings):
-    """Un evento con payload fuera del catálogo se salta: no bloquea el proyector"""
+    """Evento inválido en el lado de lectura: va a views.dead_letters y no bloquea el proyector"""
     history = History()
     history.delayed()
     _project(settings, conn, history)
@@ -194,3 +194,12 @@ def test_invalid_event_does_not_block_the_view(conn, settings):
     status = _status(settings, conn, history.incident)
     assert status.applied[poisoned.partition] > poisoned.offset
     assert status.plan_version == 1 and [s["step_id"] for s in status.steps] == ["S1"]
+    dead = conn.execute(
+        "SELECT consumer, reason, event_id FROM views.dead_letters"
+        " WHERE kafka_topic = %s AND kafka_partition = %s AND kafka_offset = %s",
+        (settings.events_topic, poisoned.partition, poisoned.offset),
+    ).fetchall()
+    conn.commit()
+    assert [(r["consumer"], r["reason"], r["event_id"]) for r in dead] == [
+        (PROJECTOR_NAME, "invalid_schema", poison.event_id)
+    ]

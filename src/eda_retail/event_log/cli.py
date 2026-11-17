@@ -1,6 +1,7 @@
 """Proceso `eda-event-log`: consume `eda.events` y mantiene `event_log.events` (design.md §8).
 
-Guarda su posición en `event_log.offsets` en la misma transacción que cada fila del log.
+Guarda su posición en `event_log.offsets` en la misma transacción que cada fila del log o cada dead
+letter; un relay en un hilo publica `event_log.dead_letters` en `eda.dlq`.
 """
 
 from __future__ import annotations
@@ -13,6 +14,7 @@ from eda_retail.event_log.store import CONSUMER, SCHEMA, apply_message
 from eda_retail.infra.db import connect
 from eda_retail.infra.kafka import make_consumer
 from eda_retail.infra.logs import setup_logging
+from eda_retail.infra.outbox import start_relay
 from eda_retail.infra.positions import PositionedConsumer
 from eda_retail.infra.tracing import setup_tracing
 
@@ -38,12 +40,14 @@ def main(argv: list[str] | None = None) -> None:
     setup_logging("event-log")
     provider = setup_tracing("event-log", settings)
     consumer = build(settings)
+    relay = start_relay(settings, SCHEMA, outbox=False)  # publica event_log.dead_letters en eda.dlq
     log = logging.getLogger("eda_retail.event_log")
     try:
         while True:
             if applied := consumer.run_once():
                 log.info("log al día: %d mensajes", applied)
     finally:
+        relay.stop(timeout=10)
         consumer.close()
         if provider is not None:
             provider.shutdown()

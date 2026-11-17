@@ -11,7 +11,7 @@ from eda_retail.event_log.cli import build
 from eda_retail.events.catalog import build_event
 from eda_retail.events.envelope import EventEnvelope
 from eda_retail.infra.kafka import make_producer
-from eda_retail.infra.outbox import encode_event
+from eda_retail.infra.outbox import ComponentRelay, encode_event
 
 TRACEPARENT = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
 
@@ -128,6 +128,42 @@ def test_invalid_message_is_skipped_and_its_offset_advances(settings, conn):
     ).fetchall()
     conn.commit()
     assert [r["kafka_offset"] for r in offsets] == [1]
+
+
+def _dead_letters(settings, conn) -> list[dict]:
+    rows = conn.execute(
+        "SELECT * FROM event_log.dead_letters WHERE kafka_topic = %s ORDER BY id", (settings.events_topic,)
+    ).fetchall()
+    conn.commit()
+    return rows
+
+
+def test_invalid_message_goes_to_the_event_log_dead_letter_once(settings, conn):
+    """Evento inválido en el lado de lectura: event_log lo guarda una vez en su dead letter y lo publica en la DLQ"""
+    incident = _incident()
+    _publish(settings, raw=b"not json", key=incident)
+    _publish(settings, _notice(incident))
+    consumer = build(settings)
+    try:
+        consumer.catch_up()
+        consumer.reset([])  # reaplicar desde el principio no crea otra dead letter
+        consumer.catch_up()
+    finally:
+        consumer.close()
+
+    [row] = _dead_letters(settings, conn)
+    assert (row["consumer"], row["reason"], row["kafka_offset"]) == ("event_log", "invalid_schema", 0)
+    assert row["raw_message"] == {"raw": "not json"}
+    assert len(_rows(conn, incident)) == 1
+
+    relay = ComponentRelay.from_settings(settings, "event_log", outbox=False)
+    try:
+        assert relay.run_once() == 0
+        relay.publish_dead_letters()
+    finally:
+        relay.close()
+    [row] = _dead_letters(settings, conn)
+    assert row["published_at"] is not None
 
 
 @pytest.mark.parametrize(

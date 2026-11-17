@@ -120,7 +120,7 @@ IDLE_SLEEP_S = 0.01  # pausa de un turno sin avance mientras los hilos trabajan
 THREADED_CONSUMERS = frozenset({interpreter.SCHEMA})  # consumidores con su propio hilo
 PUBLISHERS = ("intake", "interpreter", "planner", "replanner", "orchestrator", "inventory",
               *(f"executor_{a}" for a in EXECUTOR_ACTIONS))
-
+READ_SIDE = ("event_log", "views")  # sin outbox; sus dead letters, migración 0024
 
 @contextlib.contextmanager
 def isolated_database(base: Settings, name: str) -> Iterator[str]:
@@ -460,6 +460,8 @@ class Harness:
         self._timer_conn = self._connect()
         self._dispatch_backoff = Backoff(0.01, 0.05, seed=self.config.seed)
         self._relays = [ComponentRelay.from_settings(s, schema) for schema in PUBLISHERS]
+        # El lado de lectura no tiene outbox: su relay solo publica sus dead letters en la DLQ.
+        self._relays += [ComponentRelay.from_settings(s, schema, outbox=False) for schema in READ_SIDE]
         self._readers = [event_log.build(s), *(consumer_for(p, s, self._connect()) for p in build_all())]
         self._closables += [*self._relays, *self._readers]
         self._build_deliveries()
