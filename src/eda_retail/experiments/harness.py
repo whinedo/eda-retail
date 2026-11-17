@@ -1035,7 +1035,8 @@ class Harness:
             self._set_idempotency(idempotency)
             self.targets = self._targets(idempotency)
             self.commands = InProcessCommands(self._connect(), {target_url(self.settings, t): v for t, v in
-                                                                self.targets.items()}, self.config.faults, self._crashed)
+                                                                self.targets.items()}, self.config.faults, self._crashed,
+                                              connect=lambda: connect(self.settings.database_url))
             self._init_threads()
             self._start_threads()
         rows = self.conn.execute(
