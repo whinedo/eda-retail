@@ -172,8 +172,30 @@ def test_run_does_not_finish_while_jobs_are_pending(monkeypatch):
     monkeypatch.setattr(h, "closed", lambda: 0)
     monkeypatch.setattr(h, "step", step)
     monkeypatch.setattr(h, "_open_jobs", lambda: next(open_jobs))
+    monkeypatch.setattr(h, "lag", lambda: 0)
 
     h.run_until_closed()
 
     assert calls.step > 20  # siguió mientras había trabajos, y luego venció el plazo de inactividad
     assert next(open_jobs) == 0
+
+
+def test_final_sweep_publishes_what_a_thread_left_after_the_last_turn(monkeypatch):
+    """Un hilo confirma una fila de outbox justo tras el último turno y deja de trabajar: el repaso final da un turno
+    más, que la publica, y no se para hasta que el lag es 0"""
+    h = _bare(harness.RunConfig(seed=1, incidents=1, idle_seconds=5, timeout_seconds=10))
+    turns = iter([0, 1, 0, 0, 0, 0])  # quieto; el turno extra publica la fila; después, quieto otra vez
+    lags = iter([1, 0])  # event_log aún no la leyó; luego sí
+    calls = SimpleNamespace(step=0)
+
+    def step():
+        calls.step += 1
+        return next(turns)
+
+    monkeypatch.setattr(h, "step", step)
+    monkeypatch.setattr(h, "_working", lambda: False)
+    monkeypatch.setattr(h, "lag", lambda: next(lags))
+
+    h._settle()
+
+    assert calls.step == 6 and next(lags, None) is None

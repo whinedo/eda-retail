@@ -764,6 +764,18 @@ class Harness:
             time.sleep(IDLE_SLEEP_S)
         return moved
 
+    def _settle(self) -> None:
+        """Último repaso, hasta `idle_seconds`: turnos mientras algo avance o un hilo trabaje, y, cuando todo parece
+        quieto, uno más y solo se para con el lag a 0. Un hilo puede confirmar una fila de outbox (un resultado
+        retrasado) justo después del último turno y antes de dejar de contar como trabajo: el turno extra la publica
+        y el lag espera a que `event_log` y los consumidores la lean."""
+        end = time.monotonic() + self.config.idle_seconds
+        while time.monotonic() < end:
+            if self.step() or self._working():
+                continue
+            if not self.step() and self.lag() == 0:
+                return
+
     def run_until_closed(self) -> float:
         """Turnos hasta cerrar todas las incidencias, o hasta `idle_seconds` sin avance (con los hilos ociosos
         y sin trabajos pendientes) o `timeout_seconds` en total."""
@@ -777,9 +789,7 @@ class Harness:
             elif now - last > self.config.idle_seconds:
                 break
         # Un último repaso para que las vistas y el log reflejen todo lo publicado.
-        end = time.monotonic() + self.config.idle_seconds
-        while (self.step() or self._working()) and time.monotonic() < end:
-            pass
+        self._settle()
         return time.monotonic() - start
 
     # -- reproducción del log (E21) ------------------------------------------------------------
@@ -851,9 +861,7 @@ class Harness:
         while time.monotonic() - start < self.config.timeout_seconds:
             if not self._advance() and self.lag() == 0:
                 break
-        end = time.monotonic() + self.config.idle_seconds
-        while (self.step() or self._working()) and time.monotonic() < end:
-            pass
+        self._settle()
         return time.monotonic() - start
 
     def redeliver(self, command_type: str = "ExecuteStep", *, idempotency: str | None = None) -> list[CommandReply]:
