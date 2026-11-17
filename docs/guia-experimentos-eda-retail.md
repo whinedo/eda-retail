@@ -97,7 +97,7 @@ Las hipótesis nuevas se llaman como su experimento (H11, H12...). Los marcados 
 | E14 | Ráfaga y contrapresión | Pico de avisos, 503 de los ejecutores | Dispatcher y cola de trabajos se recuperan | En proceso |
 | E15 | Degradación del LLM | Latencia o salidas inválidas | `llm_output_invalid`, plazos, trabajos reintentados | En proceso |
 | E16 (S) | Consumidor zombie | `SIGSTOP` más allá de la sesión y rebalanceo | Sin transiciones inválidas ni comandos duplicados | Multiproceso |
-| E17 (S) | Proyección atrasada | Proyectores parados | Avisos aparcados, reanudación y escalado | En proceso |
+| E17 (S) | Proyección atrasada | Proyectores parados | Avisos aparcados, reanudación y escalado | Implementado |
 | E18 (S) | Mensajes veneno | Mensajes inválidos en mitad de la partición | DLQ sin bloquear la partición | Implementado |
 | E19 | Pérdida del topic | Topic vaciado y republicación desde el outbox | Se recupera el log sin repetir efectos | En proceso |
 | E20 | Dependencias de V2 | MCP de correo y agente A2A inestables | Timeouts, 401, tarjeta inválida | En proceso |
@@ -150,10 +150,10 @@ Si I1 o I2 se violan, la hipótesis no se da por cumplida aunque su criterio pro
 ### E17 Proyección atrasada y avisos aparcados (H17)
 
 - **Objetivo.** Verificar el tratamiento explícito de la consistencia eventual: el intérprete no sondea la vista; aparca el aviso con plazo y reanuda con el evento.
-- **Escenario.** Proyectores parados, 50 avisos sobre pedidos aún no proyectados, `PENDING_NOTICE_TIMEOUT_S` en 30 s. Variantes: reanudar antes del plazo, después y en el instante del plazo con el pedido ya proyectado; además, un aviso reenviado mientras está aparcado.
-- **Mide.** Aparcados, reanudados por `OrderRegistered`, reanudados por plazo con pedido proyectado, escalados con `no_valid_orders`, tiempo en aparcamiento, contenido final de `parked_notices`.
-- **Criterio.** H17: los reanudados a tiempo no escalan, los vencidos escalan, ningún aviso queda aparcado al final.
-- **Necesita.** Parada y reanudación de proyectores.
+- **Escenario.** Proyectores parados al llegar los avisos, 50 avisos, `PENDING_NOTICE_TIMEOUT_S` en 30 s. Un aviso aparcado no se reanuda al reanudar los proyectores: se reanuda al consumir de Kafka el `OrderRegistered` de su pedido o, si ese evento llegó antes de aparcarlo, al vencer el plazo consultando la vista una vez. Por eso las variantes se definen por el orden de los eventos: (a) pedidos registrados después de aparcar los avisos (se reanudan por `OrderRegistered` con los proyectores aún parados); (b) pedidos registrados antes y proyectores parados más que el plazo (escalan con `no_valid_orders`); (c) pedidos registrados antes y proyectores reanudados antes del plazo (se reanudan por el plazo con el pedido proyectado). En (a) se reenvía además un aviso aparcado.
+- **Mide.** Por variante: aparcados, reanudados por `OrderRegistered`, reanudados por plazo con pedido proyectado, escalados con `no_valid_orders`, tiempo en aparcamiento, avisos que quedan aparcados (`interpreter.pending_notices` y `parked_notices`), pedidos en `view_orders` con los proyectores parados y lag del intérprete con los avisos aparcados.
+- **Criterio.** H17: (a) todos reanudados por `OrderRegistered`, (b) todos escalados, (c) todos reanudados por el plazo sin escalar; ninguno aparcado al final, lag 0 del intérprete con los avisos aparcados y el aviso reenviado descartado con `duplicate_notice` sin un segundo aparcamiento.
+- **Implementación.** `uv run eda-expexecutor run e17`. Cada variante usa su propia base y su topic. El harness para y reanuda los proyectores (`pause_projectors`, `resume_projectors`; `event_log` sigue consumiendo) y siembra los pedidos cuando lo pide el experimento (`RunConfig.seed_orders=False` y `seed_orders(wait=False)`). Las cuentas salen del log: un `ShipmentDelayed` de un aviso aparcado cuya causa es un `OrderRegistered` es una reanudación por el pedido; si no, por el plazo.
 
 ### E18 Mensajes veneno en mitad de la partición (H18)
 

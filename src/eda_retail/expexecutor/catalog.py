@@ -107,6 +107,11 @@ def _e7(report: dict[str, Any]) -> list[Check]:
     ]
 
 
+def _e17(report: dict[str, Any]) -> list[Check]:
+    return [_check(report, f"metrics.holds.{variant}", "true", lambda v: v is True)
+            for variant in ("order_registered", "expired", "projected")]
+
+
 def _e18(report: dict[str, Any]) -> list[Check]:
     poisons = lookup(report, "metrics.poisons")
     failed = (MISSING if not isinstance(poisons, dict)
@@ -165,6 +170,14 @@ CATALOG: dict[str, Entry] = {
         "el log y la traza.",
         "H7: para el 100 % de las seleccionadas se puede indicar qué agente propuso cada paso, con qué "
         "versión del plan y por qué.", _e7),
+    "e17": Entry(
+        "E17", "Mide los avisos aparcados con la proyección atrasada: con los proyectores parados y el plazo de "
+        "aparcamiento acortado a 30 s, tres variantes: pedidos registrados después de aparcar los avisos, pedidos "
+        "registrados antes con los proyectores parados más que el plazo, y pedidos registrados antes con los "
+        "proyectores reanudados antes del plazo.",
+        "H17: los avisos se reanudan por `OrderRegistered` en la primera variante, escalan con `no_valid_orders` en "
+        "la segunda y se reanudan por el plazo en la tercera; ninguno queda aparcado, el intérprete confirma el "
+        "offset al aparcar y un aviso reenviado se descarta.", _e17),
     "e18": Entry(
         "E18", "Mide los mensajes veneno: con las incidencias en curso se publica en mitad de las particiones un "
         "mensaje de cada tipo (JSON inválido, campo obligatorio ausente, `event_type` desconocido, versión sin "

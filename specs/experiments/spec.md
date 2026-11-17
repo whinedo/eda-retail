@@ -252,27 +252,33 @@ El sistema SHALL cumplir la hipótesis H16: cuando una instancia del orquestador
 
 ### Requirement: E17 Proyección atrasada y avisos aparcados (H17)
 
-El sistema SHALL cumplir la hipótesis H17: con los proyectores parados, los avisos sobre pedidos aún no proyectados se aparcan, y al reanudar los proyectores se reanudan todos antes de su plazo sin escalar, y los que vencen su plazo con el pedido sin proyectar escalan con `no_valid_orders`; ningún aviso queda aparcado al terminar. El escenario son 50 avisos y tres variantes con `PENDING_NOTICE_TIMEOUT_S` acortado (30 s): (a) proyectores reanudados antes del plazo, (b) reanudados después del plazo, (c) reanudados en el instante del plazo con el pedido ya proyectado. El informe MUST dar avisos aparcados, reanudados por `OrderRegistered`, reanudados por el plazo con el pedido proyectado y escalados, el tiempo en aparcamiento, y comprobar que el intérprete no consulta `view_orders` en bucle (el aviso se aparca y se confirma el offset).
+El sistema SHALL cumplir la hipótesis H17: con los proyectores parados, los avisos sobre pedidos que aún no están en `view_orders` se aparcan; cada uno se reanuda con un `ShipmentDelayed` o escala con `no_valid_orders` según lo que ocurra antes de su plazo, y ningún aviso queda aparcado al terminar. Un aviso aparcado no depende de que los proyectores se reanuden: el intérprete lo reanuda al consumir de Kafka el `OrderRegistered` de su pedido, y si ese evento ya lo consumió antes de aparcarlo, solo lo resuelve al vencer el plazo, consultando `view_orders` una vez (spec cqrs-views, «Proyección atrasada»). El escenario son 50 avisos y tres variantes con `PENDING_NOTICE_TIMEOUT_S` acortado (30 s), siempre con los proyectores parados al llegar los avisos: (a) pedidos registrados después de aparcar los avisos; (b) pedidos registrados antes de los avisos y proyectores parados más que el plazo; (c) pedidos registrados antes de los avisos y proyectores reanudados antes del plazo. El informe MUST dar, por variante, avisos aparcados, reanudados por `OrderRegistered`, reanudados por el plazo con el pedido proyectado y escalados, el tiempo en aparcamiento, los avisos que quedan aparcados, los pedidos que tenía `view_orders` mientras los proyectores estaban parados, y comprobar que el intérprete no consulta `view_orders` en bucle: el aviso se aparca y se confirma el offset, así que el lag de su grupo es 0 con los avisos aparcados.
 
-#### Scenario: Reanudación antes del plazo
+#### Scenario: Reanudación por el pedido registrado
 
-- **GIVEN** 50 avisos sobre pedidos que aún no están en `view_orders` y los proyectores parados
-- **WHEN** se reanudan los proyectores antes de que venza el plazo
-- **THEN** el intérprete publica un `ShipmentDelayed` por aviso al consumir su `OrderRegistered`
+- **GIVEN** 50 avisos aparcados sobre pedidos que aún no existen y los proyectores parados
+- **WHEN** se registran sus pedidos antes de que venza el plazo
+- **THEN** el intérprete publica un `ShipmentDelayed` por aviso al consumir su `OrderRegistered`, aunque los proyectores sigan parados
 - **AND** `parked_notices` queda vacía y ningún aviso escala
 
 #### Scenario: Plazo vencido sin proyección
 
-- **GIVEN** avisos aparcados y los proyectores parados más tiempo que el plazo
+- **GIVEN** avisos aparcados cuyo `OrderRegistered` el intérprete consumió antes de aparcarlos, y los proyectores parados más tiempo que el plazo
 - **WHEN** vence el plazo
 - **THEN** el intérprete publica `IncidentEscalated` con `no_valid_orders` para cada aviso
 - **AND** `parked_notices` los borra al consumir el escalado
 
-#### Scenario: Pedido proyectado en el instante del plazo
+#### Scenario: Pedido proyectado antes del plazo
 
-- **GIVEN** un aviso aparcado cuyo `OrderRegistered` el intérprete consumió antes de aparcarlo
+- **GIVEN** un aviso aparcado cuyo `OrderRegistered` el intérprete consumió antes de aparcarlo, y los proyectores reanudados antes del plazo
 - **WHEN** vence su plazo y la vista ya tiene el pedido
 - **THEN** publica `ShipmentDelayed` y no escala
+
+#### Scenario: Cumplimiento de H17
+
+- **GIVEN** la ejecución completa de E17
+- **WHEN** se evalúa la hipótesis
+- **THEN** H17 se cumple si en (a) todos se reanudan por `OrderRegistered`, en (b) todos escalan con `no_valid_orders`, en (c) todos se reanudan por el plazo sin escalar, en ninguna variante queda un aviso aparcado, el lag del intérprete es 0 con los avisos aparcados y el aviso reenviado se descarta sin un segundo aparcamiento
 
 #### Scenario: Aviso aparcado y repetido
 
