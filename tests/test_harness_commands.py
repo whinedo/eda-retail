@@ -212,3 +212,27 @@ def test_the_harness_planner_does_not_consult_the_carrier_by_default(monkeypatch
     harness = Harness(Settings(), RunConfig(seed=1, incidents=1), llm=FakeLlmClient([]), carrier=injected)
     harness.settings = Settings()
     assert harness._targets()["planner"].specs["CreatePlan"].prepare._carrier is injected
+
+
+def test_duplicated_commands_answer_with_the_last_delivery(monkeypatch):
+    """E1: con `duplicates`, la saga recibe la respuesta de la última entrega (sin inbox, el segundo `CreatePlan` se
+    rechaza y la saga escala con `command_rejected`)"""
+    answers = iter([CommandResponse(202, {"status": "accepted"}), CommandResponse(422, {"reason": "plan_exists"})])
+    monkeypatch.setattr(harness, "execute_command", lambda *a, **k: next(answers))
+    reply = _invoke(_commands(FaultPlan(duplicates=2), inbox=False), {"action": "notify_customer"})
+    assert (reply.status_code, reply.body) == (422, {"reason": "plan_exists"})
+
+
+def test_busy_claims_are_counted_and_retried():
+    """E22: un trabajo que encuentra su clave `in_progress` se cuenta y el error sigue para que el trabajo se
+    reintente"""
+    from eda_retail.infra.effect_keys import EffectInProgress
+
+    def handle(conn, command, payload, prepared):
+        raise EffectInProgress("K en curso")
+
+    counted = []
+    spec = harness.counting_busy(CommandSpec(ExecuteStep, handle), lambda: counted.append(1))
+    with pytest.raises(EffectInProgress):
+        spec.handle(None, None, None, None)
+    assert counted == [1]

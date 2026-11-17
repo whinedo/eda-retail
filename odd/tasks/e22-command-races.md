@@ -27,8 +27,9 @@ Design decisions (assumptions, flagged to the user):
 
 | ID | Specs | Route | Status | Commit |
 | --- | --- | --- | --- | --- |
-| T1 | S1 (injections), S2 | inline | pending | |
-| T2 | S1 (experiment, report, scenarios), S3, S4 | inline | pending | |
+| T1 | S1 (injections), S2 | inline | done | a49f8e6 |
+| T2 | S1 (experiment, report, scenarios), S3, S4 | inline | done | be82764, 808243a, fix in next commit |
+| T3 | Risk item 3 | delegated verifier over the whole document | done | 1 blocker fixed (RED/GREEN), rest PASS |
 
 ## Log
 
@@ -36,3 +37,4 @@ Design decisions (assumptions, flagged to the user):
 - L2 (2026-11-17) Map: `ExecuteStep` is deferred (step_executors/component.py), jobs retry on any exception with the same job (infra/jobs.py), one `JobWorker` per component in the harness, `effect_keys` key and effect commit together (so `BUSY` needs a committed `in_progress` row), the saga ignores a `StepCompleted` for a step that is no longer `requested` (orchestrator/saga.py:332), effect events carry no `step_id`, `FakeService` dedups by key.
 - L3 (2026-11-17) T1 a49f8e6 (injections, spec synthetic-data scenarios «Mismo comando desde varios hilos» and «Reinvocación con otro command_id»), T2 be82764 (E22, CLI, expexecutor, guide, integration tests seed 7 / 4 incidents / 8 threads; expired in-progress key test in test_step_executors). Unit 702 passed, ruff ok; unit tests of E22 written after the code (no observed RED). Integration only in CI. Risk item 3 (shared harness command delivery): independent verifier launched.
 - L4 (2026-11-17) User, verbatim: "Sí, precisa el WHEN en este PR". specs/experiments «Dos ejecutores a la vez»: the WHEN now says the 8 deliveries reach the executor inbox at once, and the THEN that the inbox registers one delivery, whose single job registers the key and executes the effect.
+- L5 (2026-11-17) T3 independent verifier: scenarios PASS; BLOCKER: with `duplicates > 1` `InProcessCommands` returned the first response instead of the last (baseline), which changes E1 mode `none` (the second `CreatePlan` without inbox is rejected with `plan_exists` and the saga escalates with `command_rejected`). Fix: return the last delivery of the command; RED `test_duplicated_commands_answer_with_the_last_delivery` failed, GREEN after the fix. Advisory taken: inventory BUSY now raises `EffectInProgress` too (moved to infra/effect_keys.py) so `busy_claims` counts it; `counting_busy` got a unit test. Advisories kept: the payload observation covers a stored rejection (`duplicate_notice`), not an accepted C1; `busy_claims` is expected to be 0; seed 7 data dependence is checked only by the integration asserts; E22 integration time estimated at 50–70 % of E23 (measure in the first CI run). Unit 704 passed, ruff ok.

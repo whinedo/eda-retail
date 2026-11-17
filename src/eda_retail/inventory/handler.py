@@ -192,7 +192,7 @@ def _execute_step(settings: Settings):
                 elif claim.status is effect_keys.ClaimStatus.BUSY:
                     # Solo con una clave en curso de otra transacción ya confirmada: no debería
                     # ocurrir, porque clave y efecto se confirman juntos. El cliente reintenta.
-                    raise RuntimeError(f"efecto {step.idempotency_key} en curso")
+                    raise effect_keys.EffectInProgress(f"efecto {step.idempotency_key} en curso")
                 else:
                     result, effect = action(conn, step)
                     effect_keys.complete(conn, step.idempotency_key, result,

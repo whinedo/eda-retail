@@ -78,6 +78,7 @@ from eda_retail.infra.command_client import CommandReply, CommandUnavailable
 from eda_retail.infra.commands import Accepted, CommandEnvelope, CommandSpec, execute_command
 from eda_retail.infra.consumer import EventConsumer
 from eda_retail.infra.db import connect
+from eda_retail.infra.effect_keys import EffectInProgress
 from eda_retail.infra.jobs import JobWorker, run_job_once
 from eda_retail.infra.kafka import make_consumer
 from eda_retail.infra.migrations import upgrade
@@ -101,7 +102,6 @@ from eda_retail.replanner import handler as replanner
 from eda_retail.rules import BusinessRules
 from eda_retail.step_executors import component as step_executors
 from eda_retail.step_executors.actions import ACTIONS as EXECUTOR_ACTIONS
-from eda_retail.step_executors.runtime import EffectInProgress
 from eda_retail.step_executors.services import Services
 from eda_retail.synthetic.faults import (
     INJECTED_FAILURE,
@@ -383,7 +383,8 @@ class InProcessCommands:
                 entry: bool = False) -> Any:
         """Entrega el comando a su sistema con los fallos del plan y devuelve la respuesta a `command`: `duplicates`
         veces seguidas, o desde `concurrent_commands` hilos a la vez; con `reinvoke_steps`, también a la vez con
-        otro `command_id`. Anota cada entrega en `deliveries`.
+        otro `command_id`. Devuelve la respuesta de la última entrega de `command`. Anota cada entrega en
+        `deliveries`.
 
         `entry`: comando de entrada del arnés (datos de ejemplo, avisos): siempre con inbox y sin `duplicates`, como
         antes de E22; solo le afecta `concurrent_commands`."""
@@ -409,7 +410,8 @@ class InProcessCommands:
                 self.deliveries.append(CommandDelivery(
                     c.command_type, c.command_id, payload.get("action"), payload.get("idempotency_key"),
                     [(r.status_code, r.body) for s, r in zip(sent, responses, strict=True) if s is c]))
-        return responses[sent.index(command)]
+        # Como antes de E22, la respuesta de la última entrega de `command` (sin inbox puede ser un rechazo).
+        return responses[len(sent) - 1 - sent[::-1].index(command)]
 
     def __call__(self, url: str, command_type: str, *, command_id: uuid.UUID, correlation_id: str,
                  causation_id: uuid.UUID | None, payload: dict[str, Any], timeout: float) -> CommandReply:
