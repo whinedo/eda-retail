@@ -12,7 +12,9 @@ import type {
   OrderStatusRow,
   ParkedNotice,
 } from "./api/client";
+import { incidentRow, operationsData } from "./test/operationsFixtures";
 import type { StreamLike } from "./useCommandRun";
+import type { OperationsData } from "./useOperations";
 
 const HEALTH: Health = {
   infra: { postgres: "down", kafka: "healthy", ollama: "healthy" },
@@ -515,5 +517,142 @@ describe("Aviso de avisos aparcados en la pantalla", () => {
     render(<App client={api} openStream={openStream} />);
     await waitFor(() => expect(api.getParkedNotices).toHaveBeenCalled());
     expect(screen.queryByRole("status", { name: "Avisos aparcados" })).not.toBeInTheDocument();
+  });
+});
+
+// Los métodos de /api/operations/* del cliente falso a partir de los datos de la vista.
+function operationsClient(get: () => OperationsData): Partial<ApiClient> {
+  return {
+    getOperationsSummary: vi.fn(async () => get().summary),
+    getOperationsIncidents: vi.fn(async () => ({ incidents: get().incidents, applied: {}, next_before: get().nextBefore })),
+    getOperationsLlm: vi.fn(async () => get().llm),
+    getOperationsCarriers: vi.fn(async () => get().carriers),
+    getOperationsFreshness: vi.fn(async () => get().freshness),
+  };
+}
+
+describe("Vista de operaciones en la pantalla", () => {
+  beforeEach(() => {
+    window.location.hash = "#/";
+  });
+
+  it("Entrada por la cabecera: Analítica abre pedidos con el enlace «Operaciones» junto al título y no en la cabecera", async () => {
+    const user = userEvent.setup();
+    render(<App client={client(operationsClient(() => operationsData()))} openStream={openStream} />);
+    await user.click(screen.getByRole("link", { name: "Analítica" }));
+    const orders = screen.getByRole("region", { name: "Estado de los pedidos" });
+    expect(within(orders).getByRole("link", { name: "Operaciones" })).toBeInTheDocument();
+    expect(within(screen.getByRole("banner")).queryByRole("link", { name: "Operaciones" })).not.toBeInTheDocument();
+  });
+
+  it("De pedidos a operaciones y vuelta: vuelve a la vista de pedidos sin perder su filtro", async () => {
+    window.location.hash = "#/analytics";
+    const user = userEvent.setup();
+    const api = client(operationsClient(() => operationsData()));
+    render(<App client={api} openStream={openStream} />);
+    const orders = screen.getByRole("region", { name: "Estado de los pedidos" });
+    await user.type(within(orders).getByLabelText("Incidencia"), "INC-0007{Enter}");
+
+    await user.click(within(orders).getByRole("link", { name: "Operaciones" }));
+    expect(window.location.hash).toBe("#/analytics/operations");
+    expect(await screen.findByRole("region", { name: "Operaciones" })).toBeInTheDocument();
+    expect(within(screen.getByRole("banner")).getByRole("link", { name: "Analítica" })).toHaveAttribute("aria-current", "page");
+
+    await user.click(screen.getByRole("link", { name: "← Estado de los pedidos" }));
+    const back = screen.getByRole("region", { name: "Estado de los pedidos" });
+    expect(within(back).getByLabelText("Incidencia")).toHaveValue("INC-0007");
+  });
+
+  it("Volver a la vista principal: ve el mapa y el panel de eventos sin perder la altura del panel", async () => {
+    window.localStorage.clear();
+    const user = userEvent.setup();
+    render(<App client={client(operationsClient(() => operationsData()))} openStream={openStream} />);
+    fireEvent.keyDown(screen.getByRole("separator", { name: "Altura del panel de eventos" }), { key: "ArrowDown" });
+    act(() => {
+      window.location.hash = "#/analytics/operations";
+      window.dispatchEvent(new HashChangeEvent("hashchange"));
+    });
+    await user.click(await screen.findByRole("link", { name: "← Vista principal" }));
+    expect(screen.getByRole("region", { name: "Eventos intercambiados" })).toBeInTheDocument();
+    expect(screen.getByRole("main").style.getPropertyValue("--events-height")).toBe("320px");
+  });
+
+  it("Dirección directa: cargar #/analytics/operations muestra la vista de operaciones", async () => {
+    window.location.hash = "#/analytics/operations";
+    render(<App client={client(operationsClient(() => operationsData()))} openStream={openStream} />);
+    const view = screen.getByRole("region", { name: "Operaciones" });
+    expect(await within(view).findByRole("row", { name: /I-1/ })).toBeInTheDocument();
+  });
+
+  it("Ver los eventos de una incidencia: abre la vista principal con su incident_id en el filtro Incidencia", async () => {
+    window.location.hash = "#/analytics/operations";
+    const user = userEvent.setup();
+    render(<App client={client(operationsClient(() => operationsData()))} openStream={openStream} />);
+    await user.click(await screen.findByRole("button", { name: "Ver eventos" }));
+    expect(window.location.hash).toBe("#/");
+    const events = screen.getByRole("region", { name: "Eventos intercambiados" });
+    expect(within(events).getByLabelText("Incidencia")).toHaveValue("I-1");
+  });
+
+  it("Incidencia que se cierra en vivo: en menos de 2 segundos pasa a Escalada y aparece la barra step_timeout", async () => {
+    window.location.hash = "#/analytics/operations";
+    let current = operationsData({ incidents: [incidentRow("I-9", { state: "open", closed_at: null, duration_s: null })] });
+    current.summary = { ...current.summary, by_state: { open: 1, resolved: 0, refunded: 0, escalated: 0 }, escalations: [] };
+    render(<App client={client(operationsClient(() => current))} openStream={openStream} />);
+    const view = screen.getByRole("region", { name: "Operaciones" });
+    expect(await within(view).findByText("Abierta", { selector: "td" })).toBeInTheDocument();
+
+    current = operationsData({ incidents: [incidentRow("I-9", { state: "escalated", escalation_reason: "step_timeout" })] });
+    current.summary = { ...current.summary, by_state: { open: 0, resolved: 0, refunded: 0, escalated: 1 },
+      escalations: [{ reason: "step_timeout", count: 1 }] };
+
+    expect(await within(view).findByText("Escalada", { selector: "td" }, { timeout: 2000 })).toBeInTheDocument();
+    expect(within(view).getByRole("button", { name: /^1Escalada/ })).toBeInTheDocument();
+    expect(within(view).getByRole("button", { name: /step_timeout/ })).toBeInTheDocument();
+  });
+
+  it("Vista en pausa: la pantalla no cambia y al reanudar aparecen los cambios", async () => {
+    window.location.hash = "#/analytics/operations";
+    const user = userEvent.setup();
+    let current = operationsData({ incidents: [incidentRow("I-9", { state: "open", closed_at: null, duration_s: null })] });
+    render(<App client={client(operationsClient(() => current))} openStream={openStream} />);
+    const view = screen.getByRole("region", { name: "Operaciones" });
+    expect(await within(view).findByText("Abierta", { selector: "td" })).toBeInTheDocument();
+    await user.click(within(view).getByRole("button", { name: "Pausar" }));
+    expect(within(view).getByText("en pausa")).toBeInTheDocument();
+
+    current = operationsData({ incidents: [incidentRow("I-9", { state: "resolved" })] });
+    await new Promise((r) => setTimeout(r, 1500));
+    expect(within(view).getByText("Abierta", { selector: "td" })).toBeInTheDocument();
+
+    await user.click(within(view).getByRole("button", { name: "Reanudar" }));
+    expect(await within(view).findByText("Solucionada", { selector: "td" })).toBeInTheDocument();
+  });
+
+  it("Resetear simulación: la vista de operaciones conserva sus datos", async () => {
+    window.location.hash = "#/analytics/operations";
+    const user = userEvent.setup();
+    render(<App client={client(operationsClient(() => operationsData()))} openStream={openStream} />);
+    const view = screen.getByRole("region", { name: "Operaciones" });
+    expect(await within(view).findByRole("row", { name: /I-1/ })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Resetear simulación" }));
+    expect(within(screen.getByRole("region", { name: "Operaciones" })).getByRole("row", { name: /I-1/ })).toBeInTheDocument();
+  });
+
+  it("Fallo de carga: error en rojo y la vista se recupera sola cuando la consulta vuelve a responder", async () => {
+    window.location.hash = "#/analytics/operations";
+    let fail = true;
+    const api = client({
+      ...operationsClient(() => operationsData()),
+      getOperationsSummary: vi.fn(async () => {
+        if (fail) throw new Error("HTTP 500");
+        return operationsData().summary;
+      }),
+    });
+    render(<App client={api} openStream={openStream} />);
+    expect(await screen.findByText("HTTP 500")).toHaveClass("events__error");
+    fail = false;
+    await waitFor(() => expect(screen.queryByText("HTTP 500")).not.toBeInTheDocument(), { timeout: 2000 });
+    expect(screen.getByRole("row", { name: /I-1/ })).toBeInTheDocument();
   });
 });

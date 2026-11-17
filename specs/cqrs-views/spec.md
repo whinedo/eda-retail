@@ -103,7 +103,7 @@ Las consultas de las personas (front, `eda-notice interactive`, experimentos) y 
 
 ### Requirement: Vistas mínimas
 
-El sistema SHALL mantener las vistas `orders` (pedido, importe y `customer_ref`, de `OrderRegistered`), `incident_status` (estado y paso actual por incidencia), `cost_per_incident` (tokens y coste de efectos), `audit_trail` (quién decidió qué y con qué versión del plan), `carrier_dashboard` (retrasos y reclamaciones por transportista), `order_status` (estado de negocio de cada pedido afectado por una incidencia, requirement «Estado de los pedidos») y `parked_notices` (avisos aparcados por el intérprete, requirement «Avisos aparcados»).
+El sistema SHALL mantener las vistas `orders` (pedido, importe y `customer_ref`, de `OrderRegistered`), `incident_status` (estado y paso actual por incidencia), `cost_per_incident` (tokens y coste de efectos), `audit_trail` (quién decidió qué y con qué versión del plan), `carrier_dashboard` (retrasos y reclamaciones por transportista), `order_status` (estado de negocio de cada pedido afectado por una incidencia, requirement «Estado de los pedidos») `parked_notices` (avisos aparcados por el intérprete, requirement «Avisos aparcados») y `operations` (hechos operativos por incidencia y de las llamadas al LLM, los pasos fallidos y las consultas al transportista, spec `incident-metrics`).
 
 #### Scenario: Incidencia con plan en curso
 

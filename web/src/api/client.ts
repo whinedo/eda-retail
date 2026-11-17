@@ -110,6 +110,99 @@ export interface ParkedNotices {
   applied: Record<string, number>;
 }
 
+// Vista de operaciones (spec operations-view): GET /api/operations/*, solo lee las vistas de incident-metrics.
+export type IncidentState = "open" | "resolved" | "refunded" | "escalated";
+// Los importes llegan como texto (Decimal en el backend).
+type Money = string | number;
+
+export interface OperationsSummary {
+  by_state: Record<IncidentState, number>;
+  escalations: { reason: string; count: number }[];
+  by_plan_version: Record<string, number>;
+  step_failures: { action: string; error_code: string; count: number }[];
+  cost_by_scenario: {
+    cause: string | null;
+    severity: string | null;
+    incidents: number;
+    mean_tokens: number;
+    llm_cost: Money;
+    effects_cost: Money;
+    refunded: Money;
+  }[];
+  prices_configured: boolean;
+  applied: Record<string, number>;
+}
+
+export interface IncidentMetricsRow {
+  incident_id: string;
+  carrier: string;
+  cause: string | null;
+  severity: string | null;
+  order_count: number;
+  state: IncidentState;
+  escalation_reason: string | null;
+  plan_version: number;
+  steps_failed: number;
+  compensations: number;
+  opened_at: string;
+  closed_at: string | null;
+  duration_s: number | null;
+  tokens: number;
+  llm_cost: Money;
+  effects_cost: Money;
+  refunded: Money;
+  last_event_at: string;
+  last_event_type: string;
+  last_event_id: string;
+  kafka_partition: number;
+  kafka_offset: number;
+}
+
+export interface IncidentMetricsPage {
+  incidents: IncidentMetricsRow[];
+  applied: Record<string, number>;
+  next_before: string | null;
+}
+
+export interface IncidentMetricsQuery {
+  state?: IncidentState;
+  reason?: string;
+  incidentId?: string;
+  before?: string;
+}
+
+export interface LlmAgentStats {
+  agent: string;
+  calls: number;
+  tokens_in: number;
+  tokens_out: number;
+  latency_mean_ms: number | null;
+  latency_p95_ms: number | null;
+  validated_pct: number | null;
+}
+
+export interface LlmStats {
+  agents: LlmAgentStats[];
+  applied: Record<string, number>;
+}
+
+export interface CarrierOperations {
+  carriers: { carrier: string; incidents: number; delays: number; claims_filed: number; refunds_issued: number }[];
+  consults: { outcome: string; consults: number; mean_rounds: number; mean_latency_ms: number }[];
+  applied: Record<string, number>;
+}
+
+export interface PartitionLag {
+  partition: number;
+  applied: number | null;
+  end_offset: number | null;
+  lag: number | null;
+}
+
+export interface Freshness {
+  consumers: { consumer: string; partitions: PartitionLag[]; lag: number | null }[];
+}
+
 export type CommandRequest =
   | { command: "seed" }
   | { command: "send"; example?: string; text?: string }
@@ -146,6 +239,11 @@ export interface ApiClient {
   getNode(id: string): Promise<NodeDetail>;
   getOrderAnalytics(query?: OrderAnalyticsQuery): Promise<OrderAnalytics>;
   getParkedNotices(): Promise<ParkedNotices>;
+  getOperationsSummary(incidentId?: string): Promise<OperationsSummary>;
+  getOperationsIncidents(query?: IncidentMetricsQuery): Promise<IncidentMetricsPage>;
+  getOperationsLlm(): Promise<LlmStats>;
+  getOperationsCarriers(): Promise<CarrierOperations>;
+  getOperationsFreshness(): Promise<Freshness>;
   runCommand(request: CommandRequest): Promise<CommandRun>;
   sendInput(runId: string, line: string): Promise<void>;
 }
@@ -176,6 +274,21 @@ export function createApiClient(fetchFn: FetchFn = (input, init) => fetch(input,
     getNode: (id) => call("GET", `/api/nodes/${encodeURIComponent(id)}`),
     getOrderAnalytics: (query = {}) => call("GET", `/api/analytics/orders${analyticsQueryString(query)}`),
     getParkedNotices: () => call("GET", "/api/parked-notices"),
+    getOperationsSummary: (incidentId) =>
+      call("GET", `/api/operations/summary${queryString({ incident_id: incidentId })}`),
+    getOperationsIncidents: (query = {}) =>
+      call(
+        "GET",
+        `/api/operations/incidents${queryString({
+          state: query.state,
+          reason: query.reason,
+          incident_id: query.incidentId,
+          before: query.before,
+        })}`,
+      ),
+    getOperationsLlm: () => call("GET", "/api/operations/llm"),
+    getOperationsCarriers: () => call("GET", "/api/operations/carriers"),
+    getOperationsFreshness: () => call("GET", "/api/operations/freshness"),
     runCommand: (request) => call("POST", "/api/commands", request),
     sendInput: async (runId, line) => {
       await call("POST", `/api/commands/${encodeURIComponent(runId)}/input`, { line });
@@ -207,4 +320,11 @@ export function eventsStreamUrl(afterSeq?: number): string {
 
 export function commandStreamUrl(runId: string): string {
   return `/api/commands/${encodeURIComponent(runId)}/stream`;
+}
+
+function queryString(values: Record<string, string | undefined>): string {
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(values)) if (value) params.set(key, value);
+  const text = params.toString();
+  return text ? `?${text}` : "";
 }

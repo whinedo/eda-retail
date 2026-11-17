@@ -31,6 +31,28 @@ describe("API client", () => {
     expect(fetchFn.mock.calls[1][0]).toBe("/api/events?node=executor-notify_customer");
   });
 
+  it("builds the operations queries and leaves out empty filters", async () => {
+    const fetchFn = fakeFetch(200, {});
+    const api = createApiClient(fetchFn);
+
+    await api.getOperationsSummary("INC-0007");
+    await api.getOperationsSummary();
+    await api.getOperationsIncidents({ state: "escalated", reason: "step_timeout", before: "2026-11-17T10:00:00+00:00|I-1" });
+    await api.getOperationsLlm();
+    await api.getOperationsCarriers();
+    await api.getOperationsFreshness();
+
+    expect(fetchFn.mock.calls.map((c) => c[0])).toEqual([
+      "/api/operations/summary?incident_id=INC-0007",
+      "/api/operations/summary",
+      "/api/operations/incidents?state=escalated&reason=step_timeout&before=2026-11-17T10%3A00%3A00%2B00%3A00%7CI-1",
+      "/api/operations/llm",
+      "/api/operations/carriers",
+      "/api/operations/freshness",
+    ]);
+    expect(fetchFn.mock.calls.every((c) => c[1]?.method === "GET")).toBe(true);
+  });
+
   it("builds the order analytics query and leaves out empty filters", async () => {
     const fetchFn = fakeFetch(200, { counts: {}, orders: [], applied: {} });
 

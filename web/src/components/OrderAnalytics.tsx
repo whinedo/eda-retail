@@ -24,6 +24,8 @@ export interface OrderAnalyticsProps {
   onIncidentChange(incidentId: string): void;
   onTogglePause(): void;
   onBack(): void;
+  // Abre la vista de operaciones (spec operations-view); sin él no hay enlace.
+  onOperations?(): void;
 }
 
 // 2026-11-14T01:48:19.234567+00:00 → 2026-11-14 01:48:19.234 (el valor completo, en el title).
@@ -64,6 +66,18 @@ export function OrderAnalytics(props: OrderAnalyticsProps) {
         <h2 id="analytics-title" className="panel-title">
           Estado de los pedidos
         </h2>
+        {props.onOperations && (
+          <a
+            className="analytics__back"
+            href="#/analytics/operations"
+            onClick={(e) => {
+              e.preventDefault();
+              props.onOperations?.();
+            }}
+          >
+            Operaciones
+          </a>
+        )}
       </div>
       <ul className="analytics__counters" aria-label="Pedidos por estado">
         {STATUSES.map(({ status: value, label, event }) => (

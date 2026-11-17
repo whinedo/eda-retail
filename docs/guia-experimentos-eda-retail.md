@@ -96,14 +96,14 @@ Las hipótesis nuevas se llaman como su experimento (H11, H12...). Los marcados 
 | E13 | Fallo de compensación | `release_stock` falla | Escalado `compensation_failed`, sin reembolso | En proceso |
 | E14 | Ráfaga y contrapresión | Pico de avisos, 503 de los ejecutores | Dispatcher y cola de trabajos se recuperan | En proceso |
 | E15 | Degradación del LLM | Latencia o salidas inválidas | `llm_output_invalid`, plazos, trabajos reintentados | En proceso |
-| E16 (S) | Consumidor zombie | `SIGSTOP` más allá de la sesión y rebalanceo | Sin transiciones inválidas ni comandos duplicados | Multiproceso |
+| E16 (S) | Consumidor zombie | `SIGSTOP` más allá de la sesión y rebalanceo | Sin transiciones inválidas ni comandos duplicados | Implementado (multiproceso) |
 | E17 (S) | Proyección atrasada | Proyectores parados | Avisos aparcados, reanudación y escalado | Implementado |
 | E18 (S) | Mensajes veneno | Mensajes inválidos en mitad de la partición | DLQ sin bloquear la partición | Implementado |
 | E19 | Pérdida del topic | Topic vaciado y republicación desde el outbox | Se recupera el log sin repetir efectos | En proceso |
 | E20 | Dependencias de V2 | MCP de correo y agente A2A inestables | Timeouts, 401, tarjeta inválida | En proceso |
-| E21 (S) | Reproducción total del log | Offsets de todos los grupos al principio | 0 efectos, eventos y cambios de estado nuevos | En proceso |
+| E21 (S) | Reproducción total del log | Offsets de todos los grupos al principio | 0 efectos, eventos y cambios de estado nuevos | Implementado (en proceso) |
 | E22 (S) | Carreras de comandos y ventana efecto–registro | Entrega concurrente y caída entre efecto y clave | 0 efectos duplicados | Implementado |
-| E23 (S) | Duplicados de negocio | Avisos reenviados y replanes que repiten acciones | Máximos de las specs de idempotencia | En proceso |
+| E23 (S) | Duplicados de negocio | Avisos reenviados y replanes que repiten acciones | Máximos de las specs de idempotencia | Implementado (en proceso) |
 
 ## 4. Invariantes comunes
 

@@ -890,6 +890,120 @@ body.resizing {
   color: var(--down);
 }
 
+/* Vista de operaciones (spec operations-view): hereda la cabecera, los contadores y las tablas de la de pedidos. */
+.counter--open { border-left-color: var(--llm-fg); }
+
+.operations__body {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-height: 0;
+  overflow-y: auto;
+  padding-bottom: 20px;
+}
+
+.operations__table {
+  min-width: 1400px;
+}
+
+/* La tabla de incidencias tiene su propio desplazamiento (lateral y vertical, con la cabecera fija). */
+.operations__body > .events__scroll {
+  flex: none;
+  max-height: 60vh;
+}
+
+.operations__section {
+  padding: 4px 20px;
+  min-width: 0;
+}
+
+.operations__section h3 {
+  margin: 8px 0;
+  font-size: 14px;
+}
+
+.operations__grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(460px, 1fr));
+  gap: 12px;
+}
+
+.operations__grid .events__table {
+  width: 100%;
+}
+
+.operations__bars {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  max-width: 640px;
+}
+
+.operations__bar {
+  position: relative;
+  display: grid;
+  grid-template-columns: 200px 1fr auto;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 4px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.operations__bar[aria-pressed="true"] {
+  background: var(--llm-bg);
+  border-color: var(--llm-fg);
+}
+
+.operations__bar-fill {
+  height: 8px;
+  border-radius: 4px;
+  background: var(--down);
+}
+
+.operations__note {
+  margin: 4px 0 8px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.operations__highlight {
+  font-weight: 700;
+}
+
+.operations__versions {
+  display: flex;
+  gap: 16px;
+  margin: 0 0 8px;
+  padding: 0;
+  list-style: none;
+  font-size: 13px;
+}
+
+.operations__lag {
+  color: var(--down);
+  font-weight: 700;
+}
+
+.operations__nodata {
+  color: var(--muted);
+  font-style: italic;
+}
+
+.operations__total td {
+  font-weight: 600;
+}
+
 .analytics__empty {
   margin: 12px 20px;
   color: var(--muted);

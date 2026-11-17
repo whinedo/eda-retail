@@ -99,6 +99,23 @@ def test_parked_notices_view_migration_reverts(scratch_db):
     assert "deadline_at" in _columns(scratch_db, "view_parked_notices", "views")
 
 
+def test_operations_views_migration_reverts(scratch_db):
+    """0026 crea las vistas del proyector operations (spec incident-metrics) y su downgrade las borra"""
+    upgrade(scratch_db)
+    assert {"incident_id", "carrier", "cause", "severity", "order_count", "state", "escalation_reason",
+            "plan_version", "steps_failed", "compensations", "opened_at", "closed_at", "last_event_at",
+            "last_event_type", "last_event_id", "kafka_partition", "kafka_offset"} == _columns(
+        scratch_db, "view_incident_metrics", "views")
+    for table in ("view_llm_calls", "view_step_failures", "view_carrier_consults", "view_operations_steps"):
+        assert _columns(scratch_db, table, "views"), table
+    downgrade(scratch_db, "0025")
+    for table in ("view_incident_metrics", "view_llm_calls", "view_step_failures", "view_carrier_consults",
+                  "view_operations_steps"):
+        assert _columns(scratch_db, table, "views") == set(), table
+    upgrade(scratch_db)
+    assert "state" in _columns(scratch_db, "view_incident_metrics", "views")
+
+
 def test_mail_server_migration_reverts(scratch_db):
     """0021 crea el esquema mail_server con su directorio y su buzón, y su downgrade lo borra"""
     upgrade(scratch_db)

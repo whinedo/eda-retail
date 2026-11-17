@@ -29,6 +29,9 @@ def _history(settings, conn) -> None:
     history.requested(LOSS_PLAN[0])
     history.customer_notified()
     history.completed("S1", {"message_id": "M1"})
+    history.requested(LOSS_PLAN[2])
+    history.failed("S3", "out_of_stock")  # view_step_failures (operations)
+    history.carrier_consulted("timeout", 2, 500)  # view_carrier_consults (operations)
     incident = history.incident
     parked = History()  # otra incidencia, aún aparcada: deja una fila en view_parked_notices
     parked.parked(("P-rebuild-parked",))

@@ -11,6 +11,7 @@ from eda_retail.projectors import (
     carrier_dashboard,
     cost_per_incident,
     incident_status,
+    operations,
     order_status,
     orders,
     parked_notices,
@@ -40,6 +41,7 @@ PROJECTORS: dict[str, ProjectorSpec] = {
     ),
     order_status.PROJECTOR_NAME: ProjectorSpec(order_status.build_projector, ("views.view_order_status",)),
     parked_notices.PROJECTOR_NAME: ProjectorSpec(parked_notices.build_projector, ("views.view_parked_notices",)),
+    operations.PROJECTOR_NAME: ProjectorSpec(operations.build_projector, operations.TABLES),
 }
 
 

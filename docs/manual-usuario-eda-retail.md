@@ -14,7 +14,7 @@ Guía para lanzar avisos de transportistas, ver cómo los agentes se reparten el
 6. El mapa de sistemas
 7. El detalle de un nodo
 8. El panel de eventos intercambiados
-9. La vista de analítica: estado de los pedidos
+9. La vista de analítica: estado de los pedidos y operaciones
 10. Recorridos típicos
 11. Problemas frecuentes
 12. Glosario de eventos
@@ -495,7 +495,7 @@ Si hay más eventos que los 100 iniciales, al final de la tabla aparece el botó
 
 El separador entre el mapa y el panel de eventos se **arrastra** con el ratón hacia abajo (panel más pequeño) o hacia arriba (más grande). También se puede usar con el teclado: con el foco en el separador, **↑ / ↓** cambian 20 px, **Inicio** lo lleva al mínimo y **Fin** al máximo.
 
-## 9. La vista de analítica: estado de los pedidos
+## 9. La vista de analítica: estado de los pedidos y operaciones
 
 Se abre con el enlace **Analítica** de la cabecera, o directamente en `http://localhost:5173/#/analytics`. El enlace **← Vista principal** (arriba a la izquierda) vuelve al mapa y al panel de eventos.
 
@@ -546,7 +546,21 @@ Como en el panel de eventos, la tabla tiene más columnas de las que caben: hay 
 
 ### 9.5 Cómo se lee con el ejemplo del pedido retrasado
 
-Con los datos de las capturas, los avisos de retraso (`delay`, pedido `P-1001`) y el de `injection` (`P-1003`) acaban en **Solucionada**, mientras que los de pérdida (`loss`, `P-1002`) y sin stock (`out_of_stock`, `P-1004`) acaban en **Escalada**. El motivo de cada escalado no está en esta vista: se ve en la columna **payload** del evento `IncidentEscalated` en el panel de eventos (en estas ejecuciones, `llm_output_invalid`, véase el glosario). La vista de analítica dice **qué** le pasó al pedido; el panel de eventos, **por qué** y en qué orden.
+Con los datos de las capturas, los avisos de retraso (`delay`, pedido `P-1001`) y el de `injection` (`P-1003`) acaban en **Solucionada**, mientras que los de pérdida (`loss`, `P-1002`) y sin stock (`out_of_stock`, `P-1004`) acaban en **Escalada**. El motivo de cada escalado no está en esta vista: se ve en la vista de operaciones (§9.6) o en la columna **payload** del evento `IncidentEscalated` en el panel de eventos (en estas ejecuciones, `llm_output_invalid`, véase el glosario). La vista de analítica dice **qué** le pasó al pedido; el panel de eventos, **por qué** y en qué orden.
+
+### 9.6 La vista de operaciones
+
+El enlace **Operaciones**, junto al título «Estado de los pedidos», abre una segunda pantalla (`http://localhost:5173/#/analytics/operations`) que responde a otra pregunta: **¿cómo funciona el sistema?** Los enlaces **← Estado de los pedidos** y **← Vista principal** vuelven atrás sin perder los filtros. Como la de pedidos, solo lee proyecciones (las del proyector `operations`, spec `incident-metrics`), se actualiza sola mientras está «en vivo», tiene **Pausar** y el filtro de **Incidencia**, y «Resetear simulación» no la vacía. Arriba indica hasta qué posición de Kafka ha leído («leído hasta»).
+
+- **Indicadores por estado** (Abierta, Solucionada, Reembolsada, Escalada) y **escaladas por motivo**, una barra por motivo con su recuento y su porcentaje. Pulsar un indicador o una barra filtra la tabla; pulsarlo otra vez quita el filtro.
+- **Tabla de incidencias**, las cambiadas más recientemente primero: estado, motivo de escalado, transportista, causa y gravedad, versión del plan, pasos fallidos, compensaciones, duración (vacía mientras está abierta), tokens, coste y último evento con su partición y su offset. **Ver eventos** abre la vista principal con esa incidencia en el filtro del panel de eventos. **Cargar más** trae las 100 siguientes.
+- **Coste por escenario** (causa y gravedad): incidencias, tokens medios, coste del LLM, coste de los efectos e importe reembolsado. Con los precios por defecto (Ollama local) el coste en dinero es 0 salvo los reembolsos, y la vista lo avisa con el nombre de las variables (`LLM_PRICE_IN_PER_1K`, `LLM_PRICE_OUT_PER_1K`, `EFFECT_COST_CLAIM`, `EFFECT_COST_REISSUE`). Las incidencias escaladas antes de interpretarse salen como «Sin interpretar».
+- **Llamadas al LLM por agente**: llamadas, tokens, latencia media y p95 (por rango más próximo) y porcentaje de validaciones superadas.
+- **Replanificación y pasos fallidos**: incidencias por versión del plan y fallos por acción y código de error.
+- **Transportistas**: retrasos, reclamaciones y reembolsos; con `POC_VERSION=2`, también las consultas A2A por resultado.
+- **Frescura de las vistas**: por proyector y partición, la posición aplicada, el *end offset* de Kafka y el `lag` (los mensajes que le faltan por aplicar). Un `lag` mayor que 0 sale destacado; si Kafka no responde, dice «sin datos».
+
+Por debajo, el front pide los datos a `GET /api/operations/summary`, `/incidents`, `/llm`, `/carriers` y `/freshness`.
 
 ## 10. Recorridos típicos
 
