@@ -92,13 +92,20 @@ Cuando el ejecutor pueda caer entre el efecto y el registro de la clave, el efec
 
 ### Requirement: Un aviso por cliente y pedido
 
-El sistema SHALL enviar como máximo un aviso de la misma versión del plan por pedido, aunque el plan se revise o el evento se duplique.
+El sistema SHALL enviar como máximo un aviso por incidencia, pedido y versión del plan, aunque el plan se revise o el evento se duplique. La versión es la que lleva el `ExecuteStep` (la del plan cuando la saga pide el paso). El ejecutor de `notify_customer` MUST devolver el aviso ya registrado para el mismo paso o para el mismo pedido de la incidencia en la misma versión, aunque el `step_id` o la `idempotency_key` sean otros, y `customer_messages` MUST tener un índice único por (`incident_id`, `order_id`, `plan_version`).
 
 #### Scenario: Revisión del plan tras un aviso enviado
 
 - **GIVEN** un `CustomerNotified` ya publicado para el pedido P1
 - **WHEN** el replanner publica una versión nueva que mantiene `notify_customer`
 - **THEN** no se envía otro aviso a ese cliente por ese paso
+
+#### Scenario: Otro aviso del mismo pedido en la misma versión
+
+- **GIVEN** un aviso ya enviado para el pedido P1 de la incidencia I1 en la versión 2 del plan
+- **WHEN** llega otro `ExecuteStep` de `notify_customer` para P1 en la versión 2, con otro `step_id`
+- **THEN** el ejecutor devuelve el `message_id` existente y no envía otro correo
+- **AND** en la versión 3 sí se envía un aviso nuevo
 
 ### Requirement: Una reclamación por incidencia y pedido
 
@@ -113,13 +120,20 @@ El sistema MUST NOT crear más de una reclamación por par (incidencia, pedido),
 
 ### Requirement: Reservas, reenvíos y reembolsos sin duplicar
 
-El sistema SHALL garantizar como máximo una reserva activa, un reenvío y un reembolso por pedido y paso. La idempotencia de `reserve_stock` y `issue_refund` MUST aplicarse incluso tras la reproducción del log.
+El sistema SHALL garantizar como máximo una reserva activa y un reenvío por pedido y paso, y un reembolso por incidencia y pedido, aunque una revisión del plan vuelva a pedir `issue_refund` con otro `step_id`. El ejecutor de `issue_refund` MUST devolver el reembolso ya registrado para el paso o para el pedido de la incidencia, y `refunds` MUST tener un índice único por (`incident_id`, `order_id`). La idempotencia de `reserve_stock` y `issue_refund` MUST aplicarse incluso tras la reproducción del log.
 
 #### Scenario: Reproducción del log con ejecutores activos
 
 - **GIVEN** un log reproducido por error ante los ejecutores
 - **WHEN** reciben de nuevo `ExecuteStep` ya ejecutados
 - **THEN** no se crea ninguna reserva ni reembolso nuevo
+
+#### Scenario: Reembolso pedido otra vez tras una revisión
+
+- **GIVEN** un reembolso ya emitido para el pedido P1 de la incidencia I1
+- **WHEN** un plan posterior vuelve a proponer `issue_refund` para P1 con otro `step_id`
+- **THEN** el ejecutor devuelve el `refund_id` existente
+- **AND** no emite otro reembolso ni otro `RefundIssued`
 
 ### Requirement: Conservación de las claves
 

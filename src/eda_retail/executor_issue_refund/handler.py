@@ -36,8 +36,12 @@ class IssueRefund(Refund):
 
 
 def existing_refund(conn: psycopg.Connection, step: ExecuteStep) -> dict[str, Any] | None:
-    """El reembolso ya registrado para el paso (`refunds (incident_id, step_id)`, design.md §8), aunque la
-    `idempotency_key` sea otra: el ejecutor lo devuelve en lugar de reembolsar otra vez."""
-    row = conn.execute("SELECT refund_id FROM executor_issue_refund.refunds WHERE incident_id = %s AND step_id = %s",
-                       (step.incident_id, step.step_id)).fetchone()
+    """El reembolso ya registrado para el paso o para el mismo pedido de la incidencia (spec idempotency, «Reservas,
+    reenvíos y reembolsos sin duplicar»), aunque el `step_id` o la `idempotency_key` sean otros: una revisión del
+    plan puede volver a pedir `issue_refund`, y el ejecutor devuelve el existente en lugar de reembolsar otra vez."""
+    row = conn.execute(
+        "SELECT refund_id FROM executor_issue_refund.refunds WHERE incident_id = %s AND (step_id = %s OR order_id = %s)"
+        " ORDER BY created_at LIMIT 1",
+        (step.incident_id, step.step_id, str(step.params.get("order_id"))),
+    ).fetchone()
     return None if row is None else {"refund_id": row["refund_id"]}
