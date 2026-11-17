@@ -71,3 +71,9 @@ def test_dlq_reconciliation(report):
 def test_h18(report):
     """Cumplimiento de H18"""
     assert report.hypothesis == {"H18": True}
+
+
+def test_report_with_invariants(report):
+    """Informe con invariantes"""
+    assert set(report.metrics["invariants"]) == {"I1", "I2", "I3", "I4", "I5"}
+    assert all(inv["violations"] == 0 for inv in report.metrics["invariants"].values())

@@ -32,6 +32,7 @@ from typing import Any
 import psycopg
 
 from eda_retail.config import Settings
+from eda_retail.experiments import invariants
 from eda_retail.experiments.harness import SERVICE_OF, Harness, RunConfig, started
 from eda_retail.experiments.report import Report
 from eda_retail.infra.consumer import Outcome
@@ -140,6 +141,7 @@ def run_e21(base: Settings, *, seed: int = 42, incidents: int = 50) -> Report:
         discarded = {name: received(outcomes, h.outcomes, Outcome.DUPLICATE.value).get(name, 0) for name in registered}
         replies = h.redeliver("ExecuteStep")
         replay_changes = changes(before, snapshot(h))
+        checked = invariants.check(h)  # antes de las observaciones y del control, que repiten efectos a propósito
         observations = {}
         for group in OBSERVATIONS:
             prev = snapshot(h)
@@ -160,10 +162,11 @@ def run_e21(base: Settings, *, seed: int = 42, incidents: int = 50) -> Report:
                          "not_replayed": sum(not r.replayed for r in replies)},
         "control": control,
         "observations": observations,
+        "invariants": checked,
     }
     return Report(
         experiment="E21", seed=seed, model=result.model,
         config={"incidents": incidents, "fail_probability": {"reserve_stock": FAIL_RESERVE},
                 "control": f"redeliver:{CONTROL}", "observations": [f"inbox_off:{g}" for g in OBSERVATIONS]},
-        metrics=metrics, hypothesis={"H21": h21(metrics)},
+        metrics=metrics, hypothesis={"H21": h21(metrics) and invariants.gate(checked)},
     )

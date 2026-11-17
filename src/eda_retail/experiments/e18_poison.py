@@ -21,6 +21,7 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from typing import Any
 
 from eda_retail.config import Settings
+from eda_retail.experiments import invariants
 from eda_retail.experiments.harness import Harness, RunConfig
 from eda_retail.experiments.report import Report
 from eda_retail.infra.dead_letters import INVALID_SCHEMA
@@ -149,14 +150,16 @@ def run_e18(base: Settings, *, seed: int = 42, incidents: int = 100) -> Report:
         h.conn.commit()
         retries = {(i.partition, i.offset): h.retries(i.partition, i.offset) for i in injected}
         lags, dlq = h.lags(), h.dlq_messages()
+        checked = invariants.check(h)
     metrics = {
         "closed": result.closed, "open": result.open, "resolved": result.resolved, "escalated": result.escalated,
         "lag": lags, "dlq_messages": dlq, "dead_letter_rows": len(rows),
         **reconcile(injected, consumers, rows, retries=retries, in_log=in_log, statuses=statuses),
+        "invariants": checked,
     }
     return Report(
         experiment="E18", seed=seed, model=result.model,
         config={"incidents": incidents, "poisons": list(poison.KINDS), "poison_event_type": poison.POISON_TYPE,
                 "large_payload_bytes": poison.LARGE_PAYLOAD_BYTES},
-        metrics=metrics, hypothesis={"H18": h18(metrics)},
+        metrics=metrics, hypothesis={"H18": h18(metrics) and invariants.gate(checked)},
     )

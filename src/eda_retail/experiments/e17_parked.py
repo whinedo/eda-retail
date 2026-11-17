@@ -24,6 +24,7 @@ from collections.abc import Callable, Mapping
 from typing import Any
 
 from eda_retail.config import Settings
+from eda_retail.experiments import invariants
 from eda_retail.experiments.harness import Harness, RunConfig
 from eda_retail.experiments.report import Report
 from eda_retail.interpreter.handler import DUPLICATE_NOTICE, NO_VALID_ORDERS
@@ -131,12 +132,13 @@ def run_variant(base: Settings, variant: str, *, seed: int, incidents: int, time
         elapsed = h.run_until_closed()
         result = h.result(elapsed)
         observed |= outcomes(h)
+        observed["invariants"] = invariants.check(h)
     return {"model": result.model, "closed": result.closed, "open": result.open, **observed}
 
 
 def variant_holds(variant: str, m: Mapping[str, Any], incidents: int) -> bool:
     common = (m["parked"] == incidents and m["parked_twice"] == 0 and m["still_parked"] == 0
-              and m["interpreter_lag_while_parked"] == 0)
+              and m["interpreter_lag_while_parked"] == 0 and invariants.gate(m["invariants"]))
     if variant == ORDER_REGISTERED:
         return (common and m["resumed_by_order"] == incidents and m["escalated"] == 0
                 and m["duplicate_reason"] == DUPLICATE_NOTICE)

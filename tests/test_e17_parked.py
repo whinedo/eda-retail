@@ -14,7 +14,7 @@ N = 50
 def _variant(**overrides) -> dict:
     base = {"parked": N, "parked_twice": 0, "still_parked": 0, "interpreter_lag_while_parked": 0,
             "resumed_by_order": 0, "resumed_by_deadline": 0, "escalated": 0, "orders_projected_while_paused": 0,
-            "duplicate_reason": None}
+            "duplicate_reason": None, "invariants": {f"I{i}": {"violations": 0} for i in range(1, 6)}}
     return base | overrides
 
 
@@ -63,7 +63,16 @@ def test_notice_left_parked_or_interpreter_lag_fails():
 def test_expexecutor_checks_of_e17():
     from eda_retail.expexecutor.catalog import CATALOG
 
-    ok = {"metrics": {"holds": {ORDER_REGISTERED: True, EXPIRED: True, PROJECTED: True}}}
+    clean = {"invariants": {"I1": {"violations": 0}, "I2": {"violations": 0}}}
+    variants = {v: clean for v in (ORDER_REGISTERED, EXPIRED, PROJECTED)}
+    ok = {"metrics": {"holds": {ORDER_REGISTERED: True, EXPIRED: True, PROJECTED: True}, "variants": variants}}
     assert all(c.ok for c in CATALOG["e17"].checks(ok))
-    bad = {"metrics": {"holds": {ORDER_REGISTERED: True, EXPIRED: False, PROJECTED: True}}}
+    bad = {"metrics": {"holds": {ORDER_REGISTERED: True, EXPIRED: False, PROJECTED: True}, "variants": variants}}
     assert [c.metric for c in CATALOG["e17"].checks(bad) if not c.ok] == ["metrics.holds.expired"]
+
+
+def test_invariant_violation_fails_h17():
+    """Informe con invariantes: H17 no se cumple si I1 o I2 tienen alguna violación"""
+    broken = _variant(escalated=N)
+    broken["invariants"] = broken["invariants"] | {"I2": {"violations": 1}}
+    assert not h17(_metrics(**{EXPIRED: broken}), N)

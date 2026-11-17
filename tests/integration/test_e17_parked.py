@@ -56,3 +56,10 @@ def test_h17(report):
     """Cumplimiento de H17"""
     assert all(v["interpreter_lag_while_parked"] == 0 for v in report.metrics["variants"].values())
     assert report.hypothesis == {"H17": True}
+
+
+def test_report_with_invariants(report):
+    """Informe con invariantes"""
+    for variant in report.metrics["variants"].values():
+        assert set(variant["invariants"]) == {"I1", "I2", "I3", "I4", "I5"}
+        assert all(inv["violations"] == 0 for inv in variant["invariants"].values())

@@ -132,8 +132,9 @@ def test_expexecutor_checks_of_e18():
     """El expexecutor comprueba lag, venenos, otras dead letters e incidencias abiertas de E18"""
     from eda_retail.expexecutor.catalog import CATALOG
 
-    metrics = _metrics(_rows(_injected()))
+    clean = {f"I{i}": {"violations": 0} for i in range(1, 6)}
+    metrics = _metrics(_rows(_injected())) | {"invariants": clean}
     assert all(c.ok for c in CATALOG["e18"].checks({"metrics": metrics}))
-    broken = _metrics(_rows(_injected())[1:], lag=2)
+    broken = _metrics(_rows(_injected())[1:], lag=2) | {"invariants": clean}
     failing = [c.metric for c in CATALOG["e18"].checks({"metrics": broken}) if not c.ok]
     assert failing == ["metrics.lag (todos los grupos)", "metrics.poisons (en la DLQ de quien atiende su tipo)"]

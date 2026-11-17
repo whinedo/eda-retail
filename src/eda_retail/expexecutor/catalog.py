@@ -107,9 +107,15 @@ def _e7(report: dict[str, Any]) -> list[Check]:
     ]
 
 
+def _invariants(report: dict[str, Any], prefix: str = "metrics") -> list[Check]:
+    """I1 e I2 sin violaciones (spec experiments, «Invariantes comunes de resiliencia»)."""
+    return [_check(report, f"{prefix}.invariants.{name}.violations", "0", lambda v: v == 0) for name in ("I1", "I2")]
+
+
 def _e17(report: dict[str, Any]) -> list[Check]:
-    return [_check(report, f"metrics.holds.{variant}", "true", lambda v: v is True)
-            for variant in ("order_registered", "expired", "projected")]
+    variants = ("order_registered", "expired", "projected")
+    return [*(_check(report, f"metrics.holds.{variant}", "true", lambda v: v is True) for variant in variants),
+            *(c for variant in variants for c in _invariants(report, f"metrics.variants.{variant}"))]
 
 
 def _e18(report: dict[str, Any]) -> list[Check]:
@@ -124,6 +130,7 @@ def _e18(report: dict[str, Any]) -> list[Check]:
               isinstance(poisons, dict) and bool(poisons) and failed == []),
         _check(report, "metrics.unexpected_dead_letters", "0", lambda v: v == 0),
         _check(report, "metrics.open", "0", lambda v: v == 0),
+        *_invariants(report),
     ]
 
 
@@ -134,6 +141,7 @@ def _e21(report: dict[str, Any]) -> list[Check]:
         _check(report, "metrics.replay.inbox_matches", "true", lambda v: v is True),
         _check(report, "metrics.old_commands.not_replayed", "0", lambda v: v == 0),
         _check(report, "metrics.control.new_executions", "> 0", lambda v: isinstance(v, int) and v > 0),
+        *_invariants(report),
     ]
 
 
