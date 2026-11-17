@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from typing import Any
 
 from mcp.server.mcpserver import MCPServer
 
@@ -61,6 +62,15 @@ def build_mailer(settings: Settings, action_name: str, *, mail_server: str | MCP
                      max_emails=settings.mcp_max_emails_per_incident)
 
 
+def completed_lookup(settings: Settings, schema: str) -> Callable[[str], dict[str, Any] | None]:
+    """Resultado guardado de una `idempotency_key` en `effect_keys`. Con EFFECT_KEYS_ENABLED=false no se lee:
+    el interruptor apaga toda la idempotencia de los efectos, no solo las escrituras, también cuando la tabla
+    ya tiene claves de antes (control de E21)."""
+    if not settings.effect_keys_enabled:
+        return lambda key: None
+    return _with_conn(settings, lambda conn, key: effect_keys.stored_result(conn, key, schema=schema))
+
+
 def specs(settings: Settings, action_name: str, llm: LlmClient, rules: BusinessRules, *,
           service: FakeService | None = None, mail_server: str | MCPServer | None = None) -> dict[str, CommandSpec]:
     """`ExecuteStep` de la acción; consulta `view_orders` y `cost_per_incident` (lado de lectura)."""
@@ -71,7 +81,7 @@ def specs(settings: Settings, action_name: str, llm: LlmClient, rules: BusinessR
     action: RecordingAction = build_action(action_name, llm=llm, rules=rules, service=service,
                                            order_known=order_known, budget=budget,
                                            mailer=build_mailer(settings, action_name, mail_server=mail_server))
-    completed = _with_conn(settings, lambda conn, key: effect_keys.stored_result(conn, key, schema=action.schema))
+    completed = completed_lookup(settings, action.schema)
     # Clave de negocio del efecto (design.md §8): una reclamación por incidencia y pedido (spec idempotency), y un
     # aviso y un reembolso por paso. Es parte de la idempotencia de los efectos, así que se apaga con
     # EFFECT_KEYS_ENABLED=false (E1 sin idempotencia).
