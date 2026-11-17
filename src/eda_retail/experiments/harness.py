@@ -120,6 +120,7 @@ SERVICE_OF = {"notify_customer": "mail", "file_claim": "claims", "reissue_shipme
 JOB_POLL_S = 0.05  # sondeo de un worker de trabajos sin trabajo
 CONSUMER_POLL_S = 0.1  # sondeo de Kafka de un consumidor en su hilo
 JOIN_TIMEOUT_S = 30.0  # espera al parar un hilo (puede estar dentro de una llamada al LLM)
+SETTLE_GRACE_S = 2.0  # espera máxima del repaso final a que el lag llegue a 0
 IDLE_SLEEP_S = 0.01  # pausa de un turno sin avance mientras los hilos trabajan
 THREADED_CONSUMERS = frozenset({interpreter.SCHEMA})  # consumidores con su propio hilo
 PUBLISHERS = ("intake", "interpreter", "planner", "replanner", "orchestrator", "inventory",
@@ -766,14 +767,21 @@ class Harness:
 
     def _settle(self) -> None:
         """Último repaso, hasta `idle_seconds`: turnos mientras algo avance o un hilo trabaje, y, cuando todo parece
-        quieto, uno más y solo se para con el lag a 0. Un hilo puede confirmar una fila de outbox (un resultado
-        retrasado) justo después del último turno y antes de dejar de contar como trabajo: el turno extra la publica
-        y el lag espera a que `event_log` y los consumidores la lean."""
+        quieto, uno más. Un hilo puede confirmar una fila de outbox (un resultado retrasado) justo después del último
+        turno y antes de dejar de contar como trabajo: el turno extra la publica. Después espera, como mucho
+        `SETTLE_GRACE_S`, a que el lag sea 0 para que `event_log` y los consumidores la lean."""
         end = time.monotonic() + self.config.idle_seconds
+        grace: float | None = None
         while time.monotonic() < end:
-            if self.step() or self._working():
+            if self.step() or self._working() or self.step():
+                grace = None
                 continue
-            if not self.step() and self.lag() == 0:
+            lag = self.lag()
+            if lag == 0:
+                return
+            grace = grace if grace is not None else time.monotonic() + SETTLE_GRACE_S
+            if time.monotonic() > grace:
+                log.warning("repaso final terminado con lag %d", lag)
                 return
 
     def run_until_closed(self) -> float:

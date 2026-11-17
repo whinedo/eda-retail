@@ -199,3 +199,15 @@ def test_final_sweep_publishes_what_a_thread_left_after_the_last_turn(monkeypatc
     h._settle()
 
     assert calls.step == 6 and next(lags, None) is None
+
+
+def test_final_sweep_does_not_wait_forever_for_lag(monkeypatch):
+    """Si el lag no llega a 0, el repaso final se para tras un margen corto, no al vencer idle_seconds"""
+    h = _bare(harness.RunConfig(seed=1, incidents=1, idle_seconds=30, timeout_seconds=60))
+    monkeypatch.setattr(harness, "SETTLE_GRACE_S", 0.05)
+    monkeypatch.setattr(h, "step", lambda: 0)
+    monkeypatch.setattr(h, "_working", lambda: False)
+    monkeypatch.setattr(h, "lag", lambda: 3)
+    start = time.monotonic()
+    h._settle()
+    assert time.monotonic() - start < 5
