@@ -123,6 +123,21 @@ def _e11(report: dict[str, Any]) -> list[Check]:
     ]
 
 
+def _e13(report: dict[str, Any]) -> list[Check]:
+    inv = lookup(report, "metrics.invariants")
+    broken = (MISSING if not isinstance(inv, dict)
+              else sorted(name for name, v in inv.items() if not isinstance(v, dict) or v.get("violations") != 0))
+    total = lookup(report, "metrics.failed_incidents.total")
+    return [
+        Check("metrics.invariants (I1 a I5)", "[] (sin violaciones)", broken, isinstance(inv, dict) and broken == []),
+        _check(report, "metrics.compensations.failed", "> 0", lambda v: isinstance(v, int) and v > 0),
+        _check(report, "metrics.failed_incidents.escalated_compensation_failed",
+               f"{total} (metrics.failed_incidents.total)", lambda v: v == total),
+        _check(report, "metrics.failed_incidents.refunds_requested", "0", lambda v: v == 0),
+        _check(report, "metrics.failed_incidents.compensations_after_escalation", "0", lambda v: v == 0),
+    ]
+
+
 def _e16(report: dict[str, Any]) -> list[Check]:
     inv = lookup(report, "metrics.invariants")
     broken = (MISSING if not isinstance(inv, dict)
@@ -266,6 +281,13 @@ CATALOG: dict[str, Entry] = {
         "más un margen, las demás terminan como sin fallo, cada compensación se completa una vez tras la "
         "recuperación e I1 a I5 sin violaciones. H12b (exploratoria): la p95 de las incidencias sin `file_claim` no "
         "supera el doble de la de una ejecución sin fallo; si no se cumple es un hallazgo.", _e12),
+    "e13": Entry(
+        "E13", "Mide el fallo de una compensación: 50 incidencias con todos los `reissue_shipment` fallando, de "
+        "modo que la saga deriva el `release_stock` de cada reserva completada y retiene el reembolso, y un 50 % "
+        "de fallos en `release_stock`.",
+        "H13: hay al menos una compensación fallida y cada incidencia con una compensación fallida escala con "
+        "`compensation_failed`, sin `issue_refund` pedido y sin compensaciones pedidas tras el escalado; I1 a I5 "
+        "sin violaciones.", _e13),
     "e16": Entry(
         "E16", "Mide un consumidor zombie en modo multiproceso: dos instancias del orquestador en el mismo grupo, "
         "50 incidencias en curso y un `SIGSTOP` a la que posee más particiones durante más tiempo que "

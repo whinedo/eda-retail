@@ -93,7 +93,7 @@ Las hipótesis nuevas se llaman como su experimento (H11, H12...). Los marcados 
 | E10 | Caída de PostgreSQL | Conexiones cortadas o base parada | Reintentos, sin estado a medias | Multiproceso |
 | E11 (S) | Entrega retrasada y replanes | Resultados tardíos, 50 % de fallos en `reserve_stock` | Eventos obsoletos ignorados, compensaciones correctas | Implementado |
 | E12 (S) | Ejecutor caído y colgado | `file_claim` en `down` y en `hang` | Plazos, aislamiento, cabeza de línea del dispatcher | Implementado (en proceso) |
-| E13 | Fallo de compensación | `release_stock` falla | Escalado `compensation_failed`, sin reembolso | En proceso |
+| E13 (S) | Fallo de compensación | `release_stock` falla | Escalado `compensation_failed`, sin reembolso | Implementado (en proceso) |
 | E14 | Ráfaga y contrapresión | Pico de avisos, 503 de los ejecutores | Dispatcher y cola de trabajos se recuperan | En proceso |
 | E15 | Degradación del LLM | Latencia o salidas inválidas | `llm_output_invalid`, plazos, trabajos reintentados | En proceso |
 | E16 (S) | Consumidor zombie | `SIGSTOP` más allá de la sesión y rebalanceo | Sin transiciones inválidas ni comandos duplicados | Implementado (multiproceso) |
@@ -119,7 +119,7 @@ Todo experimento de resiliencia comprueba, además de su hipótesis, estos cinco
 
 Si I1 o I2 se violan, la hipótesis no se da por cumplida aunque su criterio propio sí lo esté.
 
-**Implementación.** `experiments/invariants.py` los comprueba al terminar, con el sistema parado: I1 con el log (incidencias con `CarrierNoticeReceived` sin `IncidentResolved` ni `IncidentEscalated`), I2 con los efectos repetidos que mide E1, I3 con `executor_issue_refund.refunds` y con el orden de los `StepRequested` y `StepCompleted` del log (un `issue_refund` pedido con una compensación pedida y sin completar), I4 con cada `outbox` (filas sin publicar o cuyo evento no está en `event_log.events`) e I5 reconstruyendo cada vista desde el topic. E11, E16, E17, E18, E21, E22 y E23 los incluyen en `metrics.invariants` (E16, con las instancias del orquestador aún en marcha y ociosas); E21 los comprueba antes de sus observaciones y de su control, que repiten efectos a propósito.
+**Implementación.** `experiments/invariants.py` los comprueba al terminar, con el sistema parado: I1 con el log (incidencias con `CarrierNoticeReceived` sin `IncidentResolved` ni `IncidentEscalated`), I2 con los efectos repetidos que mide E1, I3 con `executor_issue_refund.refunds` y con el orden de los `StepRequested` y `StepCompleted` del log (un `issue_refund` pedido con una compensación pedida y sin completar), I4 con cada `outbox` (filas sin publicar o cuyo evento no está en `event_log.events`) e I5 reconstruyendo cada vista desde el topic. E11, E13, E16, E17, E18, E21, E22 y E23 los incluyen en `metrics.invariants` (E16, con las instancias del orquestador aún en marcha y ociosas); E21 los comprueba antes de sus observaciones y de su control, que repiten efectos a propósito.
 
 ## 5. Experimentos nuevos en detalle
 
@@ -140,6 +140,15 @@ Si I1 o I2 se violan, la hipótesis no se da por cumplida aunque su criterio pro
 - **Criterio.** H12a (vivacidad, obligatoria): todo termina dentro de `SAGA_STEP_TIMEOUT_S` más margen. H12b (aislamiento, exploratoria): p95 de las no afectadas ≤ 2 × el de una ejecución sin fallo; un resultado negativo es un hallazgo que se documenta.
 - **Necesita.** Modos `down`/`hang` de ejecutor y el dispatcher en su propio hilo.
 - **Implementación.** `uv run eda-expexecutor run e12`, en proceso: `executor_faults` del `FaultPlan` deja el sistema destino `down` (`CommandUnavailable` al momento) o `hang` (acepta la petición, se espera `COMMAND_HTTP_TIMEOUT_S` y queda en un backlog), durante un intervalo que empieza con el primer comando o para siempre. Al recuperarse, el ejecutor colgado atiende una vez lo que tenía aceptado y el informe cuenta los resultados obsoletos y vigentes. El dispatcher va en su propio hilo (`RunConfig.dispatcher_thread`), como en el orquestador: un ejecutor colgado lo bloquea a él y no a los relays ni al lado de lectura. Variantes: `baseline`, `down`, `hang`, `hang_recovery` y `compensation` (`inventory` cae con la primera reserva durante 1,5 plazos: la reserva vence, la saga deriva su `release_stock` `-comp` y este se completa cuando `inventory` vuelve). Plazos cortos: `SAGA_STEP_TIMEOUT_S` 6 s y `COMMAND_HTTP_TIMEOUT_S` 1 s.
+
+### E13 Fallo de compensación (H13)
+
+- **Objetivo.** Comprobar que una compensación que falla escala la incidencia con `compensation_failed`, sin reembolso y sin pedir más compensaciones (spec incident-planning, «Fallo de una compensación»).
+- **Escenario.** En proceso, 50 incidencias con `fail_probability` 1,0 en `reissue_shipment` y 0,5 en `release_stock`. Cada reenvío falla, el replanner lo sustituye por `issue_refund` y la saga deriva el `release_stock` `-comp` de la reserva completada, que retiene el reembolso. Con la semilla 42 hay 25 compensaciones y fallan 11; las que se completan son la rama de control y terminan reembolsadas.
+- **«Agota sus reintentos».** La saga no reintenta pasos: el ejecutor publica `StepFailed` cuando agota los suyos (`STEP_MAX_ATTEMPTS` para un error reintentable) y la saga escala cualquier `StepFailed` de una compensación (`rules.on_failure`). El fallo inyectado no es reintentable (`attempts` 1), así que es definitivo al momento.
+- **Mide.** Compensaciones pedidas, completadas y fallidas; incidencias con una compensación fallida y, de ellas, las escaladas con `compensation_failed`, los `issue_refund` pedidos y las compensaciones pedidas tras el escalado; incidencias con la compensación completada y reembolsadas; escaladas por motivo; I1 a I5.
+- **Criterio.** H13: al menos una compensación fallida; toda incidencia con una compensación fallida escala con `compensation_failed`, sin `issue_refund` pedido ni compensaciones tras el escalado; I1 a I5 sin violaciones.
+- **Implementación.** `uv run eda-expexecutor run e13`. Las métricas salen del log (`event_log.events`, en orden de `seq`).
 
 ### E16 Consumidor zombie y rebalanceo (H16)
 
@@ -205,6 +214,6 @@ Si I1 o I2 se violan, la hipótesis no se da por cumplida aunque su criterio pro
 1. En proceso y con poco trabajo nuevo: E21, E23, E17, E18 y E11, que reutilizan el arnés con extensiones pequeñas (reinicio de offsets, replan forzado, parada de proyectores, inyección de veneno, retraso por acción).
 2. E22: requiere hilos con conexiones propias y un punto de caída nuevo en los ejecutores.
 3. E12, en proceso con el dispatcher en su propio hilo. Con modo multiproceso: E16 (y después E9 y E10).
-4. El resto (E8, E13, E14, E15, E19, E20) según el interés del trabajo.
+4. El resto (E8, E14, E15, E19, E20) según el interés del trabajo.
 
 Los ficheros de especificación de los experimentos (S) están en `specs-experimentos-resiliencia.md`, en formato OpenSpec (Purpose, Requirements, Scenarios con GIVEN/WHEN/THEN).
