@@ -232,6 +232,35 @@ El sistema SHALL cumplir la hipótesis H12, que tiene dos partes: H12a (vivacida
 - **WHEN** la saga pide su compensación
 - **THEN** la compensación se invoca con el sufijo `-comp` y se completa cuando el ejecutor vuelve, sin liberar dos veces
 
+### Requirement: E13 Fallo de compensación (H13)
+
+El sistema SHALL cumplir la hipótesis H13: cuando una compensación termina en `StepFailed`, la saga escala la incidencia con `compensation_failed`, no emite `issue_refund` y no pide más compensaciones, y se mantienen I1 a I5 (spec incident-planning, «Fallo de una compensación» y «Escalado de la incidencia»). La saga no reintenta pasos: los reintentos son del ejecutor, que solo publica `StepFailed` cuando los agota (`STEP_MAX_ATTEMPTS` para un error reintentable, uno para uno que no lo es), así que todo `StepFailed` de una compensación es definitivo. El escenario son 50 incidencias en modo en proceso con `fail_probability` 1,0 en `reissue_shipment` (cada reenvío falla, el replanner lo sustituye por `issue_refund` y la saga deriva el `release_stock` `-comp` de la reserva completada, que retiene el reembolso) y 0,5 en `release_stock` (el fallo inyectado no es reintentable, `attempts` 1). Las compensaciones que se completan son la rama de control: su reembolso retenido se emite. El informe MUST dar: compensaciones pedidas, completadas y fallidas; incidencias con una compensación fallida y, de ellas, las escaladas con `compensation_failed`, los `issue_refund` pedidos y las compensaciones pedidas después del escalado; incidencias con la compensación completada y reembolsadas; escaladas por motivo; e I1 a I5. El experimento MUST provocar al menos una compensación fallida; si no, no cuenta como cumplido.
+
+#### Scenario: La liberación del stock falla
+
+- **GIVEN** un `reserve_stock` completado cuyo `reissue_shipment` falla y un plan revisado con `issue_refund`
+- **WHEN** su `release_stock` `-comp` termina en `StepFailed`
+- **THEN** la saga publica `IncidentEscalated` con el motivo `compensation_failed`
+- **AND** no se pide ningún `issue_refund` en esa incidencia
+
+#### Scenario: Sin compensaciones tras el escalado
+
+- **GIVEN** una incidencia escalada con `compensation_failed`
+- **WHEN** la saga trata el escalado y los resultados que llegan después
+- **THEN** no pide ninguna compensación más en esa incidencia
+
+#### Scenario: La compensación se completa
+
+- **GIVEN** un `release_stock` `-comp` que termina en `StepCompleted`
+- **WHEN** la saga lo trata
+- **THEN** pide el `issue_refund` retenido y la incidencia termina en `IncidentResolved` con `outcome` `refunded`
+
+#### Scenario: Cumplimiento de H13
+
+- **GIVEN** la ejecución completa de E13
+- **WHEN** se evalúa la hipótesis
+- **THEN** H13 se cumple si hubo al menos una compensación fallida, toda incidencia con una compensación fallida terminó escalada con `compensation_failed`, sin `issue_refund` pedido y sin compensaciones pedidas tras el escalado, y I1 a I5 no tienen violaciones
+
 ### Requirement: E16 Consumidor zombie y rebalanceo (H16)
 
 El sistema SHALL cumplir la hipótesis H16: cuando una instancia del orquestador se congela más que el timeout de sesión, otra toma sus particiones y la primera reanuda, no se produce ninguna transición de saga inválida ni ningún comando duplicado con `command_id` distinto para el mismo paso, y se mantienen I1 a I5. El experimento SHALL ejecutarse en modo multiproceso con dos instancias del orquestador en el mismo grupo, 50 incidencias en curso y un `SIGSTOP` a la instancia que posee más particiones durante un tiempo mayor que `session.timeout.ms`; después `SIGCONT`. El experimento sondea el supuesto de «único dueño sin concurrencia optimista» del diseño: el informe MUST dar, por incidencia, si dos instancias procesaron mensajes de ella solapados en el tiempo y qué transacciones esperaron al bloqueo de la incidencia.
