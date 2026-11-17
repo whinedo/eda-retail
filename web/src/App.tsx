@@ -4,6 +4,7 @@ import { CommandPanel } from "./components/CommandPanel";
 import { EventsPanel } from "./components/EventsPanel";
 import { Header } from "./components/Header";
 import { NodeDetailPanel } from "./components/NodeDetail";
+import { OperationsView } from "./components/OperationsView";
 import { OrderAnalytics } from "./components/OrderAnalytics";
 import { PanelResizer } from "./components/PanelResizer";
 import { ParkedNoticesBanner } from "./components/ParkedNoticesBanner";
@@ -13,25 +14,32 @@ import { type OpenStream, openEventSource } from "./useCommandRun";
 import { useConfig } from "./useConfig";
 import { useHealth } from "./useHealth";
 import { useLiveEvents } from "./useLiveEvents";
+import { useOperations } from "./useOperations";
 import { useOrderAnalytics } from "./useOrderAnalytics";
 import { usePanelHeight } from "./usePanelHeight";
 import { useParkedNotices } from "./useParkedNotices";
 
-const ANALYTICS_HASH = "#/analytics";
+export type Route = "main" | "orders" | "operations";
+const HASHES: Record<Route, string> = { main: "#/", orders: "#/analytics", operations: "#/analytics/operations" };
 
-// Vista abierta según el hash de la URL: la principal (auditoría) o la de analítica de pedidos.
-function useAnalyticsRoute(): [boolean, (open: boolean) => void] {
-  const [open, setOpen] = useState(() => window.location.hash === ANALYTICS_HASH);
+function routeOf(hash: string): Route {
+  if (hash === HASHES.operations) return "operations";
+  return hash === HASHES.orders ? "orders" : "main";
+}
+
+// Vista abierta según el hash de la URL: la principal (auditoría), la de analítica de pedidos o la de operaciones.
+function useRoute(): [Route, (next: Route) => void] {
+  const [route, setRoute] = useState(() => routeOf(window.location.hash));
   useEffect(() => {
-    const sync = () => setOpen(window.location.hash === ANALYTICS_HASH);
+    const sync = () => setRoute(routeOf(window.location.hash));
     window.addEventListener("hashchange", sync);
     return () => window.removeEventListener("hashchange", sync);
   }, []);
-  const navigate = useCallback((next: boolean) => {
-    window.location.hash = next ? ANALYTICS_HASH : "#/";
-    setOpen(next);
+  const navigate = useCallback((next: Route) => {
+    window.location.hash = HASHES[next];
+    setRoute(next);
   }, []);
-  return [open, navigate];
+  return [route, navigate];
 }
 
 // `openStream` debe ser estable entre renders: cambiarlo reabre el stream de eventos.
@@ -43,8 +51,10 @@ export default function App({ client, openStream = openEventSource }: { client?:
   const [selectedNode, setSelectedNode] = useState<string | null>(null);
   const [commandRunning, setCommandRunning] = useState(false);
   const panel = usePanelHeight();
-  const [analyticsOpen, setAnalyticsOpen] = useAnalyticsRoute();
-  const analytics = useOrderAnalytics(api, analyticsOpen);
+  const [route, navigate] = useRoute();
+  const analyticsOpen = route !== "main";
+  const analytics = useOrderAnalytics(api, route === "orders");
+  const operations = useOperations(api, route === "operations");
   const parkedNotices = useParkedNotices(api);
   const [resetKey, setResetKey] = useState(0);
   const { reset: resetEvents } = events;
@@ -70,11 +80,32 @@ export default function App({ client, openStream = openEventSource }: { client?:
         onReset={resetView}
         resetDisabled={commandRunning}
         analyticsOpen={analyticsOpen}
-        onAnalytics={() => setAnalyticsOpen(true)}
+        onAnalytics={() => navigate("orders")}
       />
       {/* Visible en las dos vistas mientras el intérprete tenga avisos aparcados. */}
       <ParkedNoticesBanner notices={parkedNotices} />
-      {analyticsOpen && (
+      {route === "operations" && (
+        <OperationsView
+          data={operations.data}
+          error={operations.error}
+          state={operations.state}
+          reason={operations.reason}
+          incidentId={operations.incidentId}
+          paused={operations.paused}
+          onStateChange={operations.setState}
+          onReasonChange={operations.setReason}
+          onIncidentChange={operations.setIncidentId}
+          onTogglePause={operations.paused ? operations.resume : operations.pause}
+          onLoadMore={operations.loadMore}
+          onViewEvents={(incidentId) => {
+            events.setIncidentId(incidentId);
+            navigate("main");
+          }}
+          onOrders={() => navigate("orders")}
+          onBack={() => navigate("main")}
+        />
+      )}
+      {route === "orders" && (
         <OrderAnalytics
           data={analytics.data}
           error={analytics.error}
@@ -84,7 +115,8 @@ export default function App({ client, openStream = openEventSource }: { client?:
           onStatusChange={analytics.setStatus}
           onIncidentChange={analytics.setIncidentId}
           onTogglePause={analytics.paused ? analytics.resume : analytics.pause}
-          onBack={() => setAnalyticsOpen(false)}
+          onOperations={() => navigate("operations")}
+          onBack={() => navigate("main")}
         />
       )}
       {/* La vista principal sigue montada al abrir la analítica: conserva filtros, altura y la salida del comando. */}
