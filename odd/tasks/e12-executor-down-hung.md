@@ -23,7 +23,8 @@ Design (assumptions):
 | ID | Specs | Route | Status | Commit |
 | --- | --- | --- | --- | --- |
 | T1 | S2 | inline | done | 6bcc9e5 |
-| T2 | S1, S3 | inline | done | next commit |
+| T2 | S1, S3 | inline | done | ed85a31, fix in next commit |
+| T3 | Risk items 3, 4 | delegated verifier over the whole document | done | 1 blocker fixed (RED/GREEN), rest PASS |
 
 ## Log
 
@@ -31,3 +32,4 @@ Design (assumptions):
 - L2 (2026-11-17) Map: dispatcher `dispatch_once` takes one due command (`LIMIT 1`), starts the deadline at first send and retries `CommandUnavailable` with backoff (orchestrator/dispatcher.py); `expire_once` fails a timed-out step with `timeout` and marks its pending command `expired`; compensation only for completed `reserve_stock` (orchestrator/rules.py); production runs dispatcher and expiry in their own threads (orchestrator/cli.py); `StockReleased` carries `reservation_id`.
 - L3 (2026-11-17) T1 6bcc9e5: `ExecutorFault`, `ExecutorOutage`, `InProcessCommands` down/hang/backlog/`flush_recovered`, `RunConfig.dispatcher_thread` and `command_timeout_seconds`. RED observed (5 failed), GREEN.
 - L4 (2026-11-17) T2: experiment `e12_executor_down_hung.py`, CLI, expexecutor (checks H12a only; H12b exploratory), guide, spec E12 now says in-process (user decision). Compensation variant reworked after reading `Saga.fail`: the saga already compensates a timed-out `reserve_stock`. `awaiting_recovery` added after noticing the run could end before the recovery. Unit tests of the experiment written after the code (no observed RED). Unit 722 passed, ruff ok. Integration (seed 7, 6 incidents) CI only. Open point for the user: seed 42 gives 18/50 incidents with `file_claim`, the spec says "aproximadamente la mitad".
+- L5 (2026-11-17) T3 independent verifier: regression and concurrency PASS. BLOCKER: the integration test expected the final file_claim steps to be `failed:timeout`, but the revision turns a dropped `failed` step into `cancelled` and keeps its error (`rules.revise`, `_WITHOUT_EFFECT`). Fix: `summarize_claim_steps` counts `timed_out` (error `timeout`, status failed or cancelled) and the test also asserts every file_claim `ExecuteStep` is `expired`; RED (collection error, missing function) then GREEN; unit 723 passed. Advisories taken: E21 `redeliver` passes the interruptible sleep too. Advisories kept: a reserve accepted right at its deadline can derive a second `-comp` (pre-existing A4 path); CI estimate `slow-b` ~12–12.5 min. Also fixed before push: `git add docs` had committed the user's untracked docs/specs-experimentos-resiliencia.md; removed from the commit with `git rm --cached` and amend (file untouched).

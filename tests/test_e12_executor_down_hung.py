@@ -12,6 +12,7 @@ from eda_retail.experiments.e12_executor_down_hung import (
     compensation_ok,
     evaluate,
     p95,
+    summarize_claim_steps,
     summarize_commands,
     summarize_compensations,
     summarize_incidents,
@@ -138,3 +139,13 @@ def test_expexecutor_checks_h12a_only():
     assert checks and all(c.ok for c in checks)
     results["hang"]["h12a"] = False
     assert not all(c.ok for c in CATALOG["e12"].checks(report))
+
+
+def test_steps_of_a_down_executor_time_out():
+    """Ejecutor caído para siempre: cada paso de `file_claim` pasa a `failed` con `timeout`; la revisión que pide la
+    saga lo deja después `cancelled`, con su error, así que cuenta como vencido por plazo en los dos estados"""
+    m = summarize_claim_steps([{"status": "failed", "error": "timeout"}, {"status": "cancelled", "error": "timeout"}])
+    assert (m["steps"], m["timed_out"]) == (2, 2)
+    assert m["status"] == {"failed:timeout": 1, "cancelled:timeout": 1}
+    m = summarize_claim_steps([{"status": "completed", "error": None}, {"status": "cancelled", "error": None}])
+    assert (m["steps"], m["timed_out"]) == (2, 0)

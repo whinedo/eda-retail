@@ -96,6 +96,16 @@ def summarize_commands(rows: Iterable[Mapping[str, Any]], *, hang_wait_s: float)
     }
 
 
+def summarize_claim_steps(rows: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
+    """Los pasos de `file_claim` por estado y error. Un paso cuyo plazo vence pasa a `failed` con `timeout`; la
+    revisión que pide la saga lo deja después `cancelled` con su error (`rules.revise`), así que `timed_out` cuenta
+    los dos."""
+    rows = list(rows)
+    return {"steps": len(rows),
+            "timed_out": sum(1 for r in rows if r["error"] == "timeout" and r["status"] in ("failed", "cancelled")),
+            "status": dict(Counter(f"{r['status']}:{r['error'] or ''}" for r in rows))}
+
+
 def summarize_compensations(steps: Iterable[Mapping[str, Any]], releases: Iterable[Mapping[str, Any]],
                             release_attempts: Iterable[int]) -> dict[str, Any]:
     """Las compensaciones: cuántas, con sufijo `-comp`, en qué estado, los intentos de su comando (más de uno: esperó
@@ -174,7 +184,7 @@ def _measure(h: Harness) -> dict[str, Any]:
                                                 "  AND payload->>'action' = 'release_stock'")]
     return {"incidents": summarize_incidents(latency, status, uses_file_claim(h.data)),
             "file_claim_commands": summarize_commands(commands, hang_wait_s=h.commands.hang_wait_s[TARGET]),
-            "file_claim_steps": dict(Counter(f"{r['status']}:{r['error'] or ''}" for r in claim_steps)),
+            "file_claim_steps": summarize_claim_steps(claim_steps),
             "recovered_results": dict(h.recovered),
             "compensation": summarize_compensations(steps, releases, attempts)}
 

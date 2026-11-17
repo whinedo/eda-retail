@@ -29,10 +29,12 @@ def _show(metrics: dict) -> str:
 
 def test_executor_down_forever(report):
     """Ejecutor caído para siempre: al vencer el plazo, cada `ExecuteStep` de `file_claim` pasa a `failed` con
-    `timeout` y la saga revisa el plan o escala; las incidencias sin `file_claim` terminan como sin fallo"""
+    `timeout` (y la revisión lo deja `cancelled` con su error) y la saga revisa el plan o escala; las incidencias sin
+    `file_claim` terminan como sin fallo"""
     m, base = _variant(report, "down"), _variant(report, "baseline")
-    assert m["file_claim_commands"]["commands"] > 0, _show(m)
-    assert set(m["file_claim_steps"]) == {"failed:timeout"}, _show(m)
+    steps = m["file_claim_steps"]
+    assert steps["steps"] > 0 and steps["timed_out"] == steps["steps"], _show(m)
+    assert m["file_claim_commands"]["status"] == {"expired": m["file_claim_commands"]["commands"]}, _show(m)
     assert m["open"] == 0, _show(m)
     assert m["incidents"]["unaffected"]["status"] == base["incidents"]["unaffected"]["status"], _show(m)
     assert set(base["incidents"]["unaffected"]["status"].values()) == {"resolved"}, _show(base)
