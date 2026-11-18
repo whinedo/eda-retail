@@ -95,7 +95,7 @@ Las hipótesis nuevas se llaman como su experimento (H11, H12...). Los marcados 
 | E12 (S) | Ejecutor caído y colgado | `file_claim` en `down` y en `hang` | Plazos, aislamiento, cabeza de línea del dispatcher | Implementado (en proceso) |
 | E13 (S) | Fallo de compensación | `release_stock` falla | Escalado `compensation_failed`, sin reembolso | Implementado (en proceso) |
 | E14 | Ráfaga y contrapresión | Pico de avisos, 503 de los ejecutores | Dispatcher y cola de trabajos se recuperan | Implementado (en proceso) |
-| E15 | Degradación del LLM | Latencia o salidas inválidas | `llm_output_invalid`, plazos, trabajos reintentados | En proceso |
+| E15 | Degradación del LLM | Latencia o salidas inválidas | `llm_output_invalid`, plazos, trabajos reintentados | Implementado (en proceso) |
 | E16 (S) | Consumidor zombie | `SIGSTOP` más allá de la sesión y rebalanceo | Sin transiciones inválidas ni comandos duplicados | Implementado (multiproceso) |
 | E17 (S) | Proyección atrasada | Proyectores parados | Avisos aparcados, reanudación y escalado | Implementado |
 | E18 (S) | Mensajes veneno | Mensajes inválidos en mitad de la partición | DLQ sin bloquear la partición | Implementado |
@@ -119,7 +119,7 @@ Todo experimento de resiliencia comprueba, además de su hipótesis, estos cinco
 
 Si I1 o I2 se violan, la hipótesis no se da por cumplida aunque su criterio propio sí lo esté.
 
-**Implementación.** `experiments/invariants.py` los comprueba al terminar, con el sistema parado: I1 con el log (incidencias con `CarrierNoticeReceived` sin `IncidentResolved` ni `IncidentEscalated`), I2 con los efectos repetidos que mide E1, I3 con `executor_issue_refund.refunds` y con el orden de los `StepRequested` y `StepCompleted` del log (un `issue_refund` pedido con una compensación pedida y sin completar), I4 con cada `outbox` (filas sin publicar o cuyo evento no está en `event_log.events`) e I5 reconstruyendo cada vista desde el topic. E11, E13, E14 (por variante), E16, E17, E18, E21, E22 y E23 los incluyen en `metrics.invariants` (E16, con las instancias del orquestador aún en marcha y ociosas); E21 los comprueba antes de sus observaciones y de su control, que repiten efectos a propósito.
+**Implementación.** `experiments/invariants.py` los comprueba al terminar, con el sistema parado: I1 con el log (incidencias con `CarrierNoticeReceived` sin `IncidentResolved` ni `IncidentEscalated`), I2 con los efectos repetidos que mide E1, I3 con `executor_issue_refund.refunds` y con el orden de los `StepRequested` y `StepCompleted` del log (un `issue_refund` pedido con una compensación pedida y sin completar), I4 con cada `outbox` (filas sin publicar o cuyo evento no está en `event_log.events`) e I5 reconstruyendo cada vista desde el topic. E11, E13, E14 y E15 (por variante), E16, E17, E18, E21, E22 y E23 los incluyen en `metrics.invariants` (E16, con las instancias del orquestador aún en marcha y ociosas); E21 los comprueba antes de sus observaciones y de su control, que repiten efectos a propósito.
 
 ## 5. Experimentos nuevos en detalle
 
@@ -157,6 +157,14 @@ Si I1 o I2 se violan, la hipótesis no se da por cumplida aunque su criterio pro
 - **Mide.** Por variante: cerradas, resueltas y escaladas por motivo; 503 por ejecutor; intentos por comando (máximo y reintentados); máximo de trabajos abiertos por componente y de comandos pendientes; tiempo hasta vaciar las colas; colas al terminar; pasos con `ExecuteStep` de `command_id` distinto; latencia (media, mediana y p95); I1 a I5. El informe da también el cociente de la p95 frente a `baseline`.
 - **Criterio.** H14, sobre `backpressure`: al menos un 503, ningún ejecutor por encima de su capacidad, colas vacías al terminar, sin comandos duplicados, todas las incidencias cerradas e I1 a I5 sin violaciones. La latencia es un dato, no parte de H14.
 - **Implementación.** `uv run eda-expexecutor run e14`. La capacidad se cuenta en trabajos abiertos (`pending` o `running`) en el `command_jobs` del ejecutor: en proceso el dispatcher entrega un comando cada vez y un `ExecuteStep` solo se acepta, así que contar peticiones simultáneas no limitaría nada. `InProcessCommands` responde 503 (`CommandUnavailable`) a un `ExecuteStep` nuevo con el ejecutor lleno y deja pasar una reentrega cuyo trabajo ya existe; el dispatcher lo reprograma con backoff y el mismo `command_id`, y el plazo del paso sigue contando desde el primer envío. `QueueSampler` mide las colas en cada turno, como mucho cada 0,05 s.
+
+### E15 Degradación del LLM (H15)
+
+- **Objetivo.** Comprobar que el LLM propone y el código dispone también cuando el LLM falla: ninguna salida inválida se convierte en plan, los plazos cierran las incidencias y los trabajos se reintentan (spec llm-boundaries).
+- **Escenario.** En proceso, 50 incidencias con un 30 % de fallos en `reissue_shipment` (para que trabaje el replanner) y cuatro variantes del oráculo del planner y del replanner (`synthetic.llm_faults.DegradedLlm`): `baseline`; `invalid`, un 60 % de respuestas que no son JSON o sin campos; `slow`, 0,5 s por llamada con un plazo de `CreatePlan` y `RevisePlan` de 4 s; `error`, un 30 % de llamadas que lanzan una excepción.
+- **Mide.** Por variante: cerradas, resueltas y escaladas por motivo; degradaciones inyectadas; llamadas al LLM registradas y las inválidas; trabajos del planner y del replanner reintentados, su máximo de intentos y los `failed`; planes cuya última llamada no pasó la validación; planes publicados tras el escalado; pasos pedidos tras el escalado; latencia; I1 a I5.
+- **Criterio.** H15: en todas las variantes, ninguna incidencia abierta, ningún plan de una llamada inválida, ningún paso (salvo compensaciones `-comp`) pedido tras el escalado e I1 a I5 sin violaciones; además, cada variante provoca su efecto (`invalid`, una llamada inválida; `slow`, un `plan_timeout`; `error`, un trabajo reintentado).
+- **Implementación.** `uv run eda-expexecutor run e15`. La degradación es determinista dada la semilla, el agente, la incidencia y el número de llamada; el intérprete y el redactor de avisos no se degradan. Un plan «viene de una llamada inválida» si el último `LlmCallRecorded` con su misma causa (el `command_id`) tiene `validation_passed` falso. Las métricas salen del log en orden de `seq` y de los `command_jobs`.
 
 ### E16 Consumidor zombie y rebalanceo (H16)
 

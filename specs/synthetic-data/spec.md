@@ -97,6 +97,22 @@ La inyección SHALL permitir dar a un ejecutor una capacidad (`executor_capacity
 - **WHEN** se entrega otra vez con su `command_id`
 - **THEN** se entrega al command handler, que lo trata como repetido
 
+### Requirement: Degradación del LLM
+
+La inyección SHALL permitir degradar el LLM de los agentes elegidos (por defecto, `planner` y `replanner`) con tres modos: `invalid` (la respuesta no es JSON o le faltan campos, con una probabilidad), `slow` (cada llamada tarda unos segundos más) y `error` (la llamada lanza una excepción, con una probabilidad). La elección es determinista dada la semilla, el agente, la incidencia y el número de llamada de ese agente en esa incidencia. Los demás agentes reciben la respuesta del cliente sin cambios.
+
+#### Scenario: Elección reproducible
+
+- **GIVEN** dos ejecuciones con la misma semilla y la misma degradación
+- **WHEN** el planner llama al LLM por n-ésima vez para la misma incidencia
+- **THEN** las dos reciben la misma respuesta degradada o la misma respuesta sin degradar
+
+#### Scenario: Agente no degradado
+
+- **GIVEN** la degradación limitada a `planner` y `replanner`
+- **WHEN** el intérprete llama al LLM
+- **THEN** recibe la respuesta del cliente sin cambios
+
 ### Requirement: Congelación de un proceso
 
 En modo multiproceso, la inyección SHALL permitir congelar un proceso con `SIGSTOP` durante un tiempo y reanudarlo con `SIGCONT`, de modo que un consumidor de Kafka pierda su sesión (`session.timeout.ms` o `max.poll.interval.ms`) y vuelva a vivir después de que otra instancia haya asumido sus particiones.

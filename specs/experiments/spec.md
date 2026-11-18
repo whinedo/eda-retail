@@ -292,6 +292,37 @@ El sistema SHALL cumplir la hipótesis H14: ante una ráfaga de avisos con ejecu
 - **THEN** H14 se cumple si en `backpressure` hubo al menos un 503, ningún ejecutor superó su capacidad, las colas terminaron vacías, ningún paso tiene comandos duplicados, todas las incidencias se cerraron y I1 a I5 no tienen violaciones
 - **AND** en `baseline` I1 e I2 tampoco tienen violaciones (si se violan, la hipótesis no se da por cumplida)
 
+### Requirement: E15 Degradación del LLM (H15)
+
+El sistema SHALL cumplir la hipótesis H15: cuando el LLM del planner y del replanner responde con salidas inválidas, tarda o falla, ninguna salida inválida se convierte en un evento de plan, toda incidencia se cierra (resuelta o escalada con su motivo), no se pide ningún paso del plan tras el escalado de la incidencia (las compensaciones `-comp` que deriva el escalado sí) y se mantienen I1 a I5 (spec llm-boundaries). El experimento SHALL ejecutarse en modo en proceso con 50 incidencias, un 30 % de fallos en `reissue_shipment` para que también trabaje el replanner, y cuatro variantes del cliente oráculo (spec synthetic-data, «Degradación del LLM»): `baseline`, sin degradación; `invalid`, un 60 % de las respuestas no son JSON o les faltan campos; `slow`, 0,5 s por llamada con un plazo de `CreatePlan` y `RevisePlan` de 4 s; y `error`, un 30 % de las llamadas lanzan una excepción (como un timeout de Ollama) y el trabajo se reintenta con backoff hasta `JOB_MAX_ATTEMPTS`. El informe MUST dar, por variante: incidencias cerradas, resueltas y escaladas por motivo; degradaciones inyectadas; llamadas al LLM registradas y las que no pasaron la validación; trabajos del planner y del replanner reintentados, su máximo de intentos y los `failed`; eventos de plan cuya última llamada al LLM no pasó la validación; eventos de plan publicados después del escalado de su incidencia; pasos pedidos después del escalado; latencia (media, mediana y p95); e I1 a I5. Cada variante con degradación MUST provocar su efecto (`invalid`: al menos una llamada que no pasa la validación; `slow`: al menos un escalado por `plan_timeout`; `error`: al menos un trabajo reintentado); si no, no cuenta como cumplida.
+
+#### Scenario: Salidas inválidas del LLM
+
+- **GIVEN** la variante `invalid`
+- **WHEN** el planner agota `LLM_MAX_GENERATIONS` sin una salida válida
+- **THEN** escala la incidencia con `llm_output_invalid` sin publicar ningún `PlanCreated`
+- **AND** todo `PlanCreated` o `PlanRevised` publicado viene de una llamada que pasó la validación
+
+#### Scenario: LLM lento y plazo del plan
+
+- **GIVEN** la variante `slow`, con un plazo de plan menor que la cola de trabajos del planner
+- **WHEN** vence el plazo de un `CreatePlan`
+- **THEN** la saga escala la incidencia con `plan_timeout`
+- **AND** si el plan llega después, no se pide ninguno de sus pasos
+
+#### Scenario: Errores del LLM y trabajos reintentados
+
+- **GIVEN** la variante `error`
+- **WHEN** la llamada al LLM lanza una excepción
+- **THEN** el trabajo vuelve a `pending` con backoff y se reintenta con el mismo `command_id`
+- **AND** el informe cuenta los trabajos reintentados
+
+#### Scenario: Cumplimiento de H15
+
+- **GIVEN** la ejecución completa de E15
+- **WHEN** se evalúa la hipótesis
+- **THEN** H15 se cumple si en todas las variantes se cerraron todas las incidencias, ningún evento de plan viene de una llamada inválida, no se pidió ningún paso tras el escalado, I1 a I5 no tienen violaciones y cada variante con degradación provocó su efecto
+
 ### Requirement: E16 Consumidor zombie y rebalanceo (H16)
 
 El sistema SHALL cumplir la hipótesis H16: cuando una instancia del orquestador se congela más que el timeout de sesión, otra toma sus particiones y la primera reanuda, no se produce ninguna transición de saga inválida ni ningún comando duplicado con `command_id` distinto para el mismo paso, y se mantienen I1 a I5. El experimento SHALL ejecutarse en modo multiproceso con dos instancias del orquestador en el mismo grupo, 50 incidencias en curso y un `SIGSTOP` a la instancia que posee más particiones durante un tiempo mayor que `session.timeout.ms`; después `SIGCONT`. El experimento sondea el supuesto de «único dueño sin concurrencia optimista» del diseño: el informe MUST dar, por incidencia, si dos instancias procesaron mensajes de ella solapados en el tiempo y qué transacciones esperaron al bloqueo de la incidencia.
