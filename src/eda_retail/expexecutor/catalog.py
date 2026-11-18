@@ -127,6 +127,23 @@ def _e9(report: dict[str, Any]) -> list[Check]:
     return checks
 
 
+E10_VARIANTS = ("baseline", "stopped", "paused")
+
+
+def _e10(report: dict[str, Any]) -> list[Check]:
+    """H10 y, por variante, su cumplimiento, ningún proceso caído, ningún evento perdido ni incidencia abierta, e I1 e
+    I2."""
+    checks = [_check(report, "hypothesis.H10", "true", lambda v: v is True)]
+    for variant in E10_VARIANTS:
+        prefix = f"metrics.variants.{variant}"
+        checks += [_check(report, f"{prefix}.h10", "true", lambda v: v is True),
+                   _check(report, f"{prefix}.process_deaths", "{} (ninguno)", lambda v: v == {}),
+                   _check(report, f"{prefix}.missing_in_log", "0", lambda v: v == 0),
+                   _check(report, f"{prefix}.open", "0", lambda v: v == 0),
+                   *_invariants(report, prefix)]
+    return checks
+
+
 def _e11(report: dict[str, Any]) -> list[Check]:
     inv = lookup(report, "metrics.invariants")
     broken = (MISSING if not isinstance(inv, dict)
@@ -355,6 +372,14 @@ CATALOG: dict[str, Entry] = {
         "H9: en las tres variantes no queda ninguna fila de outbox pendiente, cada evento del outbox está en "
         "`event_log`, se cierran todas las incidencias (también las de los avisos del corte), I1 a I5 sin violaciones "
         "y cada variante con corte provoca algún error de entrega del relay y alguna fila pendiente.", _e9),
+    "e10": Entry(
+        "E10", "Mide la caída de PostgreSQL con todos los componentes en procesos propios: 50 incidencias; con la mitad "
+        "planificadas, la base se corta 30 s (parada con `docker stop` o congelada con `docker pause`) mientras llegan "
+        "20 avisos por REST, que fallan y se reintentan hasta que se aceptan, y después vuelve.",
+        "H10: en las tres variantes ningún proceso muere ni queda colgado, no queda ninguna fila de outbox pendiente, "
+        "cada evento del outbox está en `event_log`, ningún efecto se repite, se cierran todas las incidencias "
+        "(también las de los avisos del corte), I1 a I5 sin violaciones y cada variante con corte provoca su efecto.",
+        _e10),
     "e11": Entry(
         "E11", "Mide los resultados que llegan tarde: un 50 % de fallos en `reserve_stock`, resultados retrasados "
         "en `reserve_stock`, `reissue_shipment` y `file_claim` y un plazo de `ExecuteStep` corto, para que haya "

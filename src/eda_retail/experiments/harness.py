@@ -118,13 +118,13 @@ from eda_retail.infra.backoff import Backoff
 from eda_retail.infra.command_client import CommandReply, CommandUnavailable, invoke
 from eda_retail.infra.commands import Accepted, CommandEnvelope, CommandSpec, execute_command
 from eda_retail.infra.consumer import EventConsumer
-from eda_retail.infra.db import connect
+from eda_retail.infra.db import CONNECTION_ERRORS, connect
 from eda_retail.infra.effect_keys import EffectInProgress
 from eda_retail.infra.jobs import JobWorker, run_job_once
 from eda_retail.infra.kafka import make_consumer, make_producer
 from eda_retail.infra.migrations import upgrade
 from eda_retail.infra.outbox import ComponentRelay, RelayDeliveryError
-from eda_retail.infra.positions import caught_up, high_watermark
+from eda_retail.infra.positions import caught_up, high_watermark, pending_messages
 from eda_retail.infra.schemas import qualified
 from eda_retail.intake import handler as intake
 from eda_retail.interpreter import consumer as interpreter
@@ -181,6 +181,18 @@ PUBLISHERS = ("intake", "interpreter", "planner", "replanner", "orchestrator", "
               *(f"executor_{a}" for a in EXECUTOR_ACTIONS))
 READ_SIDE = ("event_log", "views")  # sin outbox; sus dead letters, migración 0024
 PROCESS_POLL_S = 0.2  # pausa de un turno sin avance con todos los componentes en procesos propios
+RECONNECT_TIMEOUT_S = 60.0  # espera máxima a que la base vuelva para la conexión del harness (E10)
+RECONNECT_RETRY_S = 1.0
+
+
+def positioned_lags(rows: Iterable[Any], highs: dict[int, int], consumers: Iterable[str]) -> dict[str, int]:
+    """Lag de cada consumidor posicionado (`event_log`, cada proyector) desde sus filas de `*.offsets` (consumidor,
+    partición y último offset aplicado) frente a las marcas de agua altas; sin fila, la partición está sin leer."""
+    consumed: dict[str, dict[int, int]] = {c: {} for c in consumers}
+    for r in rows:
+        if r["consumer"] in consumed:
+            consumed[r["consumer"]][r["kafka_partition"]] = r["kafka_offset"]
+    return {c: pending_messages(offsets, highs) for c, offsets in consumed.items()}
 
 @contextlib.contextmanager
 def isolated_database(base: Settings, name: str) -> Iterator[str]:
@@ -857,12 +869,7 @@ class Harness:
     def _catch_up_processes(self, timeout: float) -> bool:
         """El proceso `event-log` llega a las marcas de agua altas de ahora; False si no llega en `timeout`."""
         topic = self.settings.events_topic
-        probe = make_consumer(self.settings.kafka_bootstrap_servers, group_id=f"{topic}.probe")
-        try:
-            parts = probe.list_topics(topic, timeout=10).topics[topic].partitions
-            highs = {p: high_watermark(probe, TopicPartition(topic, p)) for p in parts}
-        finally:
-            probe.close()
+        highs = self._process_highs()
         end = time.monotonic() + timeout
         while True:
             rows = self.conn.execute("SELECT kafka_partition, kafka_offset FROM event_log.offsets"
@@ -875,6 +882,52 @@ class Harness:
                 log.warning("event_log no llegó a %s en %s s", highs, timeout)
                 return False
             time.sleep(PROCESS_POLL_S)
+
+    def _process_highs(self) -> dict[int, int]:
+        """Marcas de agua altas del topic de la ejecución, con un consumidor de sondeo propio (ningún otro hilo lo usa)."""
+        topic = self.settings.events_topic
+        probe = make_consumer(self.settings.kafka_bootstrap_servers, group_id=f"{topic}.probe")
+        try:
+            parts = probe.list_topics(topic, timeout=10).topics[topic].partitions
+            return {p: high_watermark(probe, TopicPartition(topic, p)) for p in parts}
+        finally:
+            probe.close()
+
+    def _process_lags(self) -> dict[str, int]:
+        """`lags` con los componentes en procesos: los grupos de Kafka de los procesos (su offset confirmado) y la
+        posición guardada de `event_log` y de cada proyector en `event_log.offsets` y `views.offsets`."""
+        highs = self._process_highs()
+        topic = self.settings.events_topic
+        lags = {c.group: group_lag(self._admin, c.group, topic, highs) for c in COMPONENTS if c.group}
+        rows = self.conn.execute(
+            "SELECT consumer, kafka_partition, kafka_offset FROM event_log.offsets WHERE kafka_topic = %s"
+            " UNION ALL SELECT consumer, kafka_partition, kafka_offset FROM views.offsets WHERE kafka_topic = %s",
+            (topic, topic)).fetchall()
+        self.conn.commit()
+        return lags | positioned_lags(rows, highs, [event_log.CONSUMER, *(p.name for p in build_all())])
+
+    def reconnect(self, timeout: float = RECONNECT_TIMEOUT_S) -> bool:
+        """La conexión del harness tras una caída de PostgreSQL (E10): si `SELECT 1` falla, la cierra y abre otra,
+        reintentándolo cada `RECONNECT_RETRY_S` mientras la base no responda y hasta `timeout` (después, el error de
+        conexión sube). True si tuvo que abrir otra."""
+        try:
+            self.conn.execute("SELECT 1").fetchone()
+            self.conn.commit()
+            return False
+        except CONNECTION_ERRORS:
+            with contextlib.suppress(Exception):
+                self.conn.close()
+        end = time.monotonic() + timeout
+        while True:
+            try:
+                self.conn = connect(self.settings.database_url)
+                self.conn.execute("SELECT 1").fetchone()
+                self.conn.commit()
+                return True
+            except CONNECTION_ERRORS:
+                if time.monotonic() >= end:
+                    raise
+                time.sleep(RECONNECT_RETRY_S)
 
     def _open_process_jobs(self) -> int:
         """Trabajos pendientes o en curso en el `command_jobs` de cada esquema que lo tenga."""
@@ -1098,12 +1151,12 @@ class Harness:
         self._workers, self._threads = [], []
 
     def _command(self, target: str, command_type: str, correlation_id: str, payload: dict[str, Any], *,
-                 check: bool = True) -> Any:
+                 check: bool = True, command_id: uuid.UUID | None = None) -> Any:
         """Comando de entrada (datos de ejemplo, avisos): directo a su handler, con las entregas del plan
         (`duplicates`, `concurrent_commands`) y sin más fallos inyectados. Con `check`, un rechazo es un error; sin
-        él, devuelve la respuesta."""
-        command = CommandEnvelope(command_id=uuid.uuid4(), command_type=command_type, correlation_id=correlation_id,
-                                  causation_id=None, payload=payload)
+        él, devuelve la respuesta. `command_id`: el de un reintento (E10); por defecto, uno nuevo."""
+        command = CommandEnvelope(command_id=command_id or uuid.uuid4(), command_type=command_type,
+                                  correlation_id=correlation_id, causation_id=None, payload=payload)
         if self.config.component_processes:  # por REST al proceso del destino; un 5xx o sin respuesta, excepción
             response = invoke(self.component_urls[target], command_type, command_id=command.command_id,
                               correlation_id=correlation_id, causation_id=None, payload=payload,
@@ -1145,10 +1198,10 @@ class Harness:
         for n in notices:
             self._send_notice(n)
 
-    def _send_notice(self, n: Any, *, check: bool = True) -> Any:
+    def _send_notice(self, n: Any, *, check: bool = True, command_id: uuid.UUID | None = None) -> Any:
         return self._command("intake", "RegisterCarrierNotice", incident_id_for_notice(n.carrier_notice_id),
                              {"carrier_notice_id": n.carrier_notice_id, "carrier": n.carrier,
-                              "raw_text": n.raw_text(self.config.fmt)}, check=check)
+                              "raw_text": n.raw_text(self.config.fmt)}, check=check, command_id=command_id)
 
     def resend_notice(self, index: int) -> Any:
         """El transportista reenvía el aviso `index`: devuelve la respuesta de intake (un rechazo no es error)."""
@@ -1337,8 +1390,8 @@ class Harness:
     def catch_up_log(self, timeout: float = LOG_CATCH_UP_S) -> bool:
         """`event_log` lee hasta las marcas de agua altas de ahora (I4 busca ahí cada fila publicada). False si no
         llega en `timeout`."""
-        if self.config.component_processes:
-            return self._catch_up_processes(timeout)
+        if self.config.component_processes:  # con los procesos ya parados, `event-log` no avanza: una sola lectura
+            return self._catch_up_processes(0.0 if self.exit_codes else timeout)
         try:
             self._readers[0].catch_up(timeout)
         except TimeoutError as exc:
@@ -1384,7 +1437,10 @@ class Harness:
         return sum(self.lags().values())
 
     def lags(self) -> dict[str, int]:
-        """Lag de cada grupo de Kafka y de cada consumidor posicionado del lado de lectura (E18)."""
+        """Lag de cada grupo de Kafka y de cada consumidor posicionado del lado de lectura (E18; E10, con los
+        componentes en procesos)."""
+        if self.config.component_processes:
+            return self._process_lags()
         highs = self._readers[0].high_watermarks()
         topic = self.settings.events_topic
         lags = {group: group_lag(self._admin, group, topic, highs) for group in self._factories()}
