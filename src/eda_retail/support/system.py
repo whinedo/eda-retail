@@ -20,6 +20,7 @@ from eda_retail.config import Settings
 from eda_retail.infra.db import connect
 from eda_retail.infra.kafka import make_producer
 from eda_retail.infra.outbox import ComponentRelay, republish_in_order
+from eda_retail.infra.positions import watermark_offsets
 from eda_retail.infra.schemas import JOB_COMPONENTS, qualified
 from eda_retail.interpreter.consumer import SCHEMA as INTERPRETER
 from eda_retail.projectors.rebuild import rebuild
@@ -71,7 +72,8 @@ class LiveSystem:
             metadata = probe.list_topics(timeout=KAFKA_TIMEOUT_S)
             if self._topic not in metadata.topics:
                 return {}
-            return {p: probe.get_watermark_offsets(TopicPartition(self._topic, p), timeout=KAFKA_TIMEOUT_S)
+            # Con reintentos: un topic recién creado tarda en tener líder en cada partición.
+            return {p: watermark_offsets(probe, TopicPartition(self._topic, p), timeout=KAFKA_TIMEOUT_S)
                     for p in sorted(metadata.topics[self._topic].partitions)}
         finally:
             probe.close()

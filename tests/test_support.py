@@ -393,3 +393,17 @@ def test_status_of_a_deleted_topic_is_a_lost_topic_not_kafka_down(capsys):
     assert _run(system, "--json", "status") == OK
     alerts = _json(capsys)["alerts"]
     assert "topic_lost" in alerts and "kafka_down" not in alerts
+
+
+def test_status_when_postgres_does_not_answer(capsys):
+    """Diagnóstico: PostgreSQL no responde y sigue saliendo lo de Kafka"""
+    system = FakeSystem()
+
+    def down():
+        raise OSError("connection refused")
+
+    system.outbox = down
+    assert _run(system, "--json", "status") == OK
+    report = _json(capsys)
+    assert "postgres_down" in report["alerts"] and report["topic"] and report["groups"]
+    assert report["outbox"] is None

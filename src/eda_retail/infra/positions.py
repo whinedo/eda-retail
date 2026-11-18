@@ -41,13 +41,20 @@ _WATERMARK_RETRY_S = 0.2
 
 def high_watermark(kafka: Consumer, tp: TopicPartition, *, timeout: float = _METADATA_TIMEOUT,
                    sleep: Callable[[float], None] = time.sleep) -> int:
-    """La marca de agua alta de `tp`. Reintenta los errores transitorios de líder y metadata hasta `timeout`
+    """La marca de agua alta de `tp`, con los reintentos de `watermark_offsets`."""
+    return watermark_offsets(kafka, tp, timeout=timeout, sleep=sleep)[1]
+
+
+def watermark_offsets(kafka: Consumer, tp: TopicPartition, *, timeout: float = _METADATA_TIMEOUT,
+                      sleep: Callable[[float], None] = time.sleep) -> tuple[int, int]:
+    """Las marcas de agua baja y alta de `tp`. Reintenta los errores transitorios de líder y metadata hasta `timeout`
     segundos (cada intento espera solo lo que queda del plazo); otro error, o el mismo más allá del plazo, se
     propaga."""
     deadline = time.monotonic() + timeout
     while True:
         try:
-            return kafka.get_watermark_offsets(tp, timeout=max(deadline - time.monotonic(), 0.1))[1]
+            low, high = kafka.get_watermark_offsets(tp, timeout=max(deadline - time.monotonic(), 0.1))
+            return low, high
         except KafkaException as exc:
             if exc.args[0].code() not in _TRANSIENT_WATERMARK_ERRORS or time.monotonic() >= deadline:
                 raise
