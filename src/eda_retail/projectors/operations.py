@@ -5,8 +5,8 @@ operaciones del front (spec operations-view).
   la gravedad, el estado final y su motivo, la versión del plan, los pasos fallidos, las compensaciones
   (`StockReleased`) y los datos y la posición del último evento. Un estado final no cambia; los contadores siguen
   sumando (tras un escalado llegan las compensaciones).
-- `view_llm_calls`, `view_step_failures` y `view_carrier_consults`: una fila por evento, con el `event_id` como
-  clave.
+- `view_llm_calls`, `view_step_failures`, `view_carrier_consults` y `view_reissued_shipments`: una fila por evento,
+  con el `event_id` como clave.
 - `view_operations_steps`: la acción de cada paso pedido (`StepRequested`), porque `StepFailed` no la lleva.
 
 Nada guarda precios, duraciones ni agregados: los calculan las consultas (`queries.operations`). Que un evento no se
@@ -27,7 +27,7 @@ from eda_retail.projectors.base import Projector
 PROJECTOR_NAME = "operations"
 UNKNOWN_CARRIER = "unknown"
 TABLES = ("views.view_incident_metrics", "views.view_llm_calls", "views.view_step_failures",
-          "views.view_carrier_consults", "views.view_operations_steps")
+          "views.view_carrier_consults", "views.view_operations_steps", "views.view_reissued_shipments")
 
 _LAST = ("last_event_at", "last_event_type", "last_event_id", "kafka_partition", "kafka_offset")
 
@@ -137,6 +137,19 @@ def _consulted(conn: psycopg.Connection, position: Position, event: EventEnvelop
     )
 
 
+def _reissued(conn: psycopg.Connection, position: Position, event: EventEnvelope) -> None:
+    _touch(conn, position, event)
+    conn.execute(
+        """
+        INSERT INTO views.view_reissued_shipments (event_id, incident_id, order_id, occurred_at, kafka_partition,
+                                                   kafka_offset)
+        VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT (event_id) DO NOTHING
+        """,
+        (event.event_id, event.correlation_id, event.payload["order_id"], event.occurred_at, position.partition,
+         position.offset),
+    )
+
+
 HANDLERS = {
     "CarrierNoticeReceived": _notice,
     "ShipmentDelayed": _delayed,
@@ -149,6 +162,7 @@ HANDLERS = {
     "IncidentEscalated": _escalated,
     "LlmCallRecorded": _llm_call,
     "CarrierConsulted": _consulted,
+    "ShipmentReissued": _reissued,
 }
 
 

@@ -116,6 +116,18 @@ def test_operations_views_migration_reverts(scratch_db):
     assert "state" in _columns(scratch_db, "view_incident_metrics", "views")
 
 
+def test_reissued_shipments_migration_reverts(scratch_db):
+    """0027 crea view_reissued_shipments del proyector operations (spec incident-metrics) y su downgrade la borra"""
+    upgrade(scratch_db)
+    assert {"event_id", "incident_id", "order_id", "occurred_at", "kafka_partition", "kafka_offset"} == _columns(
+        scratch_db, "view_reissued_shipments", "views")
+    downgrade(scratch_db, "0026")
+    assert _columns(scratch_db, "view_reissued_shipments", "views") == set()
+    assert "state" in _columns(scratch_db, "view_incident_metrics", "views")
+    upgrade(scratch_db)
+    assert "order_id" in _columns(scratch_db, "view_reissued_shipments", "views")
+
+
 def test_mail_server_migration_reverts(scratch_db):
     """0021 crea el esquema mail_server con su directorio y su buzón, y su downgrade lo borra"""
     upgrade(scratch_db)

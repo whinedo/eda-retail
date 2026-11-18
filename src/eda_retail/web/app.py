@@ -33,6 +33,7 @@ from eda_retail.queries.operations import (
     get_incident_metrics,
     get_llm_stats,
     get_operations_summary,
+    get_profit,
     kafka_end_offsets,
 )
 from eda_retail.queries.order_status import get_order_status
@@ -238,6 +239,11 @@ def create_app(
     @app.get("/api/operations/carriers")
     def operations_carriers(conn: Conn) -> dict:
         return asdict(get_carrier_operations(conn, topic=settings.events_topic))
+
+    @app.get("/api/operations/profit")
+    def operations_profit(conn: Conn) -> dict:
+        """Beneficio total en cascada: ingresos de todos los pedidos menos cada gasto (spec incident-metrics)."""
+        return asdict(get_profit(conn, prices, topic=settings.events_topic))
 
     @app.get("/api/operations/freshness")
     def operations_freshness(conn: Conn) -> dict:

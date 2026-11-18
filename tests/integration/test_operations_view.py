@@ -3,12 +3,14 @@ endpoints `/api/operations/*` contra PostgreSQL real (operations-view)."""
 
 from __future__ import annotations
 
+import uuid
 from dataclasses import replace
 from decimal import Decimal
 
 import pytest
 from fastapi.testclient import TestClient
 
+from eda_retail.events.catalog import build_event
 from eda_retail.projectors.operations import PROJECTOR_NAME, TABLES
 from eda_retail.projectors.rebuild import fingerprint, rebuild
 from eda_retail.queries.cost_per_incident import Prices
@@ -18,6 +20,7 @@ from eda_retail.queries.operations import (
     get_incident_metrics,
     get_llm_stats,
     get_operations_summary,
+    get_profit,
 )
 from eda_retail.web import app as web_app
 
@@ -349,3 +352,42 @@ def test_operations_endpoints(conn, settings, clean, database_url, monkeypatch):
     assert client.get("/api/operations/llm").status_code == 200
     assert client.get("/api/operations/carriers").status_code == 200
     assert client.post("/api/operations/summary").status_code == 405
+
+
+def test_reissue_recorded(conn, settings, clean):
+    """Reenvío registrado: una fila en view_reissued_shipments con su event_id, la incidencia y el pedido, y una
+    entrega repetida no añade otra"""
+    h = History()
+    reissued = h.reissued("P-1002")
+    events = h.take()
+    publish(settings, events)
+    publish(settings, events)  # entrega repetida
+    catch_up(settings, conn, VIEW)
+    rows = _rows(conn, "views.view_reissued_shipments", h.incident)
+    assert [(r["event_id"], r["order_id"]) for r in rows] == [(reissued.event_id, "P-1002")]
+
+
+def _order(order_id: str, amount: str):
+    return build_event("OrderRegistered", {"order_id": order_id, "customer_ref": f"C-{order_id}", "amount": amount},
+                       correlation_id=order_id, causation_id=None, producer="inventory")
+
+
+def test_profit_with_a_reissue_and_a_refund(conn, settings, clean):
+    """Beneficio con un reenvío y un reembolso: dos pedidos de 100 y 200 €, transporte al 10 %, el de 200 € reenviado y
+    un reembolso de 100 € suman ingresos 300, transporte 30, transporte de reenvíos 20, reembolsos 100 y beneficio 150.
+    La base es compartida, así que se mide la diferencia con el beneficio de antes."""
+    tag = uuid.uuid4().hex[:8]
+    small, big = f"P-{tag}-1", f"P-{tag}-2"
+    before = get_profit(conn, ZERO, topic=settings.events_topic)
+    h = History()
+    h.reissued(big)
+    h.refunded(small, "100.00", f"RF-{tag}")
+    publish(settings, [_order(small, "100.00"), _order(big, "200.00"), *h.take()])
+    catch_up(settings, conn, "orders")
+    catch_up(settings, conn, VIEW)
+    catch_up(settings, conn, "cost_per_incident")
+    after = get_profit(conn, ZERO, topic=settings.events_topic)
+    delta = {k: getattr(after, k) - getattr(before, k)
+             for k in ("revenue", "shipping", "reissue_shipping", "refunds", "profit")}
+    assert delta == {"revenue": 300, "shipping": 30, "reissue_shipping": 20, "refunds": 100, "profit": 150}, delta
+    assert after.applied

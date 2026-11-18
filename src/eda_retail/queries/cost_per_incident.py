@@ -25,12 +25,14 @@ class Prices:
     llm_out_per_1k: Decimal
     claim: Decimal
     reissue: Decimal
+    shipping_pct: Decimal = Decimal(10)  # transporte de cada pedido, en % de su importe (beneficio)
 
     @classmethod
     def from_settings(cls, settings: Settings) -> Prices:
         return cls(
             llm_in_per_1k=settings.llm_price_in_per_1k, llm_out_per_1k=settings.llm_price_out_per_1k,
             claim=settings.effect_cost_claim, reissue=settings.effect_cost_reissue,
+            shipping_pct=settings.shipping_cost_pct,
         )
 
 
