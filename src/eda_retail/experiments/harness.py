@@ -1257,9 +1257,8 @@ class Harness:
         for delivery, _ in self._deliveries:
             consumer = delivery.consumer
             entry: dict[str, Any] = {}
-            thread = f"harness-{consumer.name}"
-            if thread in alive:
-                entry["thread_alive"] = alive[thread]
+            if consumer.name in self._threaded:  # también tras `_stop_threads`, que vacía `_threads`
+                entry["thread_alive"] = alive.get(f"harness-{consumer.name}", False)
             else:
                 try:
                     entry["positions"] = consumer.positions()
