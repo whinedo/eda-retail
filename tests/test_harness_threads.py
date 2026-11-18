@@ -329,3 +329,25 @@ def test_consumer_state_of_a_threaded_consumer_includes_its_own_health(monkeypat
     h._deliveries = [(FaultyDelivery(h._tracked(consumer), FaultPlan()), lambda: h._tracked(consumer))]
     h._threaded = {"interpreter"}
     assert h.consumer_state() == {"interpreter": {"thread_alive": False, "health": {"assigned": [0, 1, 2]}}}
+
+
+def test_consumer_state_includes_the_librdkafka_log_of_a_consumer(monkeypatch):
+    """Con `consumer_kafka_debug`, el diagnóstico de cada consumidor lleva sus cambios de estado del grupo y sus
+    últimas líneas de librdkafka"""
+    from eda_retail.infra.kafka import KafkaLogRing
+
+    monkeypatch.setattr(harness, "JobWorker", _Worker)
+    consumer = _Consumer([])
+    consumer.health = lambda: {"assigned": []}
+    consumer.positions = lambda: pytest.fail("no se consulta Kafka desde otro hilo")
+    h = _bare()
+    h.targets = {}
+    h._deliveries = [(FaultyDelivery(h._tracked(consumer), FaultPlan()), lambda: h._tracked(consumer))]
+    h._threaded = {"interpreter"}
+    ring = KafkaLogRing()
+    ring.lines.append("12:00:00.000 CGRPJOINSTATE wait-join")
+    ring.group_lines.append("12:00:00.000 CGRPJOINSTATE wait-join")
+    h._kafka_logs = {"interpreter": ring}
+    state = h.consumer_state()["interpreter"]
+    assert state["kafka_log"] == state["kafka_group"] == ["12:00:00.000 CGRPJOINSTATE wait-join"]
+    assert state["health"] == {"assigned": []}

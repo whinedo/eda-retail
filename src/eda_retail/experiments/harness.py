@@ -124,7 +124,7 @@ from eda_retail.infra.consumer import EventConsumer
 from eda_retail.infra.db import CONNECTION_ERRORS, connect
 from eda_retail.infra.effect_keys import EffectInProgress
 from eda_retail.infra.jobs import JobWorker, run_job_once
-from eda_retail.infra.kafka import make_consumer, make_producer
+from eda_retail.infra.kafka import KafkaLogRing, make_consumer, make_producer
 from eda_retail.infra.migrations import upgrade
 from eda_retail.infra.outbox import ComponentRelay, RelayDeliveryError
 from eda_retail.infra.positions import caught_up, high_watermark, positioned_lags
@@ -621,6 +621,9 @@ class RunConfig:
     # particiones con el broker congelado, el `JoinGroup` del consumidor puede quedar retenido hasta este plazo
     # (300 s por defecto). None: el de librdkafka.
     consumer_max_poll_interval_ms: int | None = None
+    # E9: contextos de depuración de librdkafka (`debug`, p. ej. `cgrp`) de esos consumidores. Sus líneas van a un anillo
+    # por grupo que el diagnóstico (`consumer_state`, `stall`) incluye en `kafka_log`. None: sin depuración.
+    consumer_kafka_debug: str | None = None
     # Todos los componentes en procesos propios, los de `scripts/run-agents.sh` (E10): el harness solo siembra los
     # datos, envía los avisos por REST y mide. Ver `check_component_mode` para lo que no admite.
     component_processes: bool = False
@@ -751,6 +754,7 @@ class Harness:
         self.stall: dict[str, Any] | None = None  # diagnóstico de la ejecución que llegó a `timeout_seconds`
         self._workers: list[JobWorker] = []
         self._threaded = set(THREADED_CONSUMERS)
+        self._kafka_logs: dict[str, KafkaLogRing] = {}  # log de librdkafka por grupo (`consumer_kafka_debug`, E9)
         self._seen_done = 0
 
     # -- ciclo de vida ---------------------------------------------------------------------
@@ -1079,18 +1083,26 @@ class Harness:
         def settings_for(group: str) -> Settings:
             return replace(s, inbox_enabled=False) if group in self._inbox_off else s
 
+        def kafka_log(group: str) -> dict[str, Any]:
+            """Con `consumer_kafka_debug`, `debug` y el anillo del grupo, que se conserva si el consumidor se recrea."""
+            if self.config.consumer_kafka_debug is None:
+                return {}
+            return {"debug": self.config.consumer_kafka_debug, "log": self._kafka_logs.setdefault(group, KafkaLogRing())}
+
         factories: dict[str, Callable[[], EventConsumer]] = {
             interpreter.SCHEMA: lambda: interpreter.build_consumer(
                 self._connect(), make_consumer(s.kafka_bootstrap_servers, interpreter.SCHEMA,
                                                session_timeout_ms=self.config.consumer_session_timeout_ms,
-                                               max_poll_interval_ms=self.config.consumer_max_poll_interval_ms),
+                                               max_poll_interval_ms=self.config.consumer_max_poll_interval_ms,
+                                               **kafka_log(interpreter.SCHEMA)),
                 settings_for(interpreter.SCHEMA), self.llm, self.rules),
         }
         if not self.config.external_orchestrator:  # en modo multiproceso, el grupo es de las instancias
             factories[orchestrator.SCHEMA] = lambda: orchestrator.build_consumer(
                 self._connect(), make_consumer(s.kafka_bootstrap_servers, orchestrator.SCHEMA,
                                                session_timeout_ms=self.config.consumer_session_timeout_ms,
-                                               max_poll_interval_ms=self.config.consumer_max_poll_interval_ms),
+                                               max_poll_interval_ms=self.config.consumer_max_poll_interval_ms,
+                                               **kafka_log(orchestrator.SCHEMA)),
                 settings_for(orchestrator.SCHEMA), self.rules)
         return factories
 
@@ -1518,7 +1530,9 @@ class Harness:
     def consumer_state(self) -> dict[str, dict[str, Any]]:
         """Diagnóstico de cada consumidor de Kafka (E9). Uno que se atiende en los turnos: particiones asignadas con su
         posición (un error de Kafka queda en `error`). Uno con hilo propio: si el hilo sigue vivo y lo que él mismo anotó
-        (`EventConsumer.health`); consultar su asignación a Kafka desde este hilo mientras el suyo está en `poll` se
+        (`EventConsumer.health`). Con `consumer_kafka_debug`, también sus cambios de estado del grupo (`kafka_group`) y
+        sus últimas líneas de librdkafka (`kafka_log`);
+        consultar su asignación a Kafka desde este hilo mientras el suyo está en `poll` se
         bloquea sin límite (lo vio el CI de E9)."""
         alive = {t.name: t.is_alive() for t in self._threads} | dict.fromkeys(self._stuck, True)
         state: dict[str, dict[str, Any]] = {}
@@ -1535,6 +1549,10 @@ class Harness:
                     entry["positions"] = consumer.positions()
                 except Exception as exc:  # noqa: BLE001 — diagnóstico: no debe tumbar el experimento
                     entry["error"] = repr(exc)
+            ring = getattr(self, "_kafka_logs", {}).get(consumer.name)
+            if ring is not None:
+                entry["kafka_group"] = ring.transitions()  # solo copian: no llaman a Kafka
+                entry["kafka_log"] = ring.snapshot()
             state[consumer.name] = entry
         return state
 

@@ -46,6 +46,9 @@ SESSION_TIMEOUT_MS = 6000  # mínimo del broker: lo que un commit espera sin coo
 # puede quedar retenido hasta este plazo (por defecto, 300 s: E9 se daba por quieto con avisos sin cerrar). Mayor que
 # la sesión y que el plazo de un commit (`COMMIT_TIMEOUT_S`, 10 s) y menor que `IDLE_SECONDS`.
 MAX_POLL_INTERVAL_MS = 15000
+# Depuración del grupo en librdkafka: con `paused`, un consumidor pierde sus particiones y no vuelve al grupo (L16-L19);
+# sus últimas líneas de `cgrp` salen en `stall` para ver en qué estado se queda.
+KAFKA_DEBUG = "cgrp"
 IDLE_SECONDS = 30.0  # sin avance: por encima del timeout de sesión, la reconexión y la recomposición del grupo
 CUT_SLACK_S = 60.0  # margen para salir del bucle del corte si un turno queda bloqueado
 SAMPLE_EVERY_S = 0.2  # muestreo del outbox pendiente
@@ -155,7 +158,8 @@ def run_variant(base: Settings, variant: str, *, seed: int, incidents: int, extr
     mode = VARIANTS[variant]
     config = RunConfig(seed=seed, incidents=total, tolerate_relay_errors=True,
                        relay_flush_timeout_seconds=RELAY_FLUSH_TIMEOUT_S, consumer_session_timeout_ms=SESSION_TIMEOUT_MS,
-                       consumer_max_poll_interval_ms=MAX_POLL_INTERVAL_MS, idle_seconds=IDLE_SECONDS,
+                       consumer_max_poll_interval_ms=MAX_POLL_INTERVAL_MS, consumer_kafka_debug=KAFKA_DEBUG,
+                       idle_seconds=IDLE_SECONDS,
                        **({} if run_timeout_s is None else {"timeout_seconds": run_timeout_s}))
     with Harness(base, config, data=data, llm=Oracle(data).client()) as h:
         sampler = PendingSampler(h)
@@ -231,7 +235,8 @@ def run_e9(base: Settings, *, seed: int = 42, incidents: int = 50, extra: int = 
         experiment="E9", seed=seed, model=Oracle.model,
         config={"incidents": incidents, "extra_notices": extra, "mode": "in_process", "outage_s": outage_s,
                 "relay_flush_timeout_s": RELAY_FLUSH_TIMEOUT_S, "consumer_session_timeout_ms": SESSION_TIMEOUT_MS,
-                "consumer_max_poll_interval_ms": MAX_POLL_INTERVAL_MS, "variants": {k: v or "none" for k, v in VARIANTS.items()}},
+                "consumer_max_poll_interval_ms": MAX_POLL_INTERVAL_MS, "consumer_kafka_debug": KAFKA_DEBUG,
+                "variants": {k: v or "none" for k, v in VARIANTS.items()}},
         metrics={"variants": results},
         hypothesis={"H9": holds},
     )
