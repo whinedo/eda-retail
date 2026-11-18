@@ -48,7 +48,8 @@ Fallos (spec experiments; L55):
 - E9 (spec synthetic-data, «Caída del broker»): con `RunConfig.tolerate_relay_errors`, el turno trata un lote que el
   broker no confirma como `ComponentRelay.run_until`: lo cuenta en `relay_errors` y sigue (las filas quedan
   pendientes), con el plazo de entrega `relay_flush_timeout_seconds`; `consumer_session_timeout_ms` acorta lo que un
-  commit espera sin broker. Un fallo de commit de offset (`KafkaException`, también si no se confirma en su plazo)
+  commit espera sin broker y `consumer_max_poll_interval_ms` lo que tarda en volver al grupo un consumidor que perdió
+  sus particiones. Un fallo de commit de offset (`KafkaException`, también si no se confirma en su plazo)
   reinicia el consumidor como cualquier caída, pero cuenta en `commit_failures` y no como veneno: el mensaje ya se
   procesó y el inbox descarta la reentrega. Al parar, un consumidor cuyo hilo no termina no se cierra.
 
@@ -616,6 +617,10 @@ class RunConfig:
     # E9: `session.timeout.ms` de los consumidores en proceso (intérprete y orquestador). Sin broker, un commit síncrono
     # espera un coordinador hasta este plazo, y un consumidor recreado espera a que caduque el miembro anterior.
     consumer_session_timeout_ms: int | None = None
+    # E9: `max.poll.interval.ms` de esos consumidores, que el broker usa como rebalance timeout: tras perder sus
+    # particiones con el broker congelado, el `JoinGroup` del consumidor puede quedar retenido hasta este plazo
+    # (300 s por defecto). None: el de librdkafka.
+    consumer_max_poll_interval_ms: int | None = None
     # Todos los componentes en procesos propios, los de `scripts/run-agents.sh` (E10): el harness solo siembra los
     # datos, envía los avisos por REST y mide. Ver `check_component_mode` para lo que no admite.
     component_processes: bool = False
@@ -1077,13 +1082,15 @@ class Harness:
         factories: dict[str, Callable[[], EventConsumer]] = {
             interpreter.SCHEMA: lambda: interpreter.build_consumer(
                 self._connect(), make_consumer(s.kafka_bootstrap_servers, interpreter.SCHEMA,
-                                               session_timeout_ms=self.config.consumer_session_timeout_ms),
+                                               session_timeout_ms=self.config.consumer_session_timeout_ms,
+                                               max_poll_interval_ms=self.config.consumer_max_poll_interval_ms),
                 settings_for(interpreter.SCHEMA), self.llm, self.rules),
         }
         if not self.config.external_orchestrator:  # en modo multiproceso, el grupo es de las instancias
             factories[orchestrator.SCHEMA] = lambda: orchestrator.build_consumer(
                 self._connect(), make_consumer(s.kafka_bootstrap_servers, orchestrator.SCHEMA,
-                                               session_timeout_ms=self.config.consumer_session_timeout_ms),
+                                               session_timeout_ms=self.config.consumer_session_timeout_ms,
+                                               max_poll_interval_ms=self.config.consumer_max_poll_interval_ms),
                 settings_for(orchestrator.SCHEMA), self.rules)
         return factories
 
