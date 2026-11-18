@@ -38,7 +38,8 @@ def test_oracle_client_answers_like_the_harness_oracle():
     ({"LLM_CLIENT": "oracle", "ORACLE_SEED": "7", "ORACLE_INCIDENTS": "x"}, "ORACLE_INCIDENTS debe ser un entero"),
 ])
 def test_an_invalid_llm_client_is_a_configuration_error(environ, message):
-    """Un valor desconocido de `LLM_CLIENT`, o el oráculo sin su semilla, es un error de configuración en español"""
+    """LLM simulado en los procesos: un valor desconocido de `LLM_CLIENT`, o el oráculo sin su semilla, es un
+    error de configuración en español"""
     with pytest.raises(ValueError, match=message):
         select.client_from_env(environ)
 

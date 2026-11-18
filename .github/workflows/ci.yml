@@ -43,6 +43,7 @@ env:
     tests/integration/test_e19_topic_loss.py
     tests/integration/test_e15_llm_degradation.py
     tests/integration/test_e20_v2_dependencies.py
+    tests/integration/test_multiprocess_components.py
   SLOW_D: >-
     tests/integration/test_e9_kafka_down.py
 

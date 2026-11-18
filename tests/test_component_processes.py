@@ -45,7 +45,7 @@ def _run_agents_processes() -> list[tuple[str, str, tuple[str, ...]]]:
 
 
 def test_components_are_the_processes_of_run_agents():
-    """Los mismos procesos que `scripts/run-agents.sh`: el modo lanza exactamente sus procesos, con el mismo nombre,
+    """Los mismos procesos que scripts/run-agents.sh: el modo lanza exactamente sus procesos, con el mismo nombre,
     el módulo de su comando `eda-*` y sus argumentos"""
     assert [(c.name, c.module, c.args) for c in COMPONENTS] == _run_agents_processes()
     assert {c.target for c in COMPONENTS if c.target} == set(processes.TARGET_URL_ENV)
