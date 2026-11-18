@@ -1,4 +1,7 @@
-"""E9: caída de Kafka (spec experiments, «E9 Caída de Kafka (H9)»; spec synthetic-data, «Caída del broker»).
+"""E9: caída de Kafka (spec experiments, «E9 Caída de Kafka: retirado»; spec synthetic-data, «Caída del broker»).
+
+Retirado del catálogo: `eda-experiment` y `eda-expexecutor` ya no ofrecen `e9` y el CI no lo ejecuta. El módulo se
+conserva porque E10 usa `log_counts`, `pending_outbox` y `planned`.
 
 50 incidencias en proceso. Cuando la mitad tienen un `PlanCreated` en el log, se corta el broker durante 30 s
 (`synthetic.broker_faults.BrokerOutage`) y en ese tiempo llegan 20 avisos más; después el broker vuelve y se ejecuta

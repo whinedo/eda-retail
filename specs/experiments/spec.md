@@ -211,36 +211,16 @@ El harness SHALL ofrecer un modo (`RunConfig.component_processes`) en el que cad
 - **THEN** todas se cierran, ningún proceso muere y todos salen limpios al pararlos
 - **AND** I1 a I5 no tienen violaciones y cada `idempotency_key` se ejecuta una vez en su servicio simulado
 
-### Requirement: E9 Caída de Kafka (H9)
+### Requirement: E9 Caída de Kafka: retirado
 
-El sistema SHALL cumplir la hipótesis H9: si el broker de Kafka se para o se congela y vuelve, los componentes siguen aceptando comandos y guardando sus eventos en el outbox, el relay publica todo lo pendiente al volver el broker, no se pierde ningún evento, los mensajes que el broker recibe más de una vez (un lote sin confirmar que el productor reenvía y el relay vuelve a publicar) no repiten efectos ni filas, toda incidencia se cierra y se mantienen I1 a I5. El experimento SHALL ejecutarse en modo en proceso con 50 incidencias: cuando la mitad tienen un `PlanCreated` en el log, se corta el broker durante 30 s y en ese tiempo llegan 20 avisos más; después el broker vuelve y se ejecuta hasta cerrar todas las incidencias. Tres variantes (spec synthetic-data, «Caída del broker»): `baseline`, sin corte (los 20 avisos llegan en el mismo momento); `stopped`, el contenedor de Kafka se para y se arranca (conexión rechazada); y `paused`, el contenedor se congela y se descongela (conexiones abiertas sin respuesta). Mientras el broker no está, el relay de cada componente reintenta como `ComponentRelay.run_until` (spec event-backbone): un lote sin confirmar se deshace y sus filas siguen pendientes. Un commit de offset que falla con el broker caído, o que no se confirma en su plazo (spec event-backbone, «Entrega al menos una vez»), hace caer al consumidor, que se reinicia sin confirmar el offset; Kafka vuelve a entregar el mensaje y el inbox lo descarta. El corte lo termina un temporizador a los 30 s, aunque un turno quede bloqueado en una llamada a Kafka, y los consumidores usan un `session.timeout.ms` de 6 s: sin broker, un commit síncrono espera un coordinador hasta ese plazo, y un consumidor recreado espera a que caduque el miembro anterior del grupo. El informe MUST dar, por variante: incidencias cerradas, resueltas y escaladas por motivo; duración real del corte; filas pendientes de outbox, máximas por componente durante el corte y al terminar; filas publicadas durante el corte; avisos aceptados durante el corte; errores de entrega del relay por componente; caídas de consumidores por fallo de commit; tiempo desde la vuelta del broker hasta vaciar el outbox; mensajes en el topic, filas de outbox, filas de `event_log` y mensajes repetidos (mensajes menos filas de `event_log`); descartes del inbox por consumidor; latencia (media, mediana y p95) y su cociente frente a `baseline`; e I1 a I5. Como diagnóstico, el informe da también, al terminar cada variante y antes de que `event_log` se ponga al día, el lag de cada grupo y, por consumidor, las particiones asignadas con su posición o, si tiene hilo propio, si el hilo sigue vivo; con la depuración del grupo de librdkafka (`debug=cgrp`) activa, también sus cambios de estado del grupo y sus últimas líneas de librdkafka. Cada variante con corte MUST provocar su efecto (al menos un error de entrega del relay y una fila de outbox pendiente durante el corte); si no, no cuenta como cumplida. Los consumidores en proceso SHALL usar un `session.timeout.ms` de 6 s y un `max.poll.interval.ms` de 15 s, menor que el tiempo sin avance con el que la ejecución se da por terminada (30 s): con el broker congelado, el broker, que usa ese plazo como rebalance timeout, no retiene más de 15 s, una vez que vuelve a responder, el `JoinGroup` de un consumidor que perdió sus particiones.
+E9 (H9, caída del broker de Kafka en proceso) queda retirado: `eda-experiment` y `eda-expexecutor` MUST NOT ofrecer `e9` y el CI no lo ejecuta. Motivo: la variante `paused` (`docker pause` y `docker unpause` del broker) fallaba de forma intermitente por un bloqueo dentro de librdkafka, no de la PoC. Con `debug=cgrp`, el consumidor del intérprete pierde sus particiones durante la congelación por `session.timeout.ms`; al descongelarse el broker, su `JoinGroup` recibe `Not coordinator` y su `FindCoordinator`, `COORDINATOR_NOT_AVAILABLE`; el cliente borra el coordinador y desde entonces solo registra «no broker available for coordinator query», más de 2 minutos y hasta el final, con el broker sano (el orquestador y los proyectores terminan con lag 0) y el hilo vivo haciendo `poll`. Las incidencias de los avisos del corte quedan abiertas. Un `max.poll.interval.ms` de 15 s no lo evitó. El módulo `experiments/e9_kafka_down.py` y la inyección de la caída del broker (spec synthetic-data, «Caída del broker») se conservan: E10 reutiliza sus funciones.
 
-#### Scenario: Broker parado
+#### Scenario: E9 fuera del catálogo
 
-- **GIVEN** la variante `stopped`, con incidencias en curso
-- **WHEN** el broker se para y vuelve a los 30 s
-- **THEN** durante el corte el relay no marca ninguna fila como publicada y el outbox acumula las pendientes
-- **AND** al volver, el relay las publica todas: no queda ninguna fila pendiente y cada evento del outbox está en `event_log`
-
-#### Scenario: Broker congelado
-
-- **GIVEN** la variante `paused`, con incidencias en curso
-- **WHEN** el broker se congela y se descongela a los 30 s
-- **THEN** ningún turno del relay se bloquea más que su plazo de entrega y no queda ninguna fila pendiente al terminar
-- **AND** los mensajes repetidos en el topic no repiten efectos (I2) ni filas en `event_log`
-
-#### Scenario: Avisos durante la caída
-
-- **GIVEN** el broker cortado en `stopped` o `paused`
-- **WHEN** llegan 20 avisos nuevos
-- **THEN** el intake los acepta todos, porque los comandos no pasan por Kafka
-- **AND** sus incidencias se cierran cuando el broker vuelve
-
-#### Scenario: Cumplimiento de H9
-
-- **GIVEN** la ejecución completa de E9
-- **WHEN** se evalúa la hipótesis
-- **THEN** H9 se cumple si en todas las variantes no queda ninguna fila de outbox pendiente, no se publicó ninguna durante el corte, cada evento del outbox está en `event_log`, todas las incidencias (también las de los avisos del corte) se cerraron, I1 a I5 no tienen violaciones y cada variante con corte provocó su efecto
+- **GIVEN** el catálogo de experimentos
+- **WHEN** se pide `eda-experiment e9` o se busca `e9` en el catálogo de `eda-expexecutor`
+- **THEN** `eda-experiment` rechaza `e9` como experimento desconocido y `e9` no está en ninguno de los dos catálogos
+- **AND** el resto de experimentos, como `e10`, siguen disponibles
 
 ### Requirement: E10 Caída de PostgreSQL (H10)
 
