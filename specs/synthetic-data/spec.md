@@ -146,7 +146,7 @@ La inyección SHALL permitir publicar directamente en `eda.events`, en posicione
 
 ### Requirement: Pérdida del topic
 
-La inyección SHALL permitir, con el sistema parado, perder el contenido de `eda.events` de dos formas: vaciarlo (`delete_records` hasta la marca de agua alta de cada partición, los offsets siguen creciendo) o borrarlo y crearlo de nuevo con las mismas particiones (los offsets vuelven a 0). Al recrearlo, el arnés crea de nuevo los productores de los relays y los consumidores del lado de lectura, lleva a 0 los offsets de los grupos y pone a -1 la posición guardada del lado de lectura. Después, cada componente con outbox lo marca entero como pendiente (`ComponentRelay.replay_from`).
+La inyección SHALL permitir, con el sistema parado, perder el contenido de `eda.events` de dos formas: vaciarlo (`delete_records` hasta la marca de agua alta de cada partición, los offsets siguen creciendo) o borrarlo y crearlo de nuevo con las mismas particiones (los offsets vuelven a 0). Al recrearlo, el arnés crea de nuevo los productores de los relays y los consumidores del lado de lectura, lleva a 0 los offsets de los grupos y pone a -1 la posición guardada del lado de lectura. Después, el arnés republica el outbox de todos los componentes en el orden que tenía cada partición (`outbox.republish_in_order`, spec event-backbone).
 
 #### Scenario: Topic vaciado con offsets que siguen
 

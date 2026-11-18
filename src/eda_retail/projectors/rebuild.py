@@ -42,8 +42,11 @@ class RebuildResult:
         return self.fingerprint_before == self.fingerprint_after
 
 
-def fingerprint(conn: psycopg.Connection, view: str) -> str:
+def fingerprint(conn: psycopg.Connection, view: str, *, volatile: frozenset[str] = frozenset()) -> str:
+    """Huella de la vista sin sus columnas volátiles ni las de `volatile` (p. ej. la posición en Kafka tras una
+    republicación, E19)."""
     spec = PROJECTORS[view]
+    skip = spec.volatile | volatile
     digest = hashlib.sha256()
     with conn.transaction():
         for table in spec.tables:
@@ -51,7 +54,7 @@ def fingerprint(conn: psycopg.Connection, view: str) -> str:
             # Filas serializadas y ordenadas: la huella no depende de la clave (puede tener varias
             # columnas, como en `view_order_status`) ni del orden en que PostgreSQL las devuelva.
             rows = sorted(
-                json.dumps({k: v for k, v in row.items() if k not in spec.volatile}, sort_keys=True, default=str)
+                json.dumps({k: v for k, v in row.items() if k not in skip}, sort_keys=True, default=str)
                 for row in conn.execute(f"SELECT * FROM {table}")
             )
             for row in rows:
@@ -59,13 +62,14 @@ def fingerprint(conn: psycopg.Connection, view: str) -> str:
     return digest.hexdigest()
 
 
-def rebuild(settings: Settings, conn: psycopg.Connection, view: str) -> RebuildResult:
+def rebuild(settings: Settings, conn: psycopg.Connection, view: str, *,
+            volatile: frozenset[str] = frozenset()) -> RebuildResult:
     spec = PROJECTORS[view]
     projector = spec.build()
     consumer = consumer_for(projector, settings, conn)
     try:
         consumer.catch_up()
-        before = fingerprint(conn, view)
+        before = fingerprint(conn, view, volatile=volatile)
         start = time.perf_counter()
         with conn.transaction():
             conn.execute("DELETE FROM views.applied_events WHERE projector = %s", (projector.name,))
@@ -74,7 +78,7 @@ def rebuild(settings: Settings, conn: psycopg.Connection, view: str) -> RebuildR
         seconds = time.perf_counter() - start
     finally:
         consumer.close()
-    after = fingerprint(conn, view)
+    after = fingerprint(conn, view, volatile=volatile)
     log.info("vista %s reconstruida: %d eventos en %.3f s, huella %s", view, applied, seconds,
              "idéntica" if before == after else "distinta")
     return RebuildResult(view, before, after, applied, seconds)

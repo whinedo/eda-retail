@@ -43,7 +43,8 @@ Fallos (spec experiments; L55):
   de los trabajos de un componente (`slowed`).
 - E19 (spec synthetic-data, «Pérdida del topic»): con el sistema parado, `lose_topic` vacía el topic o lo borra y lo
   crea de nuevo (recreando productores y lado de lectura, con los grupos en 0 y la posición del lado de lectura en -1),
-  y `republish` marca entero como pendiente el outbox de cada componente.
+  y `republish` republica a la vez el outbox de todos los componentes en el orden que cada partición tenía
+  (`outbox.republish_in_order`).
 
 Modos de idempotencia (E1, supuesto A3):
 - `full`: inbox en los consumidores y en los comandos, `effect_keys` y servicios con clave.
@@ -94,7 +95,7 @@ from eda_retail.infra.consumer import EventConsumer
 from eda_retail.infra.db import connect
 from eda_retail.infra.effect_keys import EffectInProgress
 from eda_retail.infra.jobs import JobWorker, run_job_once
-from eda_retail.infra.kafka import make_consumer
+from eda_retail.infra.kafka import make_consumer, make_producer
 from eda_retail.infra.migrations import upgrade
 from eda_retail.infra.outbox import ComponentRelay
 from eda_retail.infra.positions import high_watermark
@@ -1295,9 +1296,12 @@ class Harness:
                 time.sleep(0.5)
 
     def republish(self) -> dict[str, int]:
-        """Marca como pendiente el outbox entero de cada componente (`replay_from`) y arranca el sistema otra vez;
-        devuelve las filas republicadas por componente."""
-        rows = {relay._schema: relay.replay_from(0) for relay in self._relays if relay._has_outbox}
+        """Con el sistema parado, republica a la vez el outbox de todos los componentes, mezclado por la posición que
+        cada fila tenía en el topic perdido (`outbox.republish_in_order`), y arranca el sistema otra vez; devuelve las
+        filas republicadas por componente."""
+        schemas = [relay._schema for relay in self._relays if relay._has_outbox]
+        rows = outbox.republish_in_order(self._connect(), make_producer(self.settings.kafka_bootstrap_servers), schemas,
+                                         self.settings.events_topic)
         self._init_threads()
         self._build_deliveries()
         self._start_threads()

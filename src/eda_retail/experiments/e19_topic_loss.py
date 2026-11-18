@@ -2,8 +2,9 @@
 spec synthetic-data, «Pérdida del topic»).
 
 Cierra 200 incidencias con un 30 % de fallos en `reserve_stock` (revisiones y compensaciones). Con el sistema
-parado, pierde el contenido de `eda.events` (`Harness.lose_topic`), cada componente republica su outbox entero
-(`Harness.republish`) y el sistema corre hasta que el lag es 0. Después llegan 20 avisos nuevos, que deben cerrarse.
+parado, pierde el contenido de `eda.events` (`Harness.lose_topic`), republica a la vez el outbox entero de todos los
+componentes en el orden que tenía cada partición (`Harness.republish`) y corre hasta que el lag es 0. Después llegan
+20 avisos nuevos, que deben cerrarse.
 
 - `truncated`: el topic se vacía con `delete_records`; los offsets siguen creciendo y los consumidores reciben lo
   republicado como duplicados.
@@ -13,8 +14,10 @@ parado, pierde el contenido de `eda.events` (`Harness.lose_topic`), cada compone
 
 Compara la foto de antes de la pérdida con la de después de la republicación (las de E21: ejecuciones de los
 servicios, filas de outbox, inbox, `command_outbox`, reservas, reembolsos y log, huella de `plan_steps` y de cada
-vista), cuenta los mensajes publicados desde la pérdida frente a las filas republicadas y comprueba en cada outbox que
-el offset de sus filas crece en el orden del outbox dentro de cada partición. I1 a I5, al terminar.
+vista), cuenta los mensajes publicados desde la pérdida frente a las filas republicadas, comprueba en cada outbox que
+el offset de sus filas crece en el orden del outbox dentro de cada partición y, entre todos los outbox, que cada
+partición conserva el orden que tenía en el topic perdido. I1 a I5 al terminar, sin comparar la posición en Kafka que
+guardan algunas vistas.
 """
 
 from __future__ import annotations
@@ -35,6 +38,9 @@ from eda_retail.synthetic.generator import generate
 
 FAIL_RESERVE = 0.3
 NEW_NOTICES = 20  # avisos que llegan tras la recuperación
+# I5 no compara la posición en Kafka que guardan algunas vistas: al republicar cambia, y las vistas mantenidas conservan
+# la original porque `views.applied_events` descarta el evento repetido.
+KAFKA_POSITION = frozenset({"kafka_partition", "kafka_offset"})
 VARIANTS = TOPIC_LOSS_MODES
 
 
@@ -74,10 +80,40 @@ def first_offsets(h: Harness) -> dict[int, int]:
     return {r["p"]: r["first"] for r in rows}
 
 
+Position = tuple[int | None, int | None]
+
+
+def outbox_positions(h: Harness) -> dict[tuple[str, int], Position]:
+    """(esquema, id) de cada fila de outbox -> su (partición, offset) en el topic."""
+    out = {}
+    for schema in PUBLISHERS:
+        for r in h.conn.execute(f"SELECT id, kafka_partition, kafka_offset FROM {qualified(schema, 'outbox')}"):
+            out[(schema, r["id"])] = (r["kafka_partition"], r["kafka_offset"])
+    h.conn.commit()
+    return out
+
+
+def reordered(before: Mapping[Any, Position], after: Mapping[Any, Position]) -> int:
+    """Filas que cambiaron de partición o cuyo offset nuevo no crece en el orden que tenían en el topic perdido dentro de
+    su partición (el orden entre componentes). Las filas sin posición antes de la pérdida no cuentan."""
+    old = sorted((p, o, key) for key, (p, o) in before.items() if p is not None and o is not None)
+    count, last = 0, {}
+    for partition, _, key in old:
+        new_partition, new_offset = after.get(key, (None, None))
+        if new_partition != partition or new_offset is None:
+            count += 1
+            continue
+        if partition in last and new_offset <= last[partition]:
+            count += 1
+        last[partition] = new_offset
+    return count
+
+
 def h19_variant(m: Mapping[str, Any]) -> bool:
     order = m["order"].values()
     return (m["lag"] == 0 and m["messages_since_loss"] == sum(m["republished"].values())
-            and not any(o["not_republished"] or o["unordered"] for o in order) and not m["changes"]
+            and not any(o["not_republished"] or o["unordered"] for o in order) and m["reordered"] == 0
+            and not m["changes"]
             and m["open"] == 0 and all(inv["violations"] == 0 for inv in m["invariants"].values()))
 
 
@@ -90,6 +126,7 @@ def run_variant(base: Settings, mode: str, *, seed: int, incidents: int, new_not
         elapsed = h.run_until_closed(upto=incidents)
         closed_before = h.closed()
         before = snapshot(h)
+        positions = outbox_positions(h)
         highs = h.lose_topic(mode)
         republished = h.republish()
         recovery_s = h.run_until_caught_up()
@@ -98,17 +135,18 @@ def run_variant(base: Settings, mode: str, *, seed: int, incidents: int, new_not
         messages_since = h.messages() - sum(start.values())
         order = outbox_order(h, start)
         first = first_offsets(h)
+        moved = reordered(positions, outbox_positions(h))
         diff = changes(before, snapshot(h))
         h.send_notices(range(incidents, incidents + new_notices))
         elapsed += h.run_until_closed()
         result = h.result(elapsed)
-        checked = invariants.check(h)
+        checked = invariants.check(h, volatile=KAFKA_POSITION)
     metrics: dict[str, Any] = {
         "closed_before_loss": closed_before, "closed": result.closed, "open": result.open,
         "resolved": result.resolved, "escalated": result.escalated,
         "messages_before_loss": sum(highs.values()), "republished": republished,
         "messages_since_loss": messages_since, "recovery_s": recovery_s, "lag": lag,
-        "start_offsets": start, "first_offsets": first, "order": order, "changes": diff, "invariants": checked,
+        "start_offsets": start, "first_offsets": first, "order": order, "reordered": moved, "changes": diff, "invariants": checked,
     }
     metrics["h19"] = h19_variant(metrics)
     return metrics

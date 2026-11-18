@@ -21,7 +21,7 @@ def report(base_settings):
 def _detail(report, variant: str) -> str:
     m = report.metrics["variants"][variant]
     keys = ("closed_before_loss", "open", "messages_before_loss", "republished", "messages_since_loss", "lag",
-            "order", "changes")
+            "order", "reordered", "changes")
     return json.dumps({k: m[k] for k in keys}, default=str)
 
 
@@ -31,6 +31,7 @@ def _republished_in_order(report, variant: str) -> None:
     assert m["lag"] == 0, _detail(report, variant)
     assert m["messages_since_loss"] == sum(m["republished"].values()) > 0, _detail(report, variant)
     assert all(o == {"not_republished": 0, "unordered": 0} for o in m["order"].values()), _detail(report, variant)
+    assert m["reordered"] == 0, _detail(report, variant)
     assert m["changes"] == {}, _detail(report, variant)
 
 

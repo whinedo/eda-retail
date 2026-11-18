@@ -7,6 +7,9 @@ el estado (Outbox)").
   `incident_id`) en orden de `id`, espera la confirmación del broker y guarda la partición y el
   offset en la misma transacción. Publica también sus `dead_letters` en `eda.dlq`. Al menos una vez.
 - `RelayThread` ejecuta el relay en un hilo del proceso del componente, con su propia conexión.
+- `republish_in_order` es el procedimiento de recuperación tras perder el topic (spec event-backbone, «Pérdida del
+  topic»): con el sistema parado, republica a la vez el outbox de todos los componentes, mezclado por la posición que
+  cada fila tenía en el topic perdido, para que cada partición recupere su orden también entre componentes.
 
 Un solo relay por componente conserva el orden de su outbox; Kafka conserva el orden por partición.
 """
@@ -78,6 +81,91 @@ def encode_event(envelope: EventEnvelope) -> bytes:
 
 class RelayDeliveryError(RuntimeError):
     """El broker no confirmó algún mensaje del lote; el lote se reintenta."""
+
+
+def produce_event(producer: Producer, topic: str, envelope: EventEnvelope, trace_context, on_delivery) -> None:
+    """Produce un mensaje dentro del span `<event_type> publish`, hijo del de escritura."""
+    attributes = tracing.event_attributes(envelope) | {
+        "messaging.system": "kafka",
+        "messaging.destination.name": topic,
+    }
+    with tracing.tracer().start_as_current_span(
+        f"{envelope.event_type} publish",
+        context=tracing.extract(trace_context),
+        kind=SpanKind.PRODUCER,
+        attributes=attributes,
+    ):
+        headers = [("event_type", envelope.event_type.encode())]
+        headers += [(k, v.encode()) for k, v in (tracing.inject_current() or {}).items()]
+        producer.produce(
+            topic,
+            key=envelope.correlation_id.encode(),
+            value=encode_event(envelope),
+            headers=headers,
+            on_delivery=on_delivery,
+        )
+
+
+def republish_order(rows: Iterable[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
+    """Orden de republicación: primero las filas con posición en el topic perdido, por partición y offset (el orden
+    que tenía cada partición, también entre componentes); después las que nunca se publicaron, por `created_at` y
+    `id`."""
+    def key(row: Mapping[str, Any]) -> tuple:
+        positioned = row["kafka_partition"] is not None and row["kafka_offset"] is not None
+        if positioned:
+            return (0, row["kafka_partition"], row["kafka_offset"], row["created_at"], row["id"])
+        return (1, 0, 0, row["created_at"], row["id"])
+
+    return sorted(rows, key=key)
+
+
+def republish_in_order(conn: psycopg.Connection, producer: Producer, schemas: Iterable[str], topic: str, *,
+                       batch_size: int = 500, flush_timeout: float = 30.0) -> dict[str, int]:
+    """Pérdida del topic (spec event-backbone): con el sistema parado, republica en `topic` todas las filas del outbox
+    de `schemas` en el orden de `republish_order`, con un solo productor (Kafka conserva así el orden de cada
+    partición), y guarda en cada fila su posición nueva y `published_at`. Devuelve las filas republicadas por esquema.
+
+    Por lotes: si un lote no se confirma, lanza `RelayDeliveryError` y las filas de los lotes anteriores ya tienen su
+    posición nueva; el procedimiento se repite desde el principio con el topic vacío otra vez."""
+    schemas = list(schemas)
+    fields = ", ".join(_ENVELOPE_FIELDS)
+    with conn.transaction():
+        rows: list[Mapping[str, Any]] = []
+        for schema in schemas:
+            rows += [dict(r, schema=schema) for r in conn.execute(
+                f"SELECT id, created_at, kafka_partition, kafka_offset, trace_context, {fields}"
+                f" FROM {qualified(schema, 'outbox')}").fetchall()]
+    counts = dict.fromkeys(schemas, 0)
+    ordered = republish_order(rows)
+    for start in range(0, len(ordered), batch_size):
+        batch = ordered[start:start + batch_size]
+        errors: list[KafkaError] = []
+        positions: dict[int, tuple[int, int]] = {}
+
+        def on_delivery_for(index: int, errors: list[KafkaError] = errors,
+                            positions: dict[int, tuple[int, int]] = positions):
+            def on_delivery(err: KafkaError | None, msg) -> None:
+                if err is not None:
+                    errors.append(err)
+                else:
+                    positions[index] = (msg.partition(), msg.offset())
+            return on_delivery
+
+        for index, row in enumerate(batch):
+            envelope = EventEnvelope.model_validate({k: row[k] for k in _ENVELOPE_FIELDS})
+            produce_event(producer, topic, envelope, row["trace_context"], on_delivery_for(index))
+        pending = producer.flush(flush_timeout)
+        if pending or errors:
+            raise RelayDeliveryError(f"republicación no confirmada: pendientes={pending}, errores={errors}")
+        with conn.transaction():
+            for index, row in enumerate(batch):
+                partition, offset = positions[index]
+                conn.execute(
+                    f"UPDATE {qualified(row['schema'], 'outbox')} SET published_at = now(),"
+                    " attempts = attempts + 1, kafka_partition = %s, kafka_offset = %s WHERE id = %s",
+                    (partition, offset, row["id"]))
+                counts[row["schema"]] += 1
+    return counts
 
 
 class ComponentRelay:
@@ -165,26 +253,7 @@ class ComponentRelay:
         return len(rows)
 
     def _produce(self, envelope: EventEnvelope, trace_context, on_delivery) -> None:
-        """Produce un mensaje dentro del span `<event_type> publish`, hijo del de escritura."""
-        attributes = tracing.event_attributes(envelope) | {
-            "messaging.system": "kafka",
-            "messaging.destination.name": self._topic,
-        }
-        with tracing.tracer().start_as_current_span(
-            f"{envelope.event_type} publish",
-            context=tracing.extract(trace_context),
-            kind=SpanKind.PRODUCER,
-            attributes=attributes,
-        ):
-            headers = [("event_type", envelope.event_type.encode())]
-            headers += [(k, v.encode()) for k, v in (tracing.inject_current() or {}).items()]
-            self._producer.produce(
-                self._topic,
-                key=envelope.correlation_id.encode(),
-                value=encode_event(envelope),
-                headers=headers,
-                on_delivery=on_delivery,
-            )
+        produce_event(self._producer, self._topic, envelope, trace_context, on_delivery)
 
     def publish_dead_letters(self, batch_size: int = 100, flush_timeout: float = 30.0) -> int:
         """Publica en `eda.dlq` las dead letters pendientes del componente. Al menos una vez."""

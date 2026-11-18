@@ -52,9 +52,10 @@ def _rows(h: Harness, sql: str, params: tuple = ()) -> list[dict[str, Any]]:
     return rows
 
 
-def check(h: Harness, *, views: bool = True) -> dict[str, dict[str, Any]]:
+def check(h: Harness, *, views: bool = True, volatile: frozenset[str] = frozenset()) -> dict[str, dict[str, Any]]:
     """I1 a I5 de la ejecución del arnés `h`: `{"I1": {"violations": n, ...}, ...}`. Con `views=False` no
-    reconstruye las vistas (I5 queda sin comprobar, `None`)."""
+    reconstruye las vistas (I5 queda sin comprobar, `None`). `volatile`: columnas que I5 no compara (E19: la
+    posición en Kafka, que cambia al republicar)."""
     log_caught_up = h.catch_up_log()  # I1, I3 e I4 leen event_log
     open_ = _rows(h, """
         SELECT DISTINCT correlation_id FROM event_log.events WHERE event_type = 'CarrierNoticeReceived'
@@ -84,7 +85,7 @@ def check(h: Harness, *, views: bool = True) -> dict[str, dict[str, Any]]:
                "log_caught_up": log_caught_up},
     }
     if views:
-        differ = [view for view in sorted(PROJECTORS) if not rebuild(h.settings, h.conn, view).identical]
+        differ = [view for view in sorted(PROJECTORS) if not rebuild(h.settings, h.conn, view, volatile=volatile).identical]
         out["I5"] = {"violations": len(differ), "views": differ}
     else:
         out["I5"] = {"violations": None, "views": []}

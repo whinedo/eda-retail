@@ -9,7 +9,7 @@ from __future__ import annotations
 import pytest
 
 from eda_retail.experiments import harness
-from eda_retail.experiments.e19_topic_loss import check_order, h19_variant
+from eda_retail.experiments.e19_topic_loss import check_order, h19_variant, reordered
 
 
 def _row(partition, offset) -> dict:
@@ -41,8 +41,21 @@ def test_unknown_topic_loss_mode_is_rejected():
     assert harness.TOPIC_LOSS_MODES == ("truncated", "recreated")
 
 
+def test_partition_keeps_its_order_across_components():
+    """Topic recreado: cada partición conserva el orden que tenía en el topic perdido, también entre componentes"""
+    before = {("planner", 1): (0, 4), ("orchestrator", 7): (0, 5), ("executor_file_claim", 2): (0, 6),
+              ("intake", 3): (1, 0), ("never_published", 9): (None, None)}
+    kept = {("planner", 1): (0, 0), ("orchestrator", 7): (0, 1), ("executor_file_claim", 2): (0, 2),
+            ("intake", 3): (1, 0), ("never_published", 9): (2, 0)}
+    assert reordered(before, kept) == 0
+    # Los resultados del ejecutor llegan antes que el paso que los pidió (republicación outbox a outbox).
+    swapped = {**kept, ("executor_file_claim", 2): (0, 0), ("planner", 1): (0, 1), ("orchestrator", 7): (0, 2)}
+    assert reordered(before, swapped) == 1
+    assert reordered(before, {**kept, ("intake", 3): (2, 0)}) == 1  # cambió de partición
+
+
 def _clean(**changes) -> dict:
-    m = {"lag": 0, "messages_since_loss": 30, "republished": {"intake": 10, "orchestrator": 20},
+    m = {"lag": 0, "reordered": 0, "messages_since_loss": 30, "republished": {"intake": 10, "orchestrator": 20},
          "order": {"intake": {"not_republished": 0, "unordered": 0}}, "changes": {}, "open": 0,
          "invariants": {name: {"violations": 0} for name in ("I1", "I2", "I3", "I4", "I5")}}
     return {**m, **changes}
@@ -61,6 +74,7 @@ def test_h19_fails_on_any_broken_condition():
         {"messages_since_loss": 29},
         {"order": {"intake": {"not_republished": 1, "unordered": 0}}},
         {"order": {"intake": {"not_republished": 0, "unordered": 1}}},
+        {"reordered": 2},
         {"changes": {"executions": {"carrier:K": [1, 2]}}},
         {"open": 1},
         {"invariants": {**_clean()["invariants"], "I5": {"violations": 1}}},
