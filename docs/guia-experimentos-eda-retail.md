@@ -89,7 +89,7 @@ Las hipótesis nuevas se llaman como su experimento (H11, H12...). Los marcados 
 | Exp. | Nombre | Fallo inyectado | Qué se comprueba | Modo |
 |---|---|---|---|---|
 | E8 | Matriz de puntos de caída | Caída de cada componente en cada punto de la transacción | Recuperación sin duplicados ni pérdidas | En proceso |
-| E9 | Caída de Kafka | Broker parado y reiniciado | El outbox acumula y el relay publica al volver, sin pérdidas | Multiproceso |
+| E9 | Caída de Kafka | Broker parado y reiniciado | El outbox acumula y el relay publica al volver, sin pérdidas | Implementado (en proceso) |
 | E10 | Caída de PostgreSQL | Conexiones cortadas o base parada | Reintentos, sin estado a medias | Multiproceso |
 | E11 (S) | Entrega retrasada y replanes | Resultados tardíos, 50 % de fallos en `reserve_stock` | Eventos obsoletos ignorados, compensaciones correctas | Implementado |
 | E12 (S) | Ejecutor caído y colgado | `file_claim` en `down` y en `hang` | Plazos, aislamiento, cabeza de línea del dispatcher | Implementado (en proceso) |
@@ -119,9 +119,17 @@ Todo experimento de resiliencia comprueba, además de su hipótesis, estos cinco
 
 Si I1 o I2 se violan, la hipótesis no se da por cumplida aunque su criterio propio sí lo esté.
 
-**Implementación.** `experiments/invariants.py` los comprueba al terminar, con el sistema parado: I1 con el log (incidencias con `CarrierNoticeReceived` sin `IncidentResolved` ni `IncidentEscalated`), I2 con los efectos repetidos que mide E1, I3 con `executor_issue_refund.refunds` y con el orden de los `StepRequested` y `StepCompleted` del log (un `issue_refund` pedido con una compensación pedida y sin completar), I4 con cada `outbox` (filas sin publicar o cuyo evento no está en `event_log.events`) e I5 reconstruyendo cada vista desde el topic. E11, E13, E14, E15, E19 y E20 (por variante), E16, E17, E18, E21, E22 y E23 los incluyen en `metrics.invariants` (E16, con las instancias del orquestador aún en marcha y ociosas); E21 los comprueba antes de sus observaciones y de su control, que repiten efectos a propósito.
+**Implementación.** `experiments/invariants.py` los comprueba al terminar, con el sistema parado: I1 con el log (incidencias con `CarrierNoticeReceived` sin `IncidentResolved` ni `IncidentEscalated`), I2 con los efectos repetidos que mide E1, I3 con `executor_issue_refund.refunds` y con el orden de los `StepRequested` y `StepCompleted` del log (un `issue_refund` pedido con una compensación pedida y sin completar), I4 con cada `outbox` (filas sin publicar o cuyo evento no está en `event_log.events`) e I5 reconstruyendo cada vista desde el topic. E9, E11, E13, E14, E15, E19 y E20 (por variante), E16, E17, E18, E21, E22 y E23 los incluyen en `metrics.invariants` (E16, con las instancias del orquestador aún en marcha y ociosas); E21 los comprueba antes de sus observaciones y de su control, que repiten efectos a propósito.
 
 ## 5. Experimentos nuevos en detalle
+
+### E9 Caída de Kafka (H9)
+
+- **Objetivo.** Comprobar que el outbox protege los eventos cuando el broker cae: los componentes siguen aceptando comandos y guardando eventos, y el relay publica todo lo pendiente al volver, sin pérdidas y sin efectos repetidos.
+- **Escenario.** En proceso, 50 incidencias. Cuando la mitad tienen un `PlanCreated` en el log, se corta el broker 30 s y en ese tiempo llegan 20 avisos más; después vuelve y se ejecuta hasta cerrar todas las incidencias. Tres variantes (`synthetic.broker_faults.BrokerOutage`): `baseline`, sin corte; `stopped`, `docker stop` y `docker start` (conexión rechazada); `paused`, `docker pause` y `docker unpause` (conexiones abiertas sin respuesta).
+- **Mide.** Por variante: cerradas, resueltas y escaladas por motivo; duración real del corte; filas publicadas durante el corte; filas de outbox pendientes, máximas por componente durante el corte y al terminar; avisos aceptados durante el corte; errores de entrega del relay; caídas de consumidores por un commit de offset fallido; lo que más tardó un relay en un turno; tiempo hasta vaciar el outbox; mensajes del topic, filas de outbox y de `event_log`, y mensajes repetidos; descartes del inbox; latencia y su cociente frente a `baseline`; I1 a I5.
+- **Criterio.** H9: en las tres variantes, ninguna fila de outbox pendiente al terminar ni publicada durante el corte, cada evento del outbox en `event_log`, todas las incidencias cerradas (también las de los avisos del corte) e I1 a I5 sin violaciones; además, cada variante con corte provoca algún error de entrega del relay y alguna fila pendiente durante el corte.
+- **Implementación.** `uv run eda-expexecutor run e9`. Corta de verdad el contenedor de Kafka (`KAFKA_CONTAINER`, por defecto `eda-kafka`): mientras dura, cualquier otra cosa que use ese broker se queda sin él. `BrokerOutage` devuelve el broker a su estado al terminar el corte, también si el experimento falla, y espera a que responda. Un temporizador termina el corte a su hora aunque un turno quede bloqueado en Kafka, y los consumidores en proceso usan un `session.timeout.ms` de 6 s (`RunConfig.consumer_session_timeout_ms`): sin broker, un commit síncrono espera un coordinador hasta ese plazo (45 s por defecto) y un consumidor recreado espera a que caduque el miembro anterior. El turno del harness trata un lote sin confirmar como `ComponentRelay.run_until` (`RunConfig.tolerate_relay_errors`, con un plazo de entrega de 1 s): la transacción se deshace y las filas siguen pendientes. El productor puede reenviar ese lote al volver el broker mientras el relay lo publica otra vez: los mensajes repetidos son los mensajes del topic menos las filas de `event_log`, que tiene un `event_id` único, y el inbox los descarta. En producción, el intérprete y el orquestador consumen con `EventConsumer.run_forever`: un commit de offset fallido con el broker caído lanza `KafkaException` y termina el proceso. El harness lo trata como caída y reinicio del consumidor (`commit_failures`), sin contarlo como veneno, porque el mensaje ya se procesó.
 
 ### E11 Entrega retrasada y replanes forzados (H11)
 
@@ -239,13 +247,13 @@ Si I1 o I2 se violan, la hipótesis no se da por cumplida aunque su criterio pro
 
 ## 6. Limitaciones del arnés y orden de implantación
 
-**Limitaciones.** El arnés actual es en proceso: sirve para duplicados, retrasos, fallos por probabilidad, caída de un consumidor y almacenes vacíos, y todo corre en un mismo proceso, de modo que no puede reproducir congelaciones de procesos, rebalanceos reales ni cortes de Kafka y PostgreSQL. E9, E10 y E16 exigen un modo multiproceso (E12 se hace en proceso, con el dispatcher en su propio hilo) (procesos de `scripts/run-agents.sh`, `docker stop/pause`, `SIGSTOP` o un proxy tipo toxiproxy). El modo multiproceso de E16 solo saca el orquestador a procesos propios: los componentes con LLM solo arrancan como proceso con Ollama. Las propuestas de esta guía se basan en las specs, `design.md` y el código del arnés, no en haber ejecutado los experimentos.
+**Limitaciones.** El arnés actual es en proceso: sirve para duplicados, retrasos, fallos por probabilidad, caída de un consumidor y almacenes vacíos, y todo corre en un mismo proceso, de modo que no puede reproducir congelaciones de procesos, rebalanceos reales ni cortes de Kafka y PostgreSQL. E10 y E16 exigen un modo multiproceso (E9 se hace en proceso: corta el contenedor de Kafka con Docker) (E12 se hace en proceso, con el dispatcher en su propio hilo) (procesos de `scripts/run-agents.sh`, `docker stop/pause`, `SIGSTOP` o un proxy tipo toxiproxy). El modo multiproceso de E16 solo saca el orquestador a procesos propios: los componentes con LLM solo arrancan como proceso con Ollama. Las propuestas de esta guía se basan en las specs, `design.md` y el código del arnés, no en haber ejecutado los experimentos.
 
 **Orden sugerido.**
 
 1. En proceso y con poco trabajo nuevo: E21, E23, E17, E18 y E11, que reutilizan el arnés con extensiones pequeñas (reinicio de offsets, replan forzado, parada de proyectores, inyección de veneno, retraso por acción).
 2. E22: requiere hilos con conexiones propias y un punto de caída nuevo en los ejecutores.
-3. E12, en proceso con el dispatcher en su propio hilo. Con modo multiproceso: E16 (y después E9 y E10).
+3. E12, en proceso con el dispatcher en su propio hilo. Con modo multiproceso: E16 (y después E10). E9 se hace en proceso, cortando el contenedor de Kafka.
 4. El resto (E8, E14, E15, E19, E20) según el interés del trabajo.
 
 Los ficheros de especificación de los experimentos (S) están en `specs-experimentos-resiliencia.md`, en formato OpenSpec (Purpose, Requirements, Scenarios con GIVEN/WHEN/THEN).

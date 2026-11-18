@@ -15,7 +15,7 @@ def test_one_command_per_experiment():
     assert incidents_for(args) == 50
     assert parse_args(["e2", "--seed", "7", "--incidents", "10"]).incidents == 10
     with pytest.raises(SystemExit):
-        parse_args(["e9"])
+        parse_args(["e8"])
 
 
 def test_each_experiment_defaults_to_its_spec_size():

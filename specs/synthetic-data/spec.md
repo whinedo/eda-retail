@@ -123,6 +123,23 @@ En modo multiproceso, la inyección SHALL permitir congelar un proceso con `SIGS
 - **WHEN** se reanuda la congelada
 - **THEN** el experimento registra que Kafka había reasignado sus particiones antes de que reanudara y qué mensajes procesó después
 
+### Requirement: Caída del broker
+
+La inyección SHALL permitir cortar el broker de Kafka de dos formas, sobre su contenedor de Docker (`KAFKA_CONTAINER`, por defecto `eda-kafka`): pararlo y arrancarlo (`stopped`, las conexiones se rechazan) o congelarlo y descongelarlo (`paused`, las conexiones quedan abiertas sin respuesta). Al terminar el corte, la inyección SHALL esperar a que el broker responda (los metadatos del topic) antes de devolver el control, y MUST devolver el broker a su estado aunque el experimento falle durante el corte.
+
+#### Scenario: Corte del broker
+
+- **GIVEN** el broker en marcha
+- **WHEN** se corta en modo `stopped` o `paused`
+- **THEN** se ejecuta `docker stop` o `docker pause` sobre su contenedor
+- **AND** al terminar, `docker start` o `docker unpause`, y se espera a que el broker responda
+
+#### Scenario: Fallo durante el corte
+
+- **GIVEN** el broker cortado
+- **WHEN** el experimento lanza una excepción antes de terminar el corte
+- **THEN** el broker vuelve igualmente a su estado y la excepción sigue su curso
+
 ### Requirement: Parada de proyectores
 
 La inyección SHALL permitir parar los proyectores (lado de lectura) durante un intervalo mientras los demás componentes siguen publicando, y reanudarlos después.

@@ -35,6 +35,7 @@ env:
     tests/integration/test_e17_parked.py
     tests/integration/test_e14_burst_backpressure.py
     tests/integration/test_e13_compensation_failure.py
+    tests/integration/test_e9_kafka_down.py
   SLOW_C: >-
     tests/integration/test_e19_topic_loss.py
     tests/integration/test_e15_llm_degradation.py
