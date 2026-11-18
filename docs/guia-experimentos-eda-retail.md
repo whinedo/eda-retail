@@ -42,10 +42,13 @@ uv run eda-expexecutor delete --all
 
 - `LLM_CLIENT`: `ollama` (por defecto, también sin definir) u `oracle`. Con `oracle`, `ORACLE_SEED` y `ORACLE_INCIDENTS` dan el conjunto `generate(seed, incidents)` del oráculo, el mismo que usa el arnés. Otro valor impide arrancar el proceso.
 - `SERVICE_EXECUTIONS_LOG`: fichero JSONL donde cada `eda-step-executor` anota cada ejecución de su servicio simulado (servicio e `idempotency_key`). Sin ella, el ejecutor no anota nada.
+- `POC_VERSION`: la del arnés (`Settings.poc_version`, la 1 si no está definida). Los scripts, sin `--version` ni `POC_VERSION`, arrancan la versión 2 (`SCRIPTS_POC_VERSION`); el arnés la fija siempre, así que los procesos de un experimento no dependen de ese valor por defecto.
 
 El modo rechaza lo que solo inyecta el arnés en proceso: los fallos del `FaultPlan`, los modos de idempotencia distintos de `full`, la versión 2 y un LLM, unos datos o un transportista propios.
 
 **Referencias de componentes** (para leer los informes): `PENDING_NOTICE_TIMEOUT_S` (300 s) aparca avisos; `SAGA_STEP_TIMEOUT_S` (60 s) y `SAGA_PLAN_TIMEOUT_S` (300 s) son los plazos de la saga; `COMMAND_HTTP_TIMEOUT_S` (5 s) es el timeout HTTP del dispatcher; `EXECUTOR_MAX_CONCURRENCY` (5) limita a los ejecutores; `JOB_LEASE_SECONDS`, `JOB_MAX_ATTEMPTS` y el backoff gobiernan los trabajos diferidos.
+
+**Soporte técnico (`eda-support`).** No forma parte de los experimentos: actúa sobre el sistema arrancado con los scripts (su base de datos y `eda.events`), no sobre la base y el topic propios de cada ejecución. Se lanza con `scripts/support.sh` o desde la vista de soporte del front (manual, §14). `status` es un diagnóstico de solo lectura (alertas como `topic_lost`, `outbox_pending`, `dead_letters`, `jobs_failed`, `parked_notices`, `kafka_down` y `postgres_down`); `republish --mode truncated|recreated`, `replay-from <componente> <outbox_id>` y `rebuild <vista>` escriben, y sin `--confirm <token>` solo simulan. `republish` usa la misma función que E19 (`outbox.republish_in_order`), así que E19 mide el procedimiento que aplica soporte tras perder el topic, y `rebuild` es la reconstrucción de vistas de E4.
 
 ## 2. Experimentos actuales (E1–E7)
 
