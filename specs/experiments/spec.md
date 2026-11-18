@@ -222,11 +222,11 @@ El sistema SHALL cumplir la hipótesis H8: si cualquier componente cae en cualqu
 
 La caída entre el efecto externo y el registro de su clave no forma parte de la matriz: la mide E22 (`crash_between_effect_and_record`).
 
-El informe MUST dar, por celda: si la caída se produjo, en qué unidad y a qué hora; incidencias cerradas, abiertas, resueltas y escaladas por motivo; tiempo de recuperación (desde la caída hasta que el componente reiniciado atiende su unidad siguiente); máximo de ejecuciones por `idempotency_key` en los servicios simulados (debe ser 1); `event_id` publicados más de una vez en `eda.events` frente a filas de `event_log.events` por `event_id` (debe ser 1); filas de outbox pendientes al terminar; descartes del inbox (y eventos que un proyector ya tenía en `views.applied_events`); respuestas repetidas por el inbox a un mismo `command_id`; llamadas al LLM de más frente a `baseline`; latencia (media, mediana y p95); e I1 a I5. Una celda solo cuenta si su caída se produjo y si se ve el mecanismo que la salva:
+El informe MUST dar, por celda: si la caída se produjo, en qué unidad y a qué hora; incidencias cerradas, abiertas, resueltas y escaladas por motivo; tiempo de recuperación (desde la caída hasta que el componente reiniciado atiende su unidad siguiente); máximo de ejecuciones por `idempotency_key` en los servicios simulados (debe ser 1); `event_id` publicados más de una vez en `eda.events` frente a filas de `event_log.events` por `event_id` (debe ser 1); filas de outbox pendientes al terminar; descartes del inbox (y eventos que un proyector ya tenía en `views.applied_events`); respuestas repetidas por el inbox a un mismo `command_id`; llamadas al LLM de más frente a `baseline`, contadas en el cliente del LLM (las de una caída `before_tx` no dejan `LlmCallRecorded`); latencia (media, mediana y p95); e I1 a I5. Una celda solo cuenta si su caída se produjo y si se ve el mecanismo que la salva:
 
-- `before_tx`: la unidad se vuelve a atender y el LLM se llama al menos una vez más que en `baseline`.
+- `before_tx`: la unidad se vuelve a atender y el cliente del LLM recibe al menos una llamada más que en `baseline`.
 - `after_commit_before_offset`: al menos un descarte del inbox (en `event_log`, un `event_id` que ya estaba; en el proyector, uno que ya estaba en `views.applied_events`).
-- `after_commit_before_response`: al menos una respuesta repetida por el inbox con el mismo `command_id`.
+- `after_commit_before_response`: al menos una respuesta repetida por el inbox con el mismo `command_id`, que reenvía la saga o, en `intake`, el harness.
 - `relay_after_publish_before_mark`: al menos un `event_id` publicado dos veces en `eda.events`.
 
 #### Scenario: Caída antes de abrir la transacción
@@ -234,7 +234,7 @@ El informe MUST dar, por celda: si la caída se produjo, en qué unidad y a qué
 - **GIVEN** la celda `before_tx` del planificador
 - **WHEN** su worker cae en el trabajo K tras llamar al LLM y antes de abrir la transacción
 - **THEN** el trabajo se retoma al vencer su lease, el LLM se vuelve a llamar y el plan se escribe una sola vez
-- **AND** el informe da al menos una llamada al LLM de más frente a `baseline` y ningún `PlanCreated` repetido
+- **AND** el informe da al menos una llamada al LLM de más frente a `baseline`, contada en el cliente del LLM, y ningún `PlanCreated` repetido
 
 #### Scenario: Caída entre el commit y el offset
 
