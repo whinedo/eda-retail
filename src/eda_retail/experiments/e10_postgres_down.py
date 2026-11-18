@@ -55,7 +55,7 @@ PROBE_EVERY_S = 1.0  # sondeo de la base y de los procesos durante el corte
 NOTICE_RETRY_S = 1.0  # espera de quien envía un aviso entre dos intentos
 NOTICE_RETRY_WINDOW_S = 120.0  # cuánto sigue reintentando un aviso después del corte
 SAMPLE_EVERY_S = 1.0  # muestreo del outbox pendiente y del lag tras el corte
-DUPLICATE_NOTICE = "duplicate_notice"  # un intento anterior, sin respuesta, llegó a registrar el aviso
+DUPLICATE_NOTICE = "duplicate_notice"  # el aviso ya estaba registrado con otro `command_id`: colisión en los datos
 
 # Líneas de reconexión de la spec resilience, «Reconexión a PostgreSQL», en WARNING o ERROR:
 # - «la base no responde»: `EventConsumer` (orquestador, intérprete) y `run_resilient` (proyector, event-log);
@@ -128,7 +128,8 @@ class NoticeSend:
     rejected_during_outage: int = 0
     rejected_after_outage: int = 0
     accepted: bool = False
-    refused: bool = False  # rechazo de negocio (4xx distinto de un aviso ya registrado): no se reintenta
+    refused: bool = False  # rechazo de negocio (4xx): no se reintenta
+    duplicate: bool = False  # el rechazo fue un `duplicate_notice`
 
 
 def send_until_accepted(send: Callable[[], Any], *, cutting: Callable[[], bool], timeout_s: float,
@@ -136,8 +137,10 @@ def send_until_accepted(send: Callable[[], Any], *, cutting: Callable[[], bool],
                         sleep: Callable[[float], None] = time.sleep) -> NoticeSend:
     """Envía un aviso hasta que se acepta, como un transportista que reintenta: un 5xx o la falta de respuesta
     (`CommandUnavailable`) se cuenta como rechazo (durante el corte si `cutting()` al empezar el intento) y se
-    reintenta a los `retry_s`, hasta `timeout_s`. Un 422 `duplicate_notice` es un aviso ya registrado por un intento
-    cuya respuesta se perdió: cuenta como aceptado."""
+    reintenta a los `retry_s`, hasta `timeout_s`. Un intento que llegó a registrar el aviso y perdió la respuesta no
+    da 422: con el mismo `command_id`, el inbox de intake repite su 202. Un 422 `duplicate_notice` solo llega si el
+    aviso ya estaba registrado con otro `command_id` (una colisión en los datos): no cuenta como aceptado y se cuenta
+    aparte."""
     out = NoticeSend()
     end = clock() + timeout_s
     while True:
@@ -148,8 +151,9 @@ def send_until_accepted(send: Callable[[], Any], *, cutting: Callable[[], bool],
         except CommandUnavailable:
             reply = None
         if reply is not None:
-            out.accepted = reply.status_code == ACCEPTED or reply.reason == DUPLICATE_NOTICE
+            out.accepted = reply.status_code == ACCEPTED
             out.refused = not out.accepted
+            out.duplicate = out.refused and reply.reason == DUPLICATE_NOTICE
             return out
         if during:
             out.rejected_during_outage += 1
@@ -180,7 +184,8 @@ def notice_summary(sends: Iterable[NoticeSend]) -> dict[str, int]:
     return {"sent": len(sends), "accepted": sum(s.accepted for s in sends),
             "rejected_during_outage": sum(s.rejected_during_outage for s in sends),
             "rejected_after_outage": sum(s.rejected_after_outage for s in sends),
-            "retries": sum(max(0, s.attempts - 1) for s in sends), "refused": sum(s.refused for s in sends)}
+            "retries": sum(max(0, s.attempts - 1) for s in sends), "refused": sum(s.refused for s in sends),
+            "duplicates": sum(s.duplicate for s in sends)}
 
 
 # -- tras el corte ----------------------------------------------------------------------------------------------

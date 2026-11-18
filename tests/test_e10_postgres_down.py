@@ -121,10 +121,11 @@ def test_notice_rejected_during_the_cut_is_retried_until_accepted():
     assert clock.now == 3.0
 
 
-def test_a_notice_registered_by_an_attempt_whose_answer_was_lost_counts_as_accepted():
+def test_a_duplicate_notice_is_a_data_collision_not_an_acceptance():
+    """Un 422 `duplicate_notice` (aviso registrado con otro `command_id`) no cuenta como aceptado: se cuenta aparte"""
     out, _ = _sender([CommandUnavailable("no responde"), CommandReply(422, {"reason": "duplicate_notice"})],
                      lambda: False)
-    assert out.accepted and out.attempts == 2
+    assert (out.accepted, out.refused, out.duplicate, out.attempts) == (False, True, True, 2)
 
 
 def test_a_business_rejection_is_not_retried():
@@ -141,7 +142,7 @@ def test_notice_summary():
     sends = [e10.NoticeSend(attempts=3, rejected_during_outage=2, accepted=True),
              e10.NoticeSend(attempts=1, accepted=True), e10.NoticeSend(attempts=2, rejected_after_outage=1)]
     assert e10.notice_summary(sends) == {"sent": 3, "accepted": 2, "rejected_during_outage": 2,
-                                         "rejected_after_outage": 1, "retries": 3, "refused": 0}
+                                         "rejected_after_outage": 1, "retries": 3, "refused": 0, "duplicates": 0}
 
 
 def test_send_notices_reuses_one_command_id_per_notice(monkeypatch):
