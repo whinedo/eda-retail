@@ -919,6 +919,11 @@ body.resizing {
   overflow-x: auto;
 }
 
+/* Fuera de la rejilla, la sección es hija del flex en columna de la vista: con overflow-x su altura mínima es 0 y se encogería. */
+.operations > .operations__section {
+  flex: none;
+}
+
 .operations__section h3 {
   margin: 8px 0;
   font-size: 14px;
