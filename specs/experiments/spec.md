@@ -213,10 +213,10 @@ El harness SHALL ofrecer un modo (`RunConfig.component_processes`) en el que cad
 
 ### Requirement: E8 Matriz de puntos de caída (H8)
 
-El sistema SHALL cumplir la hipótesis H8: si cualquier componente cae en cualquier punto de su transacción y se reinicia, toda incidencia se cierra, ningún efecto se repite, ningún evento se pierde ni aparece dos veces en `event_log` y se mantienen I1 a I5. El experimento SHALL ejecutarse en modo en proceso, con `--llm oracle`, 20 incidencias por celda y un 30 % de fallos en `reserve_stock` (para que haya planes revisados), y SHALL recorrer una matriz de componentes por puntos de caída (spec synthetic-data, «Caída en un punto de la transacción») con una sola caída por celda. Primero se ejecuta `baseline`, sin caídas; la unidad K de cada celda es la del medio (⌈n/2⌉) de las n que ese componente atendió en ese punto en `baseline` con la misma semilla. Las celdas son 25:
+El sistema SHALL cumplir la hipótesis H8: si cualquier componente cae en cualquier punto de su transacción y se reinicia, toda incidencia se cierra, ningún efecto se repite, ningún evento se pierde ni aparece dos veces en `event_log` y se mantienen I1 a I5. El experimento SHALL ejecutarse en modo en proceso, con `--llm oracle`, 20 incidencias por celda y un 30 % de fallos en `reserve_stock` (para que haya planes revisados), y SHALL recorrer una matriz de componentes por puntos de caída (spec synthetic-data, «Caída en un punto de la transacción») con una sola caída por celda. Primero se ejecuta `baseline`, sin caídas; la unidad K de cada celda es la del medio (⌈n/2⌉) de las n que ese componente atendió en ese punto en `baseline` con la misma semilla. Las celdas son 23:
 
 - `before_tx`: `interpreter`, `planner` y `replanner`.
-- `after_commit_before_offset`: `interpreter`, `orchestrator`, `event_log` y el proyector `incident_status` (todos los proyectores comparten el consumidor posicionado).
+- `after_commit_before_offset`: `interpreter` y `orchestrator`. `event_log` y los proyectores no entran: guardan su posición en PostgreSQL en la misma transacción que su vista y no confirman offsets en Kafka (spec cqrs-views), así que no hay un momento entre el commit y el offset; su deduplicación ya la miden E4 y E21.
 - `after_commit_before_response`: `intake` (`RegisterCarrierNotice`), `inventory` (`ExecuteStep` de `reserve_stock`), `planner` (`CreatePlan`), `replanner` (`RevisePlan`) y cada ejecutor (`notify_customer`, `file_claim`, `reissue_shipment` e `issue_refund`).
 - `relay_after_publish_before_mark`: el relay de `intake`, `interpreter`, `planner`, `replanner`, `orchestrator`, `inventory` y de cada ejecutor.
 
@@ -225,7 +225,7 @@ La caída entre el efecto externo y el registro de su clave no forma parte de la
 El informe MUST dar, por celda: si la caída se produjo, en qué unidad y a qué hora; incidencias cerradas, abiertas, resueltas y escaladas por motivo; tiempo de recuperación (desde la caída hasta que el componente reiniciado atiende su unidad siguiente); máximo de ejecuciones por `idempotency_key` en los servicios simulados (debe ser 1); `event_id` publicados más de una vez en `eda.events` frente a filas de `event_log.events` por `event_id` (debe ser 1); filas de outbox pendientes al terminar; descartes del inbox (y eventos que un proyector ya tenía en `views.applied_events`); respuestas repetidas por el inbox a un mismo `command_id`; llamadas al LLM de más frente a `baseline`, contadas en el cliente del LLM (las de una caída `before_tx` no dejan `LlmCallRecorded`); latencia (media, mediana y p95); e I1 a I5. Una celda solo cuenta si su caída se produjo y si se ve el mecanismo que la salva:
 
 - `before_tx`: la unidad se vuelve a atender y el cliente del LLM recibe al menos una llamada más que en `baseline`.
-- `after_commit_before_offset`: al menos un descarte del inbox (en `event_log`, un `event_id` que ya estaba; en el proyector, uno que ya estaba en `views.applied_events`).
+- `after_commit_before_offset`: al menos un descarte del inbox del consumidor que cayó.
 - `after_commit_before_response`: al menos una respuesta repetida por el inbox con el mismo `command_id`, que reenvía la saga o, en `intake`, el harness.
 - `relay_after_publish_before_mark`: al menos un `event_id` publicado dos veces en `eda.events`.
 
@@ -259,7 +259,7 @@ El informe MUST dar, por celda: si la caída se produjo, en qué unidad y a qué
 
 #### Scenario: Cumplimiento de H8
 
-- **GIVEN** la ejecución completa de E8, con `baseline` y las 25 celdas
+- **GIVEN** la ejecución completa de E8, con `baseline` y las 23 celdas
 - **WHEN** se evalúa la hipótesis
 - **THEN** H8 se cumple si en todas las celdas la caída se produjo y se vio su mecanismo, todas las incidencias se cerraron, ninguna `idempotency_key` se ejecutó más de una vez, no queda ninguna fila de outbox pendiente, cada evento del outbox tiene una sola fila en `event_log` e I1 a I5 no tienen violaciones
 - **AND** una celda cuya caída no se produjo hace que H8 no se cumpla
