@@ -342,3 +342,43 @@ def test_consumer_state_never_queries_a_threaded_consumer_after_its_thread_stopp
     h = SimpleNamespace(_threaded={"interpreter"}, _stuck=set(), _threads=[], _deliveries=[
         (SimpleNamespace(consumer=SimpleNamespace(name="interpreter", positions=_never_called)), None)])
     assert Harness.consumer_state(h) == {"interpreter": {"thread_alive": False}}
+
+
+def test_in_process_consumers_get_the_session_and_max_poll_interval(monkeypatch):
+    """E9: el intérprete y el orquestador en proceso reciben el `session.timeout.ms` y el `max.poll.interval.ms`"""
+    from eda_retail.experiments import harness as harness_module
+
+    calls = {}
+    monkeypatch.setattr(harness_module, "make_consumer", lambda servers, group, **kw: calls.setdefault(group, kw))
+    monkeypatch.setattr(harness_module.interpreter, "build_consumer", lambda *a, **kw: None)
+    monkeypatch.setattr(harness_module.orchestrator, "build_consumer", lambda *a, **kw: None)
+    h = SimpleNamespace(
+        settings=SimpleNamespace(kafka_bootstrap_servers="k:9092"), _inbox_off=set(), llm=None, rules=None,
+        _connect=lambda: None,
+        config=RunConfig(seed=1, incidents=1, consumer_session_timeout_ms=6000, consumer_max_poll_interval_ms=15000))
+    for factory in Harness._factories(h).values():
+        factory()
+    expected = {"session_timeout_ms": 6000, "max_poll_interval_ms": 15000}
+    assert calls == {"interpreter": expected, "orchestrator": expected}
+
+
+def test_e9_bounds_the_rejoin_after_the_outage(monkeypatch):
+    """Broker congelado: un consumidor que pierde sus particiones vuelve al grupo antes de que E9 se dé por quieto"""
+    from eda_retail.infra.consumer import COMMIT_TIMEOUT_S
+
+    seen = {}
+
+    class Stop(Exception):
+        pass
+
+    def fake_harness(base, config, **kw):
+        seen["config"] = config
+        raise Stop
+
+    monkeypatch.setattr(e9, "Harness", fake_harness)
+    with pytest.raises(Stop):
+        e9.run_variant(None, "paused", seed=1, incidents=2, extra=0)
+    config = seen["config"]
+    assert config.consumer_max_poll_interval_ms == e9.MAX_POLL_INTERVAL_MS
+    assert config.consumer_session_timeout_ms <= e9.MAX_POLL_INTERVAL_MS < e9.IDLE_SECONDS * 1000
+    assert COMMIT_TIMEOUT_S * 1000 < e9.MAX_POLL_INTERVAL_MS

@@ -87,6 +87,14 @@ def test_make_consumer_sets_the_session_timeout_only_when_given(monkeypatch):
                      "auto.offset.reset": "earliest"}
 
 
+def test_make_consumer_sets_the_max_poll_interval_only_when_given(monkeypatch):
+    """`max_poll_interval_ms` acota el rebalance timeout del grupo (E9); sin él, el de librdkafka"""
+    monkeypatch.setattr(kafka, "Consumer", lambda config: config)
+    config = kafka.make_consumer("k:9092", "interpreter", session_timeout_ms=6000, max_poll_interval_ms=15000)
+    assert (config["session.timeout.ms"], config["max.poll.interval.ms"]) == (6000, 15000)
+    assert "max.poll.interval.ms" not in kafka.make_consumer("k:9092", "interpreter", session_timeout_ms=6000)
+
+
 def test_process_log_records_rebalances_messages_and_lock_waits(process_log, monkeypatch):
     """El log de una instancia da los rebalanceos, el inicio y el fin de cada mensaje y las esperas al bloqueo"""
     fake = _Kafka()
