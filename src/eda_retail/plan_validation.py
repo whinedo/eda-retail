@@ -9,13 +9,17 @@
 - `issue_refund` y `reissue_shipment` del mismo pedido son excluyentes, también frente a los pasos ya
   completados (`refund_and_reissue_conflict`).
 
+`refund_over_reissue` no rechaza: sustituye en un plan ya validado el reenvío caro por un reembolso (spec
+incident-planning, «Reembolso en lugar de un reenvío caro»); quien lo usa vuelve a validar el resultado.
+
 `ctx` es cualquier objeto con `rules` (`BusinessRules`). La usan el planner, el replanner, el handler
 compartido (hasta T10b), E5 y la base síncrona.
 """
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+import re
+from collections.abc import Iterable, Mapping
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
@@ -131,3 +135,54 @@ def _check_refund(ctx: Any, s: PlanStep, order_amounts: Mapping[str, Decimal] | 
         raise PlanRejected("refund_limit", f"{s.step_id}: el pedido {order_id} no tiene importe en view_orders")
     if amount > order_amounts[order_id]:
         raise PlanRejected("refund_limit", f"{s.step_id}: {amount} > importe del pedido {order_amounts[order_id]}")
+
+
+_NUMBERED = re.compile(r"^S(\d+)$")
+
+
+def _next_step_id(taken: set[str]) -> str:
+    """`S<n>` con n mayor que el de cualquier `step_id` numerado ya usado en la incidencia."""
+    n = max((int(m[1]) for t in taken if (m := _NUMBERED.match(t))), default=0) + 1
+    while f"S{n}" in taken:
+        n += 1
+    return f"S{n}"
+
+
+def reissue_cost(amount: Decimal, rules: Any) -> Decimal:
+    """Reenviar un pedido: el artículo nuevo (su importe), su transporte y el coste fijo del reenvío."""
+    return amount + amount * rules.shipping_cost_pct / 100 + rules.effect_cost_reissue
+
+
+def refund_over_reissue(steps: list[PlanStep], rules: Any, order_amounts: Mapping[str, Decimal], *,
+                        taken_ids: Iterable[str], external_actions: Mapping[str, str] | None = None) -> list[PlanStep]:
+    """Sustituye cada `reissue_shipment` cuyo coste supera el `refund_over_reissue_pct` % del importe del pedido por
+    un `issue_refund` de ese importe con un `step_id` nuevo. Quita las reservas de ese pedido de las que solo dependía
+    el reenvío; el reembolso no depende de ninguna reserva del pedido (`external_actions`: la acción de los pasos ya
+    hechos de los que se puede depender). Sin el importe del pedido, o si supera `max_refund_amount`, no cambia nada."""
+    external_actions = external_actions or {}
+    taken = set(taken_ids) | {s.step_id for s in steps}
+    result = list(steps)
+    for reissue in [s for s in steps if s.action == Action.REISSUE_SHIPMENT]:
+        order_id = str(reissue.params.get("order_id"))
+        amount = order_amounts.get(order_id)
+        if amount is None or amount > rules.max_refund_amount:
+            continue
+        if reissue_cost(amount, rules) <= amount * rules.refund_over_reissue_pct / 100:
+            continue
+        proposed = {s.step_id for s in result
+                    if s.action == Action.RESERVE_STOCK and str(s.params.get("order_id")) == order_id}
+        reserves = proposed | {sid for sid, action in external_actions.items() if action == Action.RESERVE_STOCK}
+        others = [s for s in result if s.step_id != reissue.step_id]
+        drop = {d for d in reissue.depends_on if d in proposed and not any(d in s.depends_on for s in others)}
+        refund_id = _next_step_id(taken)
+        taken.add(refund_id)
+        refund = PlanStep.model_validate({
+            "step_id": refund_id, "action": Action.ISSUE_REFUND.value,
+            "params": {"order_id": order_id, "amount": float(amount)},
+            "depends_on": [d for d in reissue.depends_on if d not in reserves],
+        })
+        result = [
+            s.model_copy(update={"depends_on": [refund_id if d == reissue.step_id else d for d in s.depends_on]})
+            for s in others if s.step_id not in drop
+        ] + [refund]
+    return result

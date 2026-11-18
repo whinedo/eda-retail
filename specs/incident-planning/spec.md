@@ -57,6 +57,35 @@ Un plan MUST NOT incluir a la vez `issue_refund` y `reissue_shipment` del mismo 
 - **WHEN** el replanner propone un plan con `issue_refund` para P1
 - **THEN** el command handler lo rechaza con el motivo `refund_and_reissue_conflict`
 
+### Requirement: Reembolso en lugar de un reenvío caro
+
+El coste de reenviar un pedido es su importe (el artículo nuevo) más su transporte (`SHIPPING_COST_PCT` % del importe, 10 por defecto) más `EFFECT_COST_REISSUE`; el de reembolsarlo, su importe. Cuando el coste del reenvío supere el `REFUND_OVER_REISSUE_PCT` % del reembolso (120 por defecto), el código SHALL sustituir en el plan validado, del planificador o del replanner, el `reissue_shipment` de ese pedido por un `issue_refund` con `amount` igual al importe del pedido, aunque el LLM proponga el reenvío (regla «El LLM propone y el código dispone»). La sustitución SHALL quitar también los `reserve_stock` de ese pedido que el plan nuevo propone y de los que solo dependía el reenvío; el `issue_refund` lleva un `step_id` nuevo, que no usa ningún paso de la incidencia, y las dependencias del reenvío salvo las reservas de ese pedido (una reserva ya completada la compensa la saga al cancelar el reenvío); los pasos que dependían del reenvío pasan a depender del reembolso. El plan resultante MUST validarse otra vez con las reglas de cualquier plan. No hay sustitución si el importe del pedido no está en `view_orders` o supera `MAX_REFUND_AMOUNT`: el plan sigue con el reenvío. Con `EFFECT_COST_REISSUE` 0 y el transporte al 10 %, el reenvío cuesta el 110 % del importe y no se sustituye.
+
+#### Scenario: Reenvío más caro que el reembolso
+
+- **GIVEN** un pedido P1 de 100 €, `SHIPPING_COST_PCT` 10, `EFFECT_COST_REISSUE` 15 y un plan con `notify_customer`, `reserve_stock` y `reissue_shipment` de P1 que depende de la reserva
+- **WHEN** el planificador valida el plan (el reenvío cuesta 125 €, más del 120 % de 100 €)
+- **THEN** publica `PlanCreated` con `notify_customer` y un `issue_refund` de P1 por 100 €, sin `reserve_stock` ni `reissue_shipment`
+
+#### Scenario: Reenvío dentro del umbral
+
+- **GIVEN** el mismo plan con `EFFECT_COST_REISSUE` 0 (el reenvío cuesta 110 €)
+- **WHEN** el planificador valida el plan
+- **THEN** publica `PlanCreated` con la reserva y el reenvío
+
+#### Scenario: Reembolso por encima del máximo
+
+- **GIVEN** un pedido de 600 € con `MAX_REFUND_AMOUNT` 500 y un reenvío más caro que el 120 % de su importe
+- **WHEN** el planificador valida el plan
+- **THEN** el plan sigue con el reenvío
+
+#### Scenario: Revisión con un reenvío caro
+
+- **GIVEN** una incidencia con `reserve_stock` de P1 completado y un `PlanRevised` propuesto que mantiene `reissue_shipment` de P1, con un reenvío más caro que el 120 % del importe
+- **WHEN** el replanner valida la revisión
+- **THEN** publica `PlanRevised` con un `issue_refund` de P1 por su importe en lugar del reenvío
+- **AND** la saga compensa la reserva completada con `release_stock` y retiene el reembolso hasta que termine
+
 ### Requirement: Pasos independientes en paralelo
 
 La saga SHALL invocar a la vez los comandos `ExecuteStep` de los pasos cuyas dependencias estén cumplidas. MUST NOT invocar un paso con dependencias pendientes.

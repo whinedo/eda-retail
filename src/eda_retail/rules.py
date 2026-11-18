@@ -23,3 +23,13 @@ class BusinessRules:
     max_generations: int = field(default_factory=lambda: _int_env("LLM_MAX_GENERATIONS", 3))
     # Revisiones del plan (spec incident-planning, "Revisiones agotadas").
     max_plan_revisions: int = field(default_factory=lambda: _int_env("MAX_PLAN_REVISIONS", 2))
+    # Reembolso en lugar de un reenvío caro (spec incident-planning): reenviar cuesta el importe del pedido más su
+    # transporte (SHIPPING_COST_PCT %) más EFFECT_COST_REISSUE; si supera el REFUND_OVER_REISSUE_PCT % del importe,
+    # el código pone un reembolso.
+    shipping_cost_pct: Decimal = field(default_factory=lambda: Decimal(os.environ.get("SHIPPING_COST_PCT") or "10"))
+    effect_cost_reissue: Decimal = field(
+        default_factory=lambda: Decimal(os.environ.get("EFFECT_COST_REISSUE") or "0")
+    )
+    refund_over_reissue_pct: Decimal = field(
+        default_factory=lambda: Decimal(os.environ.get("REFUND_OVER_REISSUE_PCT") or "120")
+    )
