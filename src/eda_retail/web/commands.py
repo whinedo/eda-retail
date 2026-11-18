@@ -138,11 +138,15 @@ class CommandRunner:
         self._current: Run | None = None
 
     def start(self, request: CommandRequest, free_text: bool = True) -> Run:
+        return self.start_script(self._script, request.args(free_text), interactive=request.command == "interactive")
+
+    def start_script(self, script: Path, args: list[str], *, interactive: bool = False) -> Run:
+        """Lanza `script` con `args` (ya validados por su lista blanca): la misma ejecución única y el mismo tiempo
+        máximo para scripts/notice.sh y scripts/support.sh (spec web-front, «Soporte técnico»)."""
         with self._lock:
             if self._current is not None and self._current.exit_code is None:
                 raise RunnerBusy
-            argv = [str(self._script), *request.args(free_text)]
-            interactive = request.command == "interactive"
+            argv = [str(script), *args]
             if interactive:
                 master, slave = pty.openpty()
                 try:

@@ -19,6 +19,7 @@ import psycopg
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
+from pydantic import ValidationError
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from eda_retail.config import load_settings
@@ -58,6 +59,7 @@ from eda_retail.web.events import DEFAULT_LIMIT, MAX_LIMIT, events_after, last_s
 from eda_retail.web.health import HealthChecker, check_kafka, check_ollama, check_postgres
 from eda_retail.web.nodes import node_detail
 from eda_retail.web.stream import event_stream, start_seq
+from eda_retail.web.support import SUPPORT_LABEL, SUPPORT_SCRIPT, SupportRequest
 from eda_retail.web.traces import jaeger_ui_url
 
 # Orígenes admitidos: http(s) en localhost, 127.0.0.1 o ::1, con cualquier puerto
@@ -119,6 +121,11 @@ def free_text_enabled() -> bool:
     return _env_flag("WEB_FREE_TEXT")
 
 
+def support_enabled() -> bool:
+    """La vista de soporte técnico (`eda-support`) solo con `WEB_SUPPORT=true` (o `1`)."""
+    return _env_flag("WEB_SUPPORT")
+
+
 def interactive_enabled() -> bool:
     """`interactive` solo con `WEB_INTERACTIVE=true` (o `1`)."""
     return _env_flag("WEB_INTERACTIVE")
@@ -133,16 +140,21 @@ def create_app(
     health: HealthChecker | None = None,
     free_text: bool | None = None,
     interactive: bool | None = None,
+    support_script: Path = SUPPORT_SCRIPT,
+    support: bool | None = None,
 ) -> FastAPI:
     """`stream_max_polls`, `notice_script`, `run_max_seconds` y `health` solo los cambian los tests.
 
     `free_text`: si se admite `send --text`; por defecto lo decide `WEB_FREE_TEXT` (deshabilitado salvo
-    `true` o `1`: la PoC es un ejemplo académico). `interactive`: lo mismo con `WEB_INTERACTIVE`.
+    `true` o `1`: la PoC es un ejemplo académico). `interactive`: lo mismo con `WEB_INTERACTIVE`. `support`: la API
+    de soporte técnico, con `WEB_SUPPORT`; `support_script` solo lo cambian los tests.
     """
     if free_text is None:
         free_text = free_text_enabled()
     if interactive is None:
         interactive = interactive_enabled()
+    if support is None:
+        support = support_enabled()
     runner = CommandRunner(notice_script, run_max_seconds)
 
     @asynccontextmanager
@@ -287,6 +299,7 @@ def create_app(
             "jaeger_ui_url": jaeger_ui_url(),
             "free_text_enabled": free_text,
             "interactive_enabled": interactive,
+            "support_enabled": support,
             "poc_version": version,  # la insignia «Versión 1» o «Versión 2 (MCP + A2A)» de la cabecera
         }
 
@@ -316,6 +329,23 @@ def create_app(
         except RunLaunchError as error:
             raise HTTPException(500, f"no se pudo lanzar {SCRIPT_LABEL}: {error}") from None
         return {"run_id": run.run_id, "argv": [SCRIPT_LABEL, *body.args(free_text)]}
+
+    @app.post("/api/support/runs", status_code=202)
+    async def run_support(http: Request) -> dict:
+        # Deshabilitado, se rechaza antes de leer el cuerpo: 403 con cualquier petición, sin exponer la lista blanca.
+        if not support:
+            raise HTTPException(403, "el soporte técnico está deshabilitado (WEB_SUPPORT)")
+        try:
+            request = SupportRequest.model_validate_json(await http.body())
+        except ValidationError as error:
+            raise HTTPException(422, error.errors(include_url=False, include_context=False, include_input=False)) from None
+        try:
+            run = runner.start_script(support_script, request.args())
+        except RunnerBusy:
+            raise HTTPException(409, "ya hay un comando en ejecución") from None
+        except RunLaunchError as error:
+            raise HTTPException(500, f"no se pudo lanzar {SUPPORT_LABEL}: {error}") from None
+        return {"run_id": run.run_id, "argv": [SUPPORT_LABEL, *request.args()]}
 
     @app.get("/api/commands/{run_id}/stream")
     def command_stream(run_id: str, last_event_id: Annotated[str | None, Header()] = None) -> StreamingResponse:
