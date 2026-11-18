@@ -6,8 +6,10 @@
 # timeout. The shards are disjoint and together cover every test:
 #   fast    -m "not slow"                          (unit and integration tests that are not whole experiments)
 #   slow-a  -m slow on SLOW_A                      (the experiment files listed below)
-#   slow-b  -m slow, ignoring SLOW_A               (every other slow test, wherever it lives)
-# Every shard prints its slowest tests (--durations) to rebalance SLOW_A when needed. The shard commands mirror the
+#   slow-c  -m slow on SLOW_C                      (the experiment files listed below)
+#   slow-b  -m slow, ignoring SLOW_A and SLOW_C    (every other slow test, wherever it lives)
+# A file is listed in SLOW_A or SLOW_C, never in both. Every shard prints its slowest tests (--durations) to
+# rebalance SLOW_A and SLOW_C when needed. The shard commands mirror the
 # local pytest hook of .pre-commit-config.yaml (`uv run pytest -q`): keep them in sync.
 name: checks
 
@@ -32,8 +34,11 @@ env:
     tests/integration/test_e6_compare.py
     tests/integration/test_e17_parked.py
     tests/integration/test_e14_burst_backpressure.py
-    tests/integration/test_e15_llm_degradation.py
+    tests/integration/test_e13_compensation_failure.py
+  SLOW_C: >-
     tests/integration/test_e19_topic_loss.py
+    tests/integration/test_e15_llm_degradation.py
+    tests/integration/test_e20_v2_dependencies.py
 
 jobs:
   hygiene:
@@ -71,7 +76,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [fast, slow-a, slow-b]
+        shard: [fast, slow-a, slow-b, slow-c]
     steps:
       - uses: actions/checkout@v5
 
@@ -92,7 +97,8 @@ jobs:
           case "${{ matrix.shard }}" in
             fast)   uv run pytest -q -m "not slow" --durations=15 ;;
             slow-a) uv run pytest -q -m slow --durations=15 $SLOW_A ;;
-            slow-b) uv run pytest -q -m slow --durations=15 $(printf -- '--ignore=%s ' $SLOW_A) ;;
+            slow-b) uv run pytest -q -m slow --durations=15 $(printf -- '--ignore=%s ' $SLOW_A $SLOW_C) ;;
+            slow-c) uv run pytest -q -m slow --durations=15 $SLOW_C ;;
           esac
 
       - name: Logs de los servicios
