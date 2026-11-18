@@ -18,7 +18,7 @@ import psycopg
 
 from eda_retail.config import Settings, load_settings
 from eda_retail.infra.backoff import Backoff
-from eda_retail.infra.db import connect
+from eda_retail.infra.db import connect, run_loop
 from eda_retail.infra.kafka import make_consumer
 from eda_retail.infra.logs import setup_logging
 from eda_retail.infra.outbox import start_relay
@@ -35,18 +35,9 @@ EXPIRY_INTERVAL_S = 1.0
 
 def _loop(settings: Settings, stop: threading.Event, step: Callable[[psycopg.Connection], object],
           interval: float) -> None:
-    conn = connect(settings.database_url)
-    try:
-        while not stop.is_set():
-            try:
-                busy = step(conn)
-            except Exception:
-                log.exception("fallo en el bucle del orquestador; se reintenta")
-                busy = False
-            if not busy:
-                stop.wait(interval)
-    finally:
-        conn.close()
+    """Dispatcher o plazos: un error se registra y el bucle sigue; si rompió la conexión, se abre otra."""
+    run_loop(lambda: connect(settings.database_url), stop, step, interval=interval,
+             name=threading.current_thread().name)
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -69,7 +60,7 @@ def main(argv: list[str] | None = None) -> None:
     consumer = build_consumer(connect(settings.database_url),
                               make_consumer(settings.kafka_bootstrap_servers, group_id=SCHEMA,
                                             session_timeout_ms=settings.kafka_session_timeout_ms),
-                              settings, rules)
+                              settings, rules).with_reconnect(lambda: connect(settings.database_url))
     try:
         consumer.run_forever()
     finally:

@@ -71,6 +71,36 @@ Si un consumidor cae, SHALL retomar desde su último evento confirmado al reinic
 - **THEN** procesa los dos pasos pendientes
 - **AND** no repite los dos completados
 
+### Requirement: Reconexión a PostgreSQL
+
+Si se pierde la conexión con PostgreSQL (la base se para, se reinicia o deja de responder), cada proceso SHALL seguir vivo y abrir otra conexión cuando la base vuelva, sin que nadie lo reinicie. Toda conexión MUST abrirse con un `connect_timeout` y con TCP keepalive. Una base congelada no corta las conexiones abiertas: esperan sin error y continúan al volver. El relay de cada componente, los consumidores de eventos (intérprete y orquestador), los bucles del dispatcher, de los plazos de la saga y de los avisos aparcados, los proyectores y `event_log` SHALL sustituir la conexión rota por otra y reintentar cada `RETRY_S` mientras la base no responda. Un consumidor de eventos MUST volver a atender el mensaje que falló y solo después confirmar su offset. En los consumidores de eventos, un error que no es de la base sigue terminando el proceso como hasta ahora; los bucles del dispatcher y de los plazos lo registran y siguen. El harness en proceso no usa estos bucles: sus turnos se comportan como antes.
+
+#### Scenario: Consumidor con la base caída
+
+- **GIVEN** el consumidor del intérprete o del orquestador atendiendo un evento
+- **WHEN** la base corta la conexión y tarda en volver
+- **THEN** reintenta abrir otra conexión hasta que la base responde
+- **AND** vuelve a atender ese mismo evento y solo entonces confirma su offset
+
+#### Scenario: Relay con la base caída
+
+- **GIVEN** el relay de un componente con su conexión rota
+- **WHEN** la base vuelve
+- **THEN** abre otra conexión y sigue publicando el outbox
+
+#### Scenario: Bucles del orquestador y del intérprete
+
+- **GIVEN** el dispatcher, los plazos de la saga o los plazos de los avisos aparcados
+- **WHEN** un paso falla porque la base cortó la conexión
+- **THEN** el hilo sigue, abre otra conexión y continúa
+- **AND** un error que no rompe la conexión la conserva
+
+#### Scenario: Proyectores y event_log con la base caída
+
+- **GIVEN** un proyector o `event_log` leyendo eventos
+- **WHEN** la base corta la conexión
+- **THEN** el proceso sigue, abre otra conexión y vuelve a leer desde su posición guardada
+
 ### Requirement: Estado del plan reconstruible
 
 El estado de cada saga SHALL estar en las tablas de su dueño, el orquestador, incluidos sus plazos. Un componente que se reinicia MUST NOT depender de memoria local para saber en qué paso va una incidencia.

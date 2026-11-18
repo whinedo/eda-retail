@@ -30,7 +30,7 @@ from psycopg.types.json import Jsonb
 from eda_retail.config import Settings
 from eda_retail.events.envelope import EventEnvelope
 from eda_retail.infra import tracing
-from eda_retail.infra.db import connect
+from eda_retail.infra.db import CONNECTION_ERRORS, Reconnect, connect, reopen
 from eda_retail.infra.event_store import validate_event
 from eda_retail.infra.kafka import make_producer
 from eda_retail.infra.schemas import qualified
@@ -182,8 +182,10 @@ class ComponentRelay:
         *,
         dlq_topic: str | None = None,
         outbox: bool = True,
+        reconnect: Reconnect | None = None,
     ) -> None:
         self._conn = conn
+        self._reconnect = reconnect  # None: conserva su conexión (harness en proceso); si no, abre otra al perderla
         self._has_outbox = outbox  # False: solo publica dead letters (lado de lectura, sin outbox)
         self._producer = producer
         self._schema = schema
@@ -201,6 +203,7 @@ class ComponentRelay:
             settings.events_topic,
             dlq_topic=settings.dlq_topic,
             outbox=outbox,
+            reconnect=lambda: connect(settings.database_url),
         )
 
     def run_once(self, batch_size: int = 100, flush_timeout: float = 30.0) -> int:
@@ -315,9 +318,20 @@ class ComponentRelay:
             except Exception:  # base de datos caída, cola del productor llena…: el hilo no debe morir
                 log.exception("relay de %s: error; se reintenta en %.1f s", self._schema, error_sleep)
                 stop.wait(error_sleep)
+                self._reopen()
                 continue
             if published + dead == 0:
                 stop.wait(idle_sleep)
+
+    def _reopen(self) -> None:
+        """Con `reconnect`, cambia una conexión rota por otra; si la base aún no responde, lo intenta en la siguiente
+        vuelta (spec resilience, «Reconexión a PostgreSQL»)."""
+        if self._reconnect is None:
+            return
+        try:
+            self._conn = reopen(self._conn, self._reconnect)
+        except CONNECTION_ERRORS:
+            log.warning("relay de %s: sin conexión a la base; se reintenta", self._schema)
 
     def close(self) -> None:
         self._producer.flush(10)
