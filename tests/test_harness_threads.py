@@ -299,3 +299,33 @@ def test_a_run_that_closes_its_incidents_dumps_nothing(monkeypatch):
         release.set()
 
     assert h.stall is None and out.getvalue() == ""
+
+
+def test_a_run_that_goes_idle_with_open_incidents_dumps_what_is_stuck(monkeypatch):
+    """Una ejecución que se queda quieta (`idle_seconds`) con incidencias abiertas también deja `stall`, con el motivo
+    y el estado de cada consumidor: E9 terminaba así, sin llegar a `timeout_seconds`"""
+    out = io.StringIO()
+    monkeypatch.setattr(harness, "STALL_STREAM", out)
+    h = _bare(harness.RunConfig(seed=1, incidents=1, idle_seconds=0.1, timeout_seconds=10))
+    monkeypatch.setattr(h, "closed", lambda: 0)
+    monkeypatch.setattr(h, "step", lambda: 0)
+    monkeypatch.setattr(h, "_open_jobs", lambda: 0)
+    monkeypatch.setattr(h, "_settle", lambda: None)
+    monkeypatch.setattr(h, "consumer_state", lambda: {"interpreter": {"thread_alive": True, "health": {"polls": 9}}})
+    h.run_until_closed()
+    assert h.stall["reason"] == "idle"
+    assert h.stall["consumers"]["interpreter"]["health"] == {"polls": 9}
+    assert "idle" in out.getvalue()
+
+
+def test_consumer_state_of_a_threaded_consumer_includes_its_own_health(monkeypatch):
+    """El diagnóstico de un consumidor con hilo propio lee lo que él mismo anotó, sin llamar a Kafka desde este hilo"""
+    monkeypatch.setattr(harness, "JobWorker", _Worker)
+    consumer = _Consumer([])
+    consumer.health = lambda: {"assigned": [0, 1, 2]}
+    consumer.positions = lambda: pytest.fail("no se consulta Kafka desde otro hilo")
+    h = _bare()
+    h.targets = {}
+    h._deliveries = [(FaultyDelivery(h._tracked(consumer), FaultPlan()), lambda: h._tracked(consumer))]
+    h._threaded = {"interpreter"}
+    assert h.consumer_state() == {"interpreter": {"thread_alive": False, "health": {"assigned": [0, 1, 2]}}}

@@ -1380,16 +1380,18 @@ class Harness:
             time.sleep(IDLE_SLEEP_S)
         return moved
 
-    def stall_snapshot(self) -> dict[str, Any]:
-        """Qué tiene la ejecución por ocupada cuando vence `timeout_seconds` sin cerrar las incidencias (E9 y E17 se
-        quedaban así): lo que cuenta como trabajo en curso, la pila de cada hilo (leer sus marcos no toca Kafka ni la
-        base de ese hilo) y las sesiones de PostgreSQL que esperan un bloqueo o tienen una transacción abierta."""
+    def stall_snapshot(self, reason: str = "timeout") -> dict[str, Any]:
+        """Qué tiene la ejecución por ocupada cuando termina sin cerrar las incidencias, porque vence `timeout_seconds`
+        o porque pasa `idle_seconds` sin avance (`reason`; E9 y E17 se quedaban así): lo que cuenta como trabajo en
+        curso, la pila de cada hilo (leer sus marcos no toca Kafka ni la base de ese hilo), el estado de cada consumidor
+        (`consumer_state`) y las sesiones de PostgreSQL que esperan un bloqueo o tienen una transacción abierta."""
         frames = sys._current_frames()
         current = threading.get_ident()
         threads = {t.name: traceback.format_stack(frames[t.ident])[-STALL_FRAMES:]
                    for t in threading.enumerate() if t.ident in frames and t.ident != current}
         commands = getattr(self, "commands", None)
-        return {"busy": self._activity.busy, "open_jobs": _try(self._open_jobs),
+        return {"reason": reason, "busy": self._activity.busy, "open_jobs": _try(self._open_jobs),
+                "consumers": _try(self.consumer_state),
                 "awaiting_recovery": _try(commands.awaiting_recovery) if commands is not None else None,
                 "threads": threads, "database": self._database_waits()}
 
@@ -1415,9 +1417,10 @@ class Harness:
         """Al log y a `sys.__stderr__` (en consola al ejecutar el experimento; pytest lo captura, así que los tests de
         integración lo sacan del informe)."""
         summary = {k: v for k, v in stall.items() if k != "threads"}
-        log.warning("plazo vencido sin cerrar las incidencias: %s", json.dumps(summary, default=str))
+        why = "sin avance" if stall.get("reason") == "idle" else "plazo vencido"
+        log.warning("%s sin cerrar las incidencias: %s", why, json.dumps(summary, default=str))
         stream = STALL_STREAM or sys.__stderr__
-        stream.write("== harness: plazo vencido sin cerrar las incidencias ==\n"
+        stream.write(f"== harness: {why} sin cerrar las incidencias ({stall.get('reason')}) ==\n"
                      + json.dumps(summary, indent=1, default=str, ensure_ascii=False) + "\n")
         for name, stack in stall["threads"].items():
             stream.write(f"-- hilo {name}\n{''.join(stack)}")
@@ -1464,12 +1467,14 @@ class Harness:
         while self.closed() < target:
             now = time.monotonic()
             if now - start > self.config.timeout_seconds:
-                self.stall = self.stall_snapshot()
+                self.stall = self.stall_snapshot("timeout")
                 self._dump_stall(self.stall)
                 break
             if self._advance():
                 last = now
-            elif now - last > self.config.idle_seconds:
+            elif now - last > self.config.idle_seconds:  # quieto con incidencias abiertas: E9 terminaba así
+                self.stall = self.stall_snapshot("idle")
+                self._dump_stall(self.stall)
                 break
             on_turn()
         # Un último repaso para que las vistas y el log reflejen todo lo publicado.
@@ -1505,8 +1510,9 @@ class Harness:
 
     def consumer_state(self) -> dict[str, dict[str, Any]]:
         """Diagnóstico de cada consumidor de Kafka (E9). Uno que se atiende en los turnos: particiones asignadas con su
-        posición (un error de Kafka queda en `error`). Uno con hilo propio: solo si el hilo sigue vivo; consultar su
-        asignación desde este hilo mientras el suyo está en `poll` se bloquea sin límite (lo vio el CI de E9)."""
+        posición (un error de Kafka queda en `error`). Uno con hilo propio: si el hilo sigue vivo y lo que él mismo anotó
+        (`EventConsumer.health`); consultar su asignación a Kafka desde este hilo mientras el suyo está en `poll` se
+        bloquea sin límite (lo vio el CI de E9)."""
         alive = {t.name: t.is_alive() for t in self._threads} | dict.fromkeys(self._stuck, True)
         state: dict[str, dict[str, Any]] = {}
         for delivery, _ in self._deliveries:
@@ -1514,6 +1520,9 @@ class Harness:
             entry: dict[str, Any] = {}
             if consumer.name in self._threaded:  # también tras `_stop_threads`, que vacía `_threads`
                 entry["thread_alive"] = alive.get(f"harness-{consumer.name}", False)
+                health = getattr(consumer, "health", None)  # lo que anotó desde su hilo: no llama a Kafka
+                if callable(health):
+                    entry["health"] = _try(health)
             else:
                 try:
                     entry["positions"] = consumer.positions()
