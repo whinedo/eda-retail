@@ -11,7 +11,7 @@
 #   slow-b  -m slow, ignoring SLOW_A, SLOW_C and SLOW_D (every other slow test, wherever it lives)
 # A file is listed in only one of SLOW_A, SLOW_C and SLOW_D. Every shard prints its slowest tests (--durations) to
 # rebalance them when needed. slow-d dumps every thread's stack if a test (fixture setup included) runs past
-# 9 min (faulthandler_timeout), to see where E9 hangs. The slow shards run pytest -v, one line per test, so a shard cut by the timeout still
+# 9 min (faulthandler_timeout), to see where a hung test is stuck. The slow shards run pytest -v, one line per test, so a shard cut by the timeout still
 # shows which test was running. The pytest step has its own timeout, below the job's, so the service logs are
 # printed even then. The shard commands mirror the local pytest hook of .pre-commit-config.yaml (`uv run pytest -q`):
 # keep the selection in sync.
