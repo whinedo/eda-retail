@@ -565,7 +565,7 @@ Con los datos de las capturas, los avisos de retraso (`delay`, pedido `P-1001`) 
 
 Se abre con el enlace **Operaciones**, junto al título de la vista de pedidos, o directamente con la ruta `#/analytics/operations` (en `localhost:5173`). La cabecera no tiene un enlace propio para ella. Arriba están **← Vista principal** y **← Estado de los pedidos** (vuelve a la vista de §9.1–§9.5), y a la derecha del título el enlace **Beneficio** (§9.7).
 
-![Vista de operaciones: contadores, escaladas por motivo y tabla de incidencias](capturas-manual-eda/16-operaciones-vista.png)
+![Vista de operaciones: contadores, escaladas por motivo y tabla de incidencias](capturas-manual-eda/25-operaciones-vista.png)
 
 La vista de pedidos responde a «¿cómo está cada pedido?». Esta responde a **«¿cómo funciona el sistema?»**: cuántas incidencias se resuelven y cuántas se escalan, y por qué; cuánto cuestan y cuánto tardan; cuánto replanifica el sistema; qué calidad tiene el LLM y cuán al día están las vistas. Como la de pedidos, **solo lee**: se alimenta de proyecciones (`incident_metrics`, `cost_per_incident`, `carrier_dashboard`…) a través de `GET /api/operations/*`, va con un pequeño retraso respecto a los eventos (consistencia eventual) y se actualiza sola. «Resetear simulación» no la afecta: cubre todo el histórico. En la barra de la tabla, «leído hasta p0 145 · p1 199 · p2 126» indica hasta qué offset de cada partición de Kafka ha leído la vista.
 
@@ -602,7 +602,7 @@ Los controles son los de la vista de pedidos (§9.4): **en vivo / Pausar** conge
 
 Debajo de la tabla de incidencias hay cinco secciones:
 
-![Coste por escenario, llamadas al LLM, replanificación, transportistas y frescura de las vistas](capturas-manual-eda/17-operaciones-tablas.png)
+![Coste por escenario, llamadas al LLM, replanificación, transportistas y frescura de las vistas](capturas-manual-eda/26-operaciones-tablas.png)
 
 - **Coste por escenario.** Una fila por pareja de causa y gravedad (`delay / low`, `loss / high`…) con el número de incidencias, los tokens medios, el coste del LLM, el coste de los efectos y lo reembolsado. Las incidencias sin causa ni gravedad (escaladas con `no_valid_orders`) salen agrupadas en **Sin interpretar**. Mientras no haya precios configurados (`LLM_PRICE_IN_PER_1K`, `LLM_PRICE_OUT_PER_1K`, `EFFECT_COST_CLAIM` y `EFFECT_COST_REISSUE`), el coste en dinero es 0 y la vista lo avisa; los **tokens** sí cuentan, y son la medida útil. Una pérdida (`loss / high`) gasta bastantes más tokens que un retraso leve (`delay / low`), que se planifica sin LLM del planificador.
 - **Llamadas al LLM por agente.** Por cada agente con LLM (`interpreter`, `planner`, `replanner` y `writer`): llamadas, tokens de entrada y de salida, latencia media, **p95** y porcentaje de validaciones superadas. El p95 se calcula por rango más próximo (el valor que ocupa la posición 0,95·N, redondeada hacia arriba, entre las N latencias ordenadas); al pasar el ratón sobre la cabecera sale ese texto. Un agente sin llamadas aparece con 0 y sin latencia.
@@ -610,7 +610,7 @@ Debajo de la tabla de incidencias hay cinco secciones:
 - **Transportistas.** Por transportista: incidencias, retrasos, reclamaciones y reembolsos. Con `POC_VERSION=2` hay además una tabla de **consultas A2A** por resultado (`answered`, `timeout`, `failed` o `rejected_by_guardrail`), con el número de consultas, las rondas medias y la latencia media (§13). Con la versión 1 no hay tabla, y dice que esas consultas solo existen con `POC_VERSION=2`; no es un error.
 - **Frescura de las vistas.** Por proyector y por partición: la posición **aplicada**, el **end offset** (lo último que hay en Kafka) y el **lag**, la diferencia entre ambos, además de un total por proyector. Un lag de 0 significa que la vista está al día; un lag mayor que 0 sale destacado (la vista va por detrás de los eventos), y **«sin datos»** significa que Kafka no respondió, no que el lag sea 0.
 
-![Frescura de las vistas: posición aplicada, end offset y lag por proyector](capturas-manual-eda/18-operaciones-frescura.png)
+![Frescura de las vistas: posición aplicada, end offset y lag por proyector](capturas-manual-eda/27-operaciones-frescura.png)
 
 Con un log vacío, los contadores valen 0 y la tabla dice «Sin incidencias todavía». Si falla la carga, aparece un error rojo encima de las tablas y la vista se recupera sola en el siguiente refresco. Si el backend no responde, la cabecera muestra «Backend: sin conexión».
 
@@ -618,7 +618,7 @@ Con un log vacío, los contadores valen 0 y la tabla dice «Sin incidencias toda
 
 Se abre con el enlace **Beneficio**, junto al título de la vista de Operaciones, o directamente con la ruta `#/analytics/operations/profit` (en `localhost:5173`). **← Operaciones** vuelve a la vista de operaciones y **← Vista principal** al mapa.
 
-![Vista de beneficio: gráfica en cascada y tabla de importes](capturas-manual-eda/19-beneficio.png)
+![Vista de beneficio: gráfica en cascada y tabla de importes](capturas-manual-eda/28-beneficio.png)
 
 Responde a **«¿gana o pierde dinero la tienda con este sistema?»**. Arriba, **Beneficio total**, en verde si es positivo y en rojo si es negativo. Debajo, una **gráfica en cascada**: una barra azul de **Ingresos**, una barra naranja que baja por cada gasto (**Transporte**, **Transp. reenvíos**, **Reenvíos**, **Reembolsos**, **Reclamaciones** y **LLM**) y una barra final con el **Beneficio**. Debajo de la gráfica, una tabla con cada línea y su importe en euros, y una nota con cómo se calcula.
 
