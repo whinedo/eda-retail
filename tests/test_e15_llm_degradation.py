@@ -174,7 +174,7 @@ def test_failed_llm_jobs_are_closed_by_a_short_plan_deadline():
     from eda_retail.experiments.e15_llm_degradation import plan_timeout_for
     from eda_retail.synthetic.faults import should_fail
 
-    assert plan_timeout_for("error", 4.0) == 4.0 and plan_timeout_for("slow", 4.0) == 4.0
-    assert plan_timeout_for("baseline", 4.0) is None and plan_timeout_for("invalid", 4.0) is None
+    assert plan_timeout_for("error", 1.5) == 4.0 and plan_timeout_for("slow", 1.5) == 1.5
+    assert plan_timeout_for("baseline") is None and plan_timeout_for("invalid") is None
     incident = "I-876a9512-c8aa-5363-8533-2c17eff43122"
     assert all(should_fail(42, "error", f"replanner:{incident}:{n}", 0.3) for n in range(1, 7))

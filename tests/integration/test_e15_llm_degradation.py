@@ -1,7 +1,8 @@
 """E15 Degradación del LLM (spec experiments) de punta a punta con el LLM oráculo degradado. Una sola ejecución de E15
 (las cuatro variantes) para todos los escenarios: con la semilla 15 y 15 incidencias, 13 llaman al planner, 4 agotan
-sus generaciones en `invalid` y una falla en su primera llamada en `error`. El plazo de plan de 1,5 s queda por debajo
-de la cola del planner en `slow` (13 llamadas de 0,5 s)."""
+sus generaciones en `invalid` y una falla en su primera llamada en `error`. El plazo de plan de `slow` (1,5 s) queda
+por debajo de su cola del planner (13 llamadas de 0,5 s); `error` mantiene 4 s para que su único trabajo reintentado
+no se adelante al plazo."""
 
 from __future__ import annotations
 
@@ -16,7 +17,7 @@ pytestmark = pytest.mark.slow
 
 @pytest.fixture(scope="module")
 def report(base_settings):
-    return run_e15(base_settings, seed=15, incidents=15, plan_timeout_s=1.5)
+    return run_e15(base_settings, seed=15, incidents=15, slow_plan_timeout_s=1.5)
 
 
 def _detail(report, variant: str) -> str:

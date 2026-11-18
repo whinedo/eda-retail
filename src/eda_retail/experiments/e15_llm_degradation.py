@@ -114,21 +114,23 @@ def job_attempts(h: Harness) -> dict[str, dict[str, int]]:
     return out
 
 
-def plan_timeout_for(variant: str, seconds: float) -> float | None:
-    """Plazo de plan de la variante: corto en `slow` (la cola supera el plazo) y en `error` (un trabajo que agota sus
-    intentos no publica nada); None (el de la configuración) en las demás."""
-    return seconds if variant in SHORT_PLAN_DEADLINE else None
+def plan_timeout_for(variant: str, slow_seconds: float = PLAN_TIMEOUT_S) -> float | None:
+    """Plazo de plan de la variante: `slow_seconds` en `slow` (la cola supera el plazo), `PLAN_TIMEOUT_S` en `error` (un
+    trabajo que agota sus intentos no publica nada) y None (el de la configuración) en las demás."""
+    if variant == "slow":
+        return slow_seconds
+    return PLAN_TIMEOUT_S if variant in SHORT_PLAN_DEADLINE else None
 
 
 def run_variant(base: Settings, variant: str, *, seed: int, incidents: int,
-                plan_timeout_s: float = PLAN_TIMEOUT_S) -> dict[str, Any]:
+                slow_plan_timeout_s: float = PLAN_TIMEOUT_S) -> dict[str, Any]:
     data = generate(seed, incidents)
     degradation = VARIANTS[variant]
     llm = Oracle(data).client()
     if degradation is not None:
         llm = DegradedLlm(llm, seed=seed, **degradation)
     config = RunConfig(seed=seed, incidents=incidents, faults=FaultPlan(seed=seed, fail_probability=FAIL_PROBABILITY),
-                       plan_timeout_seconds=plan_timeout_for(variant, plan_timeout_s))
+                       plan_timeout_seconds=plan_timeout_for(variant, slow_plan_timeout_s))
     with Harness(base, config, data=data, llm=llm) as h:
         h.send_notices()
         result = h.result(h.run_until_closed())
@@ -148,14 +150,15 @@ def run_variant(base: Settings, variant: str, *, seed: int, incidents: int,
     return metrics
 
 
-def run_e15(base: Settings, *, seed: int = 42, incidents: int = 50, plan_timeout_s: float = PLAN_TIMEOUT_S) -> Report:
-    results = {v: run_variant(base, v, seed=seed, incidents=incidents, plan_timeout_s=plan_timeout_s)
+def run_e15(base: Settings, *, seed: int = 42, incidents: int = 50,
+            slow_plan_timeout_s: float = PLAN_TIMEOUT_S) -> Report:
+    results = {v: run_variant(base, v, seed=seed, incidents=incidents, slow_plan_timeout_s=slow_plan_timeout_s)
                for v in VARIANTS}
     holds = all(m["h15"] and invariants.gate(m["invariants"]) for m in results.values())
     return Report(
         experiment="E15", seed=seed, model=Oracle.model,
         config={"incidents": incidents, "mode": "in_process", "fail_probability": FAIL_PROBABILITY,
-                "plan_timeout_s": plan_timeout_s, "variants": {k: v or {} for k, v in VARIANTS.items()}},
+                "plan_timeout_s": {"slow": slow_plan_timeout_s, "error": PLAN_TIMEOUT_S}, "variants": {k: v or {} for k, v in VARIANTS.items()}},
         metrics={"variants": results},
         hypothesis={"H15": holds},
     )
