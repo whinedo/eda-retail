@@ -1248,6 +1248,24 @@ class Harness:
         lags = {group: group_lag(self._admin, group, topic, highs) for group in self._factories()}
         return lags | {reader.consumer: reader.lag() for reader in self._readers}
 
+    def consumer_state(self) -> dict[str, dict[str, Any]]:
+        """Diagnóstico de cada consumidor de Kafka (E9): particiones asignadas con su posición y, si tiene hilo
+        propio, si sigue vivo. Un error de Kafka al consultarlo queda en `error` en vez de interrumpir la ejecución."""
+        alive = {t.name: t.is_alive() for t in self._threads}
+        state: dict[str, dict[str, Any]] = {}
+        for delivery, _ in self._deliveries:
+            consumer = delivery.consumer
+            entry: dict[str, Any] = {}
+            try:
+                entry["positions"] = consumer.positions()
+            except Exception as exc:  # noqa: BLE001 — diagnóstico: no debe tumbar el experimento
+                entry["error"] = repr(exc)
+            thread = f"harness-{consumer.name}"
+            if thread in alive:
+                entry["thread_alive"] = alive[thread]
+            state[consumer.name] = entry
+        return state
+
     # -- mensajes veneno (E18) -----------------------------------------------------------------
     def dead_letter_consumers(self) -> list[tuple[str, str, Callable[[str | None], bool]]]:
         """(consumidor, esquema de su `dead_letters`, si atiende un `event_type`) de cada consumidor del

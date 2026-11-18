@@ -132,14 +132,26 @@ def h9_variant(variant: str, metrics: Mapping[str, Any]) -> bool:
             and all(inv["violations"] == 0 for inv in metrics["invariants"].values()))
 
 
+def diagnostics(h: Harness) -> dict[str, Any]:
+    """Lag de cada grupo y estado de cada consumidor al terminar, antes de que `event_log` se ponga al día: si una
+    incidencia queda abierta, dice qué consumidor se quedó atrás y si su hilo sigue vivo."""
+    try:
+        lag: dict[str, Any] = h.lags()
+    except Exception as exc:  # noqa: BLE001 — diagnóstico: no debe tumbar el experimento
+        lag = {"error": repr(exc)}
+    return {"group_lag": lag, "consumers": h.consumer_state()}
+
+
 def run_variant(base: Settings, variant: str, *, seed: int, incidents: int, extra: int = EXTRA_NOTICES,
-                outage_s: float = OUTAGE_S, outage: Callable[..., Any] = BrokerOutage) -> dict[str, Any]:
+                outage_s: float = OUTAGE_S, outage: Callable[..., Any] = BrokerOutage,
+                run_timeout_s: float | None = None) -> dict[str, Any]:
     total = incidents + extra
     data = generate(seed, total)
     mode = VARIANTS[variant]
     config = RunConfig(seed=seed, incidents=total, tolerate_relay_errors=True,
                        relay_flush_timeout_seconds=RELAY_FLUSH_TIMEOUT_S, consumer_session_timeout_ms=SESSION_TIMEOUT_MS,
-                       idle_seconds=IDLE_SECONDS)
+                       idle_seconds=IDLE_SECONDS,
+                       **({} if run_timeout_s is None else {"timeout_seconds": run_timeout_s}))
     with Harness(base, config, data=data, llm=Oracle(data).client()) as h:
         sampler = PendingSampler(h)
         h.send_notices(range(incidents))
@@ -171,6 +183,7 @@ def run_variant(base: Settings, variant: str, *, seed: int, incidents: int, extr
         elapsed = h.run_until_closed(on_turn=sampler)
         sampler.force()  # `_settle` no muestrea: una muestra final para el tiempo de vaciado
         result = h.result(elapsed)
+        diagnosis = diagnostics(h)
         h.catch_up_log()
         counts = log_counts(h)
         messages = h.messages()
@@ -187,6 +200,7 @@ def run_variant(base: Settings, variant: str, *, seed: int, incidents: int, extr
             "messages": messages, **counts, "repeated_messages": messages - counts["log_rows"],
             "inbox_duplicates": {name: n for (name, outcome), n in h.outcomes.items() if outcome == "duplicate"},
             "latency_ms": summary(result.latencies_ms),
+            **diagnosis,
         }
         metrics["invariants"] = invariants.check(h)
     metrics["h9"] = h9_variant(variant, metrics)
@@ -200,8 +214,10 @@ def p95_ratio(metrics: Mapping[str, Any], baseline: Mapping[str, Any]) -> float 
 
 
 def run_e9(base: Settings, *, seed: int = 42, incidents: int = 50, extra: int = EXTRA_NOTICES,
-           outage_s: float = OUTAGE_S) -> Report:
-    results = {v: run_variant(base, v, seed=seed, incidents=incidents, extra=extra, outage_s=outage_s)
+           outage_s: float = OUTAGE_S, run_timeout_s: float | None = None) -> Report:
+    """`run_timeout_s`: plazo total de `run_until_closed` por variante; None, el de `RunConfig` (300 s)."""
+    results = {v: run_variant(base, v, seed=seed, incidents=incidents, extra=extra, outage_s=outage_s,
+                              run_timeout_s=run_timeout_s)
                for v in VARIANTS}
     for metrics in results.values():
         metrics["p95_vs_baseline"] = p95_ratio(metrics, results["baseline"])

@@ -11,10 +11,11 @@ from collections import Counter
 from types import SimpleNamespace
 
 import pytest
-from confluent_kafka import KafkaError, KafkaException
+from confluent_kafka import KafkaError, KafkaException, TopicPartition
 
 from eda_retail.experiments import e9_kafka_down as e9
 from eda_retail.experiments.harness import Harness, RunConfig
+from eda_retail.infra.consumer import EventConsumer
 from eda_retail.infra.outbox import RelayDeliveryError
 from eda_retail.synthetic import broker_faults
 from eda_retail.synthetic.broker_faults import BrokerOutage
@@ -278,3 +279,51 @@ def test_pending_sampler_tracks_the_maximum_and_the_drain_time(monkeypatch):
 def test_p95_ratio_against_baseline():
     assert e9.p95_ratio({"latency_ms": {"p95": 300.0}}, {"latency_ms": {"p95": 100.0}}) == 3.0
     assert e9.p95_ratio({"latency_ms": {"p95": 300.0}}, {"latency_ms": {"p95": None}}) is None
+
+
+# --- diagnóstico de consumidores --------------------------------------------------------------------------------
+class FakeKafka:
+    def __init__(self, positions: dict[int, int]) -> None:
+        self._positions = positions
+
+    def assignment(self) -> list[TopicPartition]:
+        return [TopicPartition("t", p) for p in self._positions]
+
+    def position(self, partitions: list[TopicPartition]) -> list[TopicPartition]:
+        return [TopicPartition(tp.topic, tp.partition, self._positions[tp.partition]) for tp in partitions]
+
+
+def test_consumer_positions_by_assigned_partition():
+    """Diagnóstico: cada partición asignada con el siguiente offset que leerá el consumidor"""
+    consumer = SimpleNamespace(_kafka=FakeKafka({0: 7, 2: -1001}))
+    assert EventConsumer.positions(consumer) == {0: 7, 2: -1001}
+
+
+class BrokenConsumer:
+    name = "orchestrator"
+
+    def positions(self) -> dict[int, int]:
+        raise KafkaException(KafkaError(KafkaError._TRANSPORT))
+
+
+def test_consumer_state_reports_positions_thread_and_errors():
+    """Diagnóstico: posiciones por consumidor, si su hilo sigue vivo y, si Kafka falla, el error sin interrumpir"""
+    interpreter = SimpleNamespace(name="interpreter", positions=lambda: {1: 3})
+    thread = threading.Thread(target=lambda: None, name="harness-interpreter")
+    thread.start()
+    thread.join()
+    h = SimpleNamespace(_threads=[thread], _deliveries=[(SimpleNamespace(consumer=interpreter), None),
+                                                        (SimpleNamespace(consumer=BrokenConsumer()), None)])
+    state = Harness.consumer_state(h)
+    assert state["interpreter"] == {"positions": {1: 3}, "thread_alive": False}
+    assert set(state["orchestrator"]) == {"error"} and "_TRANSPORT" in state["orchestrator"]["error"]
+
+
+def test_diagnostics_keeps_the_lag_error_and_the_consumer_state():
+    """Diagnóstico de E9: un fallo al leer el lag queda en el informe y no tumba la variante"""
+    def lags() -> dict[str, int]:
+        raise KafkaException(KafkaError(KafkaError._TRANSPORT))
+
+    h = SimpleNamespace(lags=lags, consumer_state=lambda: {"interpreter": {"positions": {}}})
+    d = e9.diagnostics(h)
+    assert set(d["group_lag"]) == {"error"} and d["consumers"] == {"interpreter": {"positions": {}}}

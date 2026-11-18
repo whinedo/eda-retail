@@ -7,19 +7,42 @@ tiene al menos un lote sin confirmar."""
 from __future__ import annotations
 
 import json
+import logging
+from collections import deque
 
 import pytest
 
 from eda_retail.experiments.e9_kafka_down import RELAY_FLUSH_TIMEOUT_S, run_e9
 
 OUTAGE_S = 10
+RUN_TIMEOUT_S = 120  # si una variante se atasca, el shard pierde 2 min y no los 5 del plazo por defecto
+LOG_TAIL = 300
 
 pytestmark = pytest.mark.slow
+
+LOGS: deque[str] = deque(maxlen=LOG_TAIL)
+
+
+class _Tail(logging.Handler):
+    """Las últimas líneas de log de los componentes: pytest no muestra las del fixture de módulo si falla otro test."""
+
+    def emit(self, record: logging.LogRecord) -> None:
+        if record.levelno >= logging.WARNING or record.name.startswith("eda_retail.infra.consumer"):
+            LOGS.append(self.format(record))
 
 
 @pytest.fixture(scope="module")
 def report(base_settings):
-    return run_e9(base_settings, seed=9, incidents=12, extra=4, outage_s=OUTAGE_S)
+    logger = logging.getLogger("eda_retail")
+    handler, level = _Tail(), logger.level
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(threadName)s %(name)s: %(message)s"))
+    logger.addHandler(handler)
+    logger.setLevel(logging.INFO)
+    try:
+        yield run_e9(base_settings, seed=9, incidents=12, extra=4, outage_s=OUTAGE_S, run_timeout_s=RUN_TIMEOUT_S)
+    finally:
+        logger.removeHandler(handler)
+        logger.setLevel(level)
 
 
 def _detail(report, variant: str) -> str:
@@ -27,8 +50,9 @@ def _detail(report, variant: str) -> str:
     keys = ("open", "escalation_reasons", "outage", "planned_at_cut", "accepted_during_outage",
             "max_pending_during_outage", "published_during_outage", "pending_at_end", "relay_errors", "commit_failures", "max_relay_turn_seconds",
             "drain_seconds",
-            "messages", "outbox_rows", "log_rows", "missing_in_log", "repeated_messages", "inbox_duplicates")
-    return json.dumps({k: m[k] for k in keys}, default=str)
+            "messages", "outbox_rows", "log_rows", "missing_in_log", "repeated_messages", "inbox_duplicates",
+            "group_lag", "consumers")
+    return json.dumps({k: m[k] for k in keys}, default=str) + "\n--- log ---\n" + "\n".join(LOGS)
 
 
 def _recovered(report, variant: str) -> None:
