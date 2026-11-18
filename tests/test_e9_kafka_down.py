@@ -318,7 +318,7 @@ def test_consumer_state_reports_positions_thread_and_errors():
     thread = threading.Thread(target=lambda: None, name="harness-interpreter")
     thread.start()
     thread.join()
-    h = SimpleNamespace(_threaded={"interpreter"}, _threads=[thread], _deliveries=[(SimpleNamespace(consumer=interpreter), None),
+    h = SimpleNamespace(_threaded={"interpreter"}, _stuck=set(), _threads=[thread], _deliveries=[(SimpleNamespace(consumer=interpreter), None),
                                                         (SimpleNamespace(consumer=planner), None),
                                                         (SimpleNamespace(consumer=BrokenConsumer()), None)])
     state = Harness.consumer_state(h)
@@ -339,6 +339,6 @@ def test_diagnostics_keeps_the_lag_error_and_the_consumer_state():
 
 def test_consumer_state_never_queries_a_threaded_consumer_after_its_thread_stopped():
     """Diagnóstico: tras parar los hilos (`_threads` vacío), un consumidor con hilo propio sigue sin consultarse"""
-    h = SimpleNamespace(_threaded={"interpreter"}, _threads=[], _deliveries=[
+    h = SimpleNamespace(_threaded={"interpreter"}, _stuck=set(), _threads=[], _deliveries=[
         (SimpleNamespace(consumer=SimpleNamespace(name="interpreter", positions=_never_called)), None)])
     assert Harness.consumer_state(h) == {"interpreter": {"thread_alive": False}}

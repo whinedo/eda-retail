@@ -22,7 +22,7 @@ from collections.abc import Callable, Mapping
 from typing import Protocol, runtime_checkable
 
 import psycopg
-from confluent_kafka import Consumer, Message, TopicPartition
+from confluent_kafka import Consumer, KafkaError, KafkaException, Message, TopicPartition
 from opentelemetry.trace import SpanKind
 from pydantic import ValidationError
 
@@ -36,6 +36,10 @@ from eda_retail.infra.db import connect
 from eda_retail.infra.kafka import make_consumer
 
 log = logging.getLogger("eda_retail.consumer")
+
+# Lo que espera un commit de offset a que el grupo lo tenga (spec event-backbone, «Entrega al menos una vez»).
+COMMIT_TIMEOUT_S = 10.0
+COMMIT_CHECK_S = 0.05  # pausa entre lecturas del offset confirmado
 
 
 class Outcome(enum.Enum):
@@ -122,8 +126,10 @@ class EventConsumer:
         on_dead_letter: DeadLetterHook | None = None,
         schema: str,
         reconnect: db.Reconnect | None = None,
+        commit_timeout_s: float = COMMIT_TIMEOUT_S,
     ) -> None:
         self.name = name
+        self._commit_timeout_s = commit_timeout_s
         self._reconnect = reconnect  # None: un error de la base sube (harness en proceso); si no, se reconecta
         self.schema = schema  # esquema del componente: su inbox y sus dead letters
         self._on_dead_letter = on_dead_letter
@@ -231,8 +237,24 @@ class EventConsumer:
                                  hook=self._on_dead_letter, schema=self.schema)
 
     def commit(self, msg: Message) -> None:
-        """Confirma el offset en Kafka. Llamar solo tras el COMMIT de PostgreSQL."""
-        self._kafka.commit(message=msg, asynchronous=False)
+        """Confirma el offset en Kafka. Llamar solo tras el COMMIT de PostgreSQL.
+
+        Espera como mucho `commit_timeout_s` a que el grupo tenga el offset siguiente al mensaje y, si no, lanza
+        `KafkaException`, como un commit fallido: el consumidor cae sin confirmar y Kafka vuelve a entregar el
+        mensaje. Un commit síncrono de librdkafka no tiene plazo y, tras perder el coordinador, puede no volver
+        nunca (lo vio el CI de E9); este espera en el hilo del consumidor, sin bloquearse dentro de librdkafka."""
+        self._kafka.commit(message=msg, asynchronous=True)
+        partition = TopicPartition(msg.topic(), msg.partition())
+        deadline = time.monotonic() + self._commit_timeout_s
+        while (remaining := deadline - time.monotonic()) > 0:
+            [tp] = self._kafka.committed([partition], timeout=remaining)  # sin respuesta a tiempo: KafkaException
+            if tp.error is not None:
+                raise KafkaException(tp.error)
+            if tp.offset > msg.offset():
+                return
+            time.sleep(min(COMMIT_CHECK_S, max(0.0, deadline - time.monotonic())))
+        raise KafkaException(KafkaError(KafkaError._TIMED_OUT,
+                                        f"{self.name}: offset {msg.offset()} sin confirmar en {self._commit_timeout_s} s"))
 
     def committed_offset(self, msg: Message) -> int:
         [tp] = self._kafka.committed([TopicPartition(msg.topic(), msg.partition())], timeout=10)

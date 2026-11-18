@@ -134,12 +134,13 @@ def h9_variant(variant: str, metrics: Mapping[str, Any]) -> bool:
 
 def diagnostics(h: Harness) -> dict[str, Any]:
     """Lag de cada grupo y estado de cada consumidor al terminar, antes de que `event_log` se ponga al día: si una
-    incidencia queda abierta, dice qué consumidor se quedó atrás y si su hilo sigue vivo."""
+    incidencia queda abierta, dice qué consumidor se quedó atrás y si su hilo sigue vivo; `stall`, qué había ocupado
+    si la variante llegó a su plazo (`Harness.stall_snapshot`)."""
     try:
         lag: dict[str, Any] = h.lags()
     except Exception as exc:  # noqa: BLE001 — diagnóstico: no debe tumbar el experimento
         lag = {"error": repr(exc)}
-    return {"group_lag": lag, "consumers": h.consumer_state()}
+    return {"group_lag": lag, "consumers": h.consumer_state(), "stall": getattr(h, "stall", None)}
 
 
 def run_variant(base: Settings, variant: str, *, seed: int, incidents: int, extra: int = EXTRA_NOTICES,

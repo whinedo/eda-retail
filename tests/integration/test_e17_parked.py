@@ -3,6 +3,8 @@ synthetic-data), de punta a punta con el LLM oráculo y un plazo de aparcamiento
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from eda_retail.experiments.e17_parked import EXPIRED, ORDER_REGISTERED, PROJECTED, run_e17
@@ -19,6 +21,12 @@ def report(base_settings):
 
 def _variant(report, name: str) -> dict:
     return report.metrics["variants"][name]
+
+
+def _failed(report) -> str:
+    """Mensaje de fallo: cada variante sin su informe completo, con lo que había ocupado si llegó a su plazo."""
+    return json.dumps({name: {k: v[k] for k in ("closed", "open", "invariants", "stall") if k in v}
+                       for name, v in report.metrics["variants"].items()}, default=str)
 
 
 def test_projectors_stopped(report):
@@ -55,11 +63,11 @@ def test_parked_and_repeated_notice(report):
 def test_h17(report):
     """Cumplimiento de H17"""
     assert all(v["interpreter_lag_while_parked"] == 0 for v in report.metrics["variants"].values())
-    assert report.hypothesis == {"H17": True}
+    assert report.hypothesis == {"H17": True}, _failed(report)
 
 
 def test_report_with_invariants(report):
     """Informe con invariantes"""
     for variant in report.metrics["variants"].values():
         assert set(variant["invariants"]) == {"I1", "I2", "I3", "I4", "I5"}
-        assert all(inv["violations"] == 0 for inv in variant["invariants"].values())
+        assert all(inv["violations"] == 0 for inv in variant["invariants"].values()), _failed(report)

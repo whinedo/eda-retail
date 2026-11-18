@@ -90,13 +90,20 @@ Los eventos SHALL repartirse a los consumidores mediante Apache Kafka; los coman
 
 ### Requirement: Entrega al menos una vez
 
-El bus MUST entregar cada evento a cada consumidor al menos una vez y reentregarlo si el consumidor no confirma el procesamiento. Los consumidores SHALL asumir que pueden recibir duplicados.
+El bus MUST entregar cada evento a cada consumidor al menos una vez y reentregarlo si el consumidor no confirma el procesamiento. Los consumidores SHALL asumir que pueden recibir duplicados. El commit del offset MUST tener un plazo (`commit_timeout_s` del consumidor, 10 s por defecto): si en ese plazo el grupo no tiene el offset siguiente al mensaje, el commit falla como cualquier commit fallido y el consumidor cae sin confirmarlo.
 
 #### Scenario: Reentrega tras falta de confirmación
 
 - **GIVEN** un consumidor que recibe un evento y falla antes de confirmar su offset
 - **WHEN** se reinicia en el mismo grupo de consumidores
 - **THEN** el bus le vuelve a entregar el evento
+
+#### Scenario: Commit del offset sin confirmar
+
+- **GIVEN** un consumidor que ha atendido un evento y pide el commit de su offset
+- **WHEN** el broker no lo confirma en `commit_timeout_s`
+- **THEN** el commit falla con `KafkaException` al vencer el plazo, sin esperar más
+- **AND** el consumidor se reinicia sin dar el offset por confirmado: el bus puede volver a entregarle el evento (el commit pedido aún puede aplicarse cuando vuelva el broker) y el inbox descarta la reentrega
 
 ### Requirement: Invocación de comandos
 

@@ -5,6 +5,7 @@ Kafka: se sustituyen el worker, el consumidor y las consultas a la base.
 
 from __future__ import annotations
 
+import io
 import threading
 import time
 from types import SimpleNamespace
@@ -160,6 +161,43 @@ def test_a_crash_of_the_threaded_interpreter_restarts_its_consumer(monkeypatch):
     assert h.consumer_crashes == 1 and crashed == {"interpreter"}
 
 
+class _StuckConsumer(_Consumer):
+    """Su commit no vuelve hasta `release`, como un commit síncrono de librdkafka tras perder el coordinador (E9)."""
+
+    def __init__(self, release: threading.Event) -> None:
+        super().__init__(["m1"])
+        self.release = release
+        self.in_commit = threading.Event()
+
+    def commit(self, msg):
+        self.in_commit.set()
+        self.release.wait(10)
+        super().commit(msg)
+
+
+def test_a_consumer_whose_thread_is_still_alive_is_not_closed_from_another_thread(monkeypatch):
+    """Al parar, un consumidor cuyo hilo sigue vivo tras la espera no se cierra desde el hilo principal (se colgaba
+    E9) y el diagnóstico lo da por vivo"""
+    monkeypatch.setattr(harness, "JobWorker", _Worker)
+    monkeypatch.setattr(harness, "JOIN_TIMEOUT_S", 0.1)
+    release = threading.Event()
+    consumer = _StuckConsumer(release)
+    h = _bare()
+    h.targets = {}
+    h._deliveries = [(FaultyDelivery(h._tracked(consumer), FaultPlan()), lambda: h._tracked(consumer))]
+    h._threaded = {"interpreter"}
+
+    h._start_threads()
+    try:
+        assert _wait(consumer.in_commit.is_set)
+        h._stop_threads()
+        h._close_deliveries()
+        assert not consumer.closed
+        assert h.consumer_state() == {"interpreter": {"thread_alive": True}}
+    finally:
+        release.set()
+
+
 def test_run_does_not_finish_while_jobs_are_pending(monkeypatch):
     """El arnés no da la ejecución por terminada mientras quedan trabajos pendientes o en curso"""
     h = _bare(harness.RunConfig(seed=1, incidents=1, idle_seconds=0.05, timeout_seconds=10))
@@ -213,3 +251,51 @@ def test_catch_up_log_reads_event_log_up_to_the_high_watermarks():
 
     h._readers = [SimpleNamespace(catch_up=stuck)]
     assert h.catch_up_log(3.0) is False
+
+
+def _stuck_run(monkeypatch, *, timeout_seconds: float) -> tuple[harness.Harness, io.StringIO, threading.Event]:
+    out = io.StringIO()
+    monkeypatch.setattr(harness, "STALL_STREAM", out)
+    h = _bare(harness.RunConfig(seed=1, incidents=1, idle_seconds=5, timeout_seconds=timeout_seconds))
+    release = threading.Event()
+
+    def handling_a_message():  # cuenta como trabajo en curso sin avanzar, como el intérprete atascado de E9 y E17
+        with h._activity.working():
+            release.wait(10)
+
+    thread = threading.Thread(target=handling_a_message, name="harness-interpreter", daemon=True)
+    thread.start()
+    h._threads.append(thread)
+    monkeypatch.setattr(h, "step", lambda: 0)
+    monkeypatch.setattr(h, "_open_jobs", lambda: 2)
+    monkeypatch.setattr(h, "_settle", lambda: None)
+    return h, out, release
+
+
+def test_a_run_that_reaches_its_timeout_dumps_what_is_stuck(monkeypatch):
+    """Una ejecución que llega a `timeout_seconds` sin cerrar sus incidencias deja en `stall`, y en stderr, la pila de
+    cada hilo, lo que cuenta como ocupado y los trabajos abiertos"""
+    h, out, release = _stuck_run(monkeypatch, timeout_seconds=0.2)
+    monkeypatch.setattr(h, "closed", lambda: 0)
+    try:
+        assert _wait(lambda: h._activity.busy == 1)
+        h.run_until_closed()
+    finally:
+        release.set()
+
+    assert h.stall["busy"] == 1 and h.stall["open_jobs"] == 2 and h.stall["awaiting_recovery"] is None
+    assert any("handling_a_message" in line for line in h.stall["threads"]["harness-interpreter"])
+    assert "database" in h.stall  # sin base en este test: el error queda en el diagnóstico
+    assert "harness-interpreter" in out.getvalue() and "handling_a_message" in out.getvalue()
+
+
+def test_a_run_that_closes_its_incidents_dumps_nothing(monkeypatch):
+    """Una ejecución que cierra sus incidencias antes del plazo no deja diagnóstico de atasco"""
+    h, out, release = _stuck_run(monkeypatch, timeout_seconds=10)
+    monkeypatch.setattr(h, "closed", lambda: 1)
+    try:
+        h.run_until_closed()
+    finally:
+        release.set()
+
+    assert h.stall is None and out.getvalue() == ""

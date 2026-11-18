@@ -9,6 +9,7 @@ from types import SimpleNamespace
 
 import psycopg
 import pytest
+from confluent_kafka import TopicPartition
 
 from eda_retail.infra import db
 from eda_retail.infra.consumer import EventConsumer, Outcome
@@ -125,7 +126,7 @@ class FakeKafka:
     def __init__(self, messages: list, stop: threading.Event) -> None:
         self._messages = list(messages)
         self._stop = stop
-        self.committed: list = []
+        self.commits: list = []  # mensajes cuyo offset se confirmó
 
     def subscribe(self, *_args, **_kwargs) -> None:
         pass
@@ -137,12 +138,14 @@ class FakeKafka:
         return self._messages.pop(0)
 
     def commit(self, message, asynchronous: bool) -> None:
-        assert asynchronous is False
-        self.committed.append(message)
+        self.commits.append(message)
+
+    def committed(self, partitions, timeout: float):  # `EventConsumer.commit` espera a que el grupo tenga el offset
+        return [TopicPartition(tp.topic, tp.partition, self.commits[-1].offset() + 1) for tp in partitions]
 
 
 def _message(offset: int) -> SimpleNamespace:
-    return SimpleNamespace(offset=lambda: offset, partition=lambda: 0, error=lambda: None)
+    return SimpleNamespace(offset=lambda: offset, partition=lambda: 0, topic=lambda: "t", error=lambda: None)
 
 
 def _event_consumer(conn: FakeConn, kafka: FakeKafka, **kwargs) -> EventConsumer:
@@ -161,7 +164,7 @@ def test_consumer_retries_the_same_message_on_a_new_connection_and_commits_once(
 
     def handle(m):
         seen.append(consumer._conn.name)
-        assert kafka.committed == []  # nada confirmado mientras no se haya atendido
+        assert kafka.commits == []  # nada confirmado mientras no se haya atendido
         if len(seen) == 1:
             raise lost(consumer._conn)
         return Outcome.PROCESSED
@@ -169,7 +172,7 @@ def test_consumer_retries_the_same_message_on_a_new_connection_and_commits_once(
     consumer.handle_message = handle
     consumer.run_forever(stop=stop, retry_s=0)
     assert seen == ["c0", "c1"]  # el primer intento de reconexión falló: la base aún no respondía
-    assert kafka.committed == [msg] and first.closed
+    assert kafka.commits == [msg] and first.closed
 
 
 def test_consumer_without_reconnect_keeps_failing_as_before():
@@ -184,7 +187,7 @@ def test_consumer_without_reconnect_keeps_failing_as_before():
     consumer.handle_message = handle
     with pytest.raises(psycopg.OperationalError):
         consumer.run_forever(stop=stop, retry_s=0)
-    assert kafka.committed == []
+    assert kafka.commits == []
 
 
 def test_consumer_does_not_retry_errors_that_are_not_from_the_database():
@@ -199,7 +202,7 @@ def test_consumer_does_not_retry_errors_that_are_not_from_the_database():
     consumer.handle_message = handle
     with pytest.raises(ValueError):
         consumer.run_forever(stop=stop, retry_s=0)
-    assert kafka.committed == []
+    assert kafka.commits == []
 
 
 # --- relay -------------------------------------------------------------------------------------------------------
