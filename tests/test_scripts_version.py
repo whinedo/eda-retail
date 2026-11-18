@@ -71,3 +71,20 @@ def test_stop_all_stops_the_version_2_processes():
     for command in (".venv/bin/python .venv/bin/eda-mail-server", ".venv/bin/python .venv/bin/eda-carrier-agent",
                     ".venv/bin/python .venv/bin/eda-planner"):
         assert re.search(pattern, command), command
+
+
+@pytest.mark.parametrize("script", ["run-agents.sh", "run-web.sh"])
+def test_without_version_the_scripts_resolve_and_export_version_2(script):
+    """Sin --version ni POC_VERSION (entorno o .env), run-agents.sh y run-web.sh exportan la versión 2"""
+    text = (ROOT / "scripts" / script).read_text()
+    resolve = text.index("poc_version_from_env(default=SCRIPTS_POC_VERSION)")
+    export = text.index("export POC_VERSION\n", resolve)
+    launch = text.index("eda-web >" if script == "run-web.sh" else "for entry in")
+    assert resolve < export < launch
+
+
+@pytest.mark.parametrize("script", SCRIPTS)
+def test_help_says_the_default_is_version_2(script, no_tools):
+    """--help: por defecto, POC_VERSION de .env o la 2"""
+    result = _run(script, "--help", env=no_tools)
+    assert "POC_VERSION de .env o 2" in " ".join(result.stdout.split())

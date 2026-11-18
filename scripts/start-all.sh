@@ -6,7 +6,7 @@
 #
 #   --version 1|2  versión de la PoC: 1, la primera; 2, añade el servidor de correo MCP y el agente
 #                  del transportista A2A (necesita A2A_CARRIER_TOKEN en .env). Por defecto, POC_VERSION
-#                  de .env o 1. Los procesos y el backend del front arrancan con esa versión
+#                  de .env o 2. Los procesos y el backend del front arrancan con esa versión
 #   --logs DIR     carpeta de logs, un fichero por proceso (por defecto logs/)
 #   --no-web       no arranca el front ni su backend
 #

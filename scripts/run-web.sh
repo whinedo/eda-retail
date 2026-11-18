@@ -5,7 +5,7 @@
 # Uso: scripts/run-web.sh [--version 1|2] [--logs DIR]
 #
 #   --version 1|2  versión de la PoC que muestra el front (mapa, procesos vigilados e insignia de la
-#                  cabecera); gana a POC_VERSION de .env (por defecto, la de .env o 1)
+#                  cabecera); gana a POC_VERSION de .env (por defecto, POC_VERSION de .env o 2)
 #
 # Requiere postgres en marcha (docker compose up -d) y Node 24 con npm; la primera vez instala
 # las dependencias de web/ (npm ci). Carga .env si existe (WEB_PORT, JAEGER_UI_URL). Cada proceso
@@ -48,6 +48,16 @@ if [[ -f .env ]]; then
   UV_ARGS=(--env-file .env)
 fi
 uvrun() { uv run ${UV_ARGS[@]+"${UV_ARGS[@]}"} "$@"; }
+
+# La versión que verá eda-web (entorno + .env; sin ninguna, la 2), exportada para que el backend la use.
+POC_VERSION=$(uvrun python -c '
+import sys
+from eda_retail.config import SCRIPTS_POC_VERSION, poc_version_from_env
+try:
+    print(poc_version_from_env(default=SCRIPTS_POC_VERSION))
+except ValueError as error:
+    sys.exit(f"error: {error}")') || exit 1
+export POC_VERSION
 
 mkdir -p "$LOGS_DIR"
 NAMES=("web-backend" "web-vite")
