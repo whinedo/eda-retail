@@ -9,13 +9,14 @@ Objetivo: codificar E9 (H9): broker parado o congelado y reiniciado; el outbox a
 - S3: métricas por variante: pendientes máximos del outbox por componente, avisos aceptados durante la caída, errores de entrega del relay, fallos de commit de offset, tiempo hasta vaciar el outbox, mensajes en el topic frente a filas de outbox y `event_id` repetidos, descartes del inbox, cerradas y escaladas por motivo, latencia frente a `baseline`, I1 a I5.
 - S4: H9: en todas las variantes, 0 filas de outbox sin publicar, todo `event_id` del outbox en el topic, mensajes repetidos sin efectos repetidos (I2) ni filas duplicadas en `event_log`, todos los avisos cerrados (también los de la caída), I1 a I5 sin violaciones; cada variante con caída provoca su efecto (algún error de entrega del relay y algún pendiente en el outbox).
 - S5: el turno del harness tolera los errores de entrega del relay como `ComponentRelay.run_until` (con un `flush` corto) y un fallo de commit de offset (`KafkaException`) reinicia el consumidor sin contar como veneno.
-- S6: guía de experimentos con la sección de E9, `eda-expexecutor run e9` con su catálogo y el test slow en slow-a.
+- S6: guía de experimentos con la sección de E9, `eda-expexecutor run e9` con su catálogo y el test slow en su propio shard, slow-d (L8).
 
 ## Tasks
 
 - T1 (S2, S5), inline: `synthetic/broker_faults.py` y los cambios del harness, con tests unitarios.
 - T2 (S1, S3, S4, S6), inline: `experiments/e9_kafka_down.py`, CLI, catálogo, guía, specs, tests unitarios e integración, CI.
 - T3 (S4), inline: diagnóstico del fallo intermitente de `paused` (L6, L7).
+- T4 (S6), inline: CI con E9 en slow-d y pytest -v en los shards slow (L8).
 
 ## Log
 
@@ -26,3 +27,4 @@ Objetivo: codificar E9 (H9): broker parado o congelado y reiniciado; el outbox a
 - L5: recheck de R1: resuelto, sin blockers nuevos. Avisos aplicados: `BrokerOutage.restoring` se marca antes del comando de restauración (tras `docker unpause` el broker responde antes de que vuelva el CLI) y `published_during_outage` deja de contar en cuanto se marca; `IDLE_SECONDS` a 30 s (reconexión de librdkafka, hasta 10 s, más la recomposición del grupo).
 - L6 (2026-11-18): CI de #92: la ejecución `push` falló en slow-a (variante `paused`: 4 incidencias abiertas, justo los 4 avisos del corte; sus eventos están en Kafka y en `event_log`, pero el intérprete no los procesó); la ejecución `pull_request` del mismo SHA pasó. En los logs del broker, al descongelar (10 s, más que `broker.session.timeout.ms` de 9 s) se recargan todos los grupos y el del intérprete vuelve en la generación 2 sin rebalanceo. Los ~5 min de más son `RunConfig.timeout_seconds` (300 s): el bucle siguió avanzando y no paró por inactividad. Causa sin confirmar. El usuario aprobó: «Sí, añádelo».
 - L7: T3 (S4), inline: diagnóstico en el informe (`group_lag`, `consumers` con posiciones y estado del hilo; `EventConsumer.positions`, `Harness.consumer_state`), últimas líneas de log de los componentes en los mensajes de fallo del test de integración y `run_timeout_s` (120 s en el test; por defecto, el de `RunConfig`). Suite unitaria 869 y ruff en verde; integración pendiente del CI. Risk: none (diagnóstico y parámetro opcional; el experimento por defecto no cambia).
+- L8 (2026-11-18): CI de 2ff3dc4: los dos slow-a (push y pull_request) cortados por el timeout de 20 min sin salida de pytest (`-q` escribe los puntos en una línea que se pierde al cancelar). El usuario aprobó «Sí, ambas cosas»: pytest -v en los shards slow y E9 en un shard propio (slow-d). El paso de pytest tiene un timeout de 18 min, por debajo del del job (20, sin cambios), y los logs de los servicios se imprimen también si se cancela. Risk: item 5 (CI): verificador independiente.

@@ -7,10 +7,13 @@
 #   fast    -m "not slow"                          (unit and integration tests that are not whole experiments)
 #   slow-a  -m slow on SLOW_A                      (the experiment files listed below)
 #   slow-c  -m slow on SLOW_C                      (the experiment files listed below)
-#   slow-b  -m slow, ignoring SLOW_A and SLOW_C    (every other slow test, wherever it lives)
-# A file is listed in SLOW_A or SLOW_C, never in both. Every shard prints its slowest tests (--durations) to
-# rebalance SLOW_A and SLOW_C when needed. The shard commands mirror the
-# local pytest hook of .pre-commit-config.yaml (`uv run pytest -q`): keep them in sync.
+#   slow-d  -m slow on SLOW_D                      (E9, which stops and pauses its shard's Kafka)
+#   slow-b  -m slow, ignoring SLOW_A, SLOW_C and SLOW_D (every other slow test, wherever it lives)
+# A file is listed in only one of SLOW_A, SLOW_C and SLOW_D. Every shard prints its slowest tests (--durations) to
+# rebalance them when needed. The slow shards run pytest -v, one line per test, so a shard cut by the timeout still
+# shows which test was running. The pytest step has its own timeout, below the job's, so the service logs are
+# printed even then. The shard commands mirror the local pytest hook of .pre-commit-config.yaml (`uv run pytest -q`):
+# keep the selection in sync.
 name: checks
 
 on:
@@ -35,11 +38,12 @@ env:
     tests/integration/test_e17_parked.py
     tests/integration/test_e14_burst_backpressure.py
     tests/integration/test_e13_compensation_failure.py
-    tests/integration/test_e9_kafka_down.py
   SLOW_C: >-
     tests/integration/test_e19_topic_loss.py
     tests/integration/test_e15_llm_degradation.py
     tests/integration/test_e20_v2_dependencies.py
+  SLOW_D: >-
+    tests/integration/test_e9_kafka_down.py
 
 jobs:
   hygiene:
@@ -77,7 +81,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [fast, slow-a, slow-b, slow-c]
+        shard: [fast, slow-a, slow-b, slow-c, slow-d]
     steps:
       - uses: actions/checkout@v5
 
@@ -94,16 +98,18 @@ jobs:
         run: docker compose up -d --wait postgres kafka
 
       - name: pytest (${{ matrix.shard }})
+        timeout-minutes: 18  # below the job's 20, so the service logs below are still printed
         run: |
           case "${{ matrix.shard }}" in
             fast)   uv run pytest -q -m "not slow" --durations=15 ;;
-            slow-a) uv run pytest -q -m slow --durations=15 $SLOW_A ;;
-            slow-b) uv run pytest -q -m slow --durations=15 $(printf -- '--ignore=%s ' $SLOW_A $SLOW_C) ;;
-            slow-c) uv run pytest -q -m slow --durations=15 $SLOW_C ;;
+            slow-a) uv run pytest -v -m slow --durations=15 $SLOW_A ;;
+            slow-b) uv run pytest -v -m slow --durations=15 $(printf -- '--ignore=%s ' $SLOW_A $SLOW_C $SLOW_D) ;;
+            slow-c) uv run pytest -v -m slow --durations=15 $SLOW_C ;;
+            slow-d) uv run pytest -v -m slow --durations=15 $SLOW_D ;;
           esac
 
       - name: Logs de los servicios
-        if: failure()
+        if: failure() || cancelled()
         run: docker compose logs --no-color postgres kafka
 
   checks:
