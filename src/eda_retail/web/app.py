@@ -59,7 +59,7 @@ from eda_retail.web.events import DEFAULT_LIMIT, MAX_LIMIT, events_after, last_s
 from eda_retail.web.health import HealthChecker, check_kafka, check_ollama, check_postgres
 from eda_retail.web.nodes import node_detail
 from eda_retail.web.stream import event_stream, start_seq
-from eda_retail.web.support import SUPPORT_LABEL, SUPPORT_SCRIPT, SupportRequest
+from eda_retail.web.support import SUPPORT_COMPONENTS, SUPPORT_LABEL, SUPPORT_SCRIPT, SUPPORT_VIEWS, SupportRequest
 from eda_retail.web.traces import jaeger_ui_url
 
 # Orígenes admitidos: http(s) en localhost, 127.0.0.1 o ::1, con cualquier puerto
@@ -300,6 +300,8 @@ def create_app(
             "free_text_enabled": free_text,
             "interactive_enabled": interactive,
             "support_enabled": support,
+            "support_components": list(SUPPORT_COMPONENTS),  # los argumentos que admite la lista blanca de soporte
+            "support_views": list(SUPPORT_VIEWS),
             "poc_version": version,  # la insignia «Versión 1» o «Versión 2 (MCP + A2A)» de la cabecera
         }
 

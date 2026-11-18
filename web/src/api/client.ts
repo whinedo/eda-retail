@@ -243,7 +243,18 @@ export interface FrontConfig {
   interactive_enabled: boolean;
   // Versión de la PoC con la que corre el backend (POC_VERSION): 1 o 2.
   poc_version?: number;
+  // Soporte técnico (WEB_SUPPORT) y los argumentos que admite su lista blanca.
+  support_enabled?: boolean;
+  support_components?: string[];
+  support_views?: string[];
 }
+
+// Una petición de soporte técnico (spec web-front, «Soporte técnico»): la lista blanca de `eda-support`.
+export type SupportRequest =
+  | { action: "status" }
+  | { action: "republish"; mode: "truncated" | "recreated"; confirm?: string }
+  | { action: "replay-from"; component: string; outbox_id: number; confirm?: string }
+  | { action: "rebuild"; view: string; confirm?: string };
 
 export interface ApiClient {
   getHealth(): Promise<Health>;
@@ -260,6 +271,7 @@ export interface ApiClient {
   getOperationsFreshness(): Promise<Freshness>;
   getOperationsProfit(): Promise<Profit>;
   runCommand(request: CommandRequest): Promise<CommandRun>;
+  runSupport(request: SupportRequest): Promise<CommandRun>;
   sendInput(runId: string, line: string): Promise<void>;
 }
 
@@ -275,7 +287,7 @@ export function createApiClient(fetchFn: FetchFn = (input, init) => fetch(input,
     const response = await fetchFn(path, init);
     const data = await response.json().catch(() => null);
     if (!response.ok) {
-      const detail = typeof data?.detail === "string" ? data.detail : `HTTP ${response.status}`;
+      const detail = typeof data?.detail === "string" ? data.detail : validationDetail(data?.detail) ?? `HTTP ${response.status}`;
       throw new ApiError(response.status, detail);
     }
     return data as T;
@@ -306,6 +318,7 @@ export function createApiClient(fetchFn: FetchFn = (input, init) => fetch(input,
     getOperationsFreshness: () => call("GET", "/api/operations/freshness"),
     getOperationsProfit: () => call("GET", "/api/operations/profit"),
     runCommand: (request) => call("POST", "/api/commands", request),
+    runSupport: (request) => call("POST", "/api/support/runs", request),
     sendInput: async (runId, line) => {
       await call("POST", `/api/commands/${encodeURIComponent(runId)}/input`, { line });
     },
@@ -332,6 +345,13 @@ function analyticsQueryString(query: OrderAnalyticsQuery): string {
 
 export function eventsStreamUrl(afterSeq?: number): string {
   return afterSeq === undefined ? "/api/events/stream" : `/api/events/stream?after_seq=${afterSeq}`;
+}
+
+// El detalle de un 422 de pydantic: una lista de errores con su `msg`.
+function validationDetail(detail: unknown): string | null {
+  if (!Array.isArray(detail)) return null;
+  const messages = detail.map((item) => (typeof item?.msg === "string" ? item.msg : null)).filter(Boolean);
+  return messages.length ? messages.join("; ") : null;
 }
 
 export function commandStreamUrl(runId: string): string {

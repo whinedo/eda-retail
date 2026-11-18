@@ -21,6 +21,8 @@ export function Header({
   resetDisabled = false,
   analyticsOpen = false,
   onAnalytics,
+  supportOpen = false,
+  onSupport,
   pocVersion = null,
 }: {
   health: HealthState;
@@ -31,6 +33,9 @@ export function Header({
   resetDisabled?: boolean;
   analyticsOpen?: boolean;
   onAnalytics?: () => void;
+  // Soporte técnico: el enlace solo existe con WEB_SUPPORT (si no, sin `onSupport`).
+  supportOpen?: boolean;
+  onSupport?: () => void;
 }) {
   return (
     <header className="header">
@@ -52,6 +57,19 @@ export function Header({
           }}
         >
           Analítica
+        </a>
+      )}
+      {onSupport && (
+        <a
+          className="header__link header__link--support"
+          href="#/support"
+          aria-current={supportOpen ? "page" : undefined}
+          onClick={(e) => {
+            e.preventDefault();
+            onSupport();
+          }}
+        >
+          Soporte
         </a>
       )}
       {onReset && (

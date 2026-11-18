@@ -1082,3 +1082,48 @@ body.resizing {
   min-width: 0;
   max-width: 420px;
 }
+
+/* Vista de soporte técnico: diagnóstico y tarjetas de acciones, con su propio desplazamiento. */
+.support__body {
+  overflow-y: auto;
+  min-height: 0;
+  padding-bottom: 16px;
+}
+
+.support__heading,
+.support__buttons,
+.support__fields {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+}
+
+.support__heading {
+  padding: 4px 20px;
+}
+
+.support__alerts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0;
+  padding: 4px 20px 8px;
+  list-style: none;
+}
+
+.support__card {
+  border-top: 1px solid var(--line);
+  padding-top: 8px;
+}
+
+.support__json {
+  max-height: 240px;
+  overflow: auto;
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+.support__disabled {
+  padding: 16px 20px;
+}
