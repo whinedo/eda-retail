@@ -85,7 +85,7 @@ def test_reopen_propagates_while_the_database_is_still_down():
 
 
 def test_run_loop_reconnects_after_a_broken_connection():
-    """Bucle del orquestador o del intérprete: tras una conexión rota abre otra, también si la base tarda en volver"""
+    """Bucles del orquestador y del intérprete: tras una conexión rota abren otra, también si la base tarda en volver"""
     factory = Connections()
     stop = threading.Event()
     calls: list[str] = []
@@ -105,7 +105,7 @@ def test_run_loop_reconnects_after_a_broken_connection():
 
 
 def test_run_loop_keeps_the_connection_after_a_business_error():
-    """Un error que no rompe la conexión no la cambia: el bucle sigue con la misma"""
+    """Bucles del orquestador y del intérprete: un error que no rompe la conexión la conserva"""
     factory = Connections()
     stop = threading.Event()
     calls: list[str] = []
@@ -150,7 +150,7 @@ def _event_consumer(conn: FakeConn, kafka: FakeKafka, **kwargs) -> EventConsumer
 
 
 def test_consumer_retries_the_same_message_on_a_new_connection_and_commits_once():
-    """Base caída al atender un evento: se reconecta, lo vuelve a atender y solo entonces confirma su offset"""
+    """Consumidor con la base caída: se reconecta, vuelve a atender el evento y solo entonces confirma su offset"""
     stop = threading.Event()
     msg = _message(7)
     kafka = FakeKafka([msg], stop)
@@ -204,7 +204,7 @@ def test_consumer_does_not_retry_errors_that_are_not_from_the_database():
 
 # --- relay -------------------------------------------------------------------------------------------------------
 def test_relay_replaces_a_broken_connection_and_keeps_publishing():
-    """Relay: tras perder la base abre otra conexión; antes se quedaba con la cerrada para siempre"""
+    """Relay con la base caída: abre otra conexión y sigue publicando; antes se quedaba con la cerrada"""
     factory = Connections()
     first = FakeConn("c0")
     relay = ComponentRelay(first, producer=None, schema="intake", topic="t", reconnect=factory)
@@ -242,7 +242,7 @@ def test_relay_without_reconnect_keeps_its_connection():
 
 # --- consumidor posicionado (projector, event-log) ---------------------------------------------------------------
 def test_positioned_consumer_recovers_on_a_new_connection_and_reassigns():
-    """Proyector o event_log: tras perder la base abre otra conexión y vuelve a la posición guardada"""
+    """Proyectores y event_log con la base caída: abren otra conexión y vuelven a la posición guardada"""
     factory = Connections()
     first = FakeConn("c0")
     consumer = PositionedConsumer(first, kafka_consumer=None, topic="t", schema="views", consumer="v",
@@ -288,7 +288,7 @@ class FlakyPositioned:
 
 
 def test_run_resilient_recovers_after_a_database_error():
-    """Bucle de projector o event-log: un error de la base no termina el proceso; recupera la conexión y sigue"""
+    """Proyectores y event_log con la base caída: el proceso sigue, recupera la conexión y vuelve a leer"""
     log = logging.getLogger("test")
     ok = FlakyPositioned(None)
     assert run_resilient(ok, log, retry_s=0) == 3 and ok.recovered == 0

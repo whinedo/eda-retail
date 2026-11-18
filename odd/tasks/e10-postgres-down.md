@@ -16,7 +16,7 @@ Objetivo: codificar E10 (H10): PostgreSQL parado o congelado 30 s y de vuelta; c
 
 ## Tasks
 
-- T1 (S7), inline, PR1 `feat/e10-pg-reconnect`: reconexión a PostgreSQL en `infra/db.py`, `ComponentRelay`, `EventConsumer`, `PositionedConsumer`, los bucles de orchestrator e interpreter y los CLI de projector y event-log; spec resilience; tests unitarios. Pendiente.
+- T1 (S7), inline, PR1 `feat/e10-pg-reconnect`: reconexión a PostgreSQL en `infra/db.py`, `ComponentRelay`, `EventConsumer`, `PositionedConsumer`, los bucles de orchestrator e interpreter y los CLI de projector y event-log; spec resilience; tests unitarios. Commit 49447e0; verificador: PASS. Hecho.
 - T2 (S4, S8), PR2: modo multiproceso con todos los componentes. Pendiente.
 - T3 (S1-S3, S5, S6, S9), PR3: E10. Pendiente.
 
@@ -25,3 +25,5 @@ Objetivo: codificar E10 (H10): PostgreSQL parado o congelado 30 s y de vuelta; c
 - L1 (2026-11-18): el usuario pidió «propón el diseño de E10 mientras esperamos» y lo aprobó: «ok al diseño de E10». Tras el mapa de la reconexión, eligió «Sí, 3 PRs» y dijo «mergéalas tú»: push, PR y merge de cada PR de E10 tras ver su CI en verde, fijado al SHA del head.
 - L2: mapa (explorador de solo lectura): solo `JobWorker` y el router REST (una conexión por petición) se recuperan de una conexión rota. El relay conserva su conexión cerrada para siempre; `EventConsumer.run_forever` no captura errores (el proceso muere sin confirmar el offset); los bucles de orchestrator e interpreter, projector y event-log no se reconectan; `db.connect` no tiene ningún timeout. Todos los CLI con LLM crean `OllamaClient()` sin forma de cambiarlo.
 - L3: rama de PR1 creada desde `feat/e9-kafka-down` (2ff3dc4) mientras #92 espera su CI; se rebasa sobre main tras el merge de #92.
+- L4: T1 inline (RED observado: `tests/test_pg_reconnect.py` sin `reconnect`, `reopen` ni `run_loop`). `db.connect` con `connect_timeout` 5 s y TCP keepalive; `db.reopen`/`run_loop`; `reconnect` opcional en `ComponentRelay`, `EventConsumer` (`run_forever` reintenta el mismo mensaje y confirma después) y `PositionedConsumer` (`recover`, `run_resilient`); cada proyector con su conexión. Sin `reconnect` (harness en proceso) nada cambia. Suite unitaria 883 y ruff en verde. Risk: item 3 (helpers compartidos) e item 4 (hilos, orden reintento/commit): verificador independiente.
+- L5: verificador independiente: PASS sin blockers (diferencial de `run_forever` sin `reconnect` idéntico a la base; el harness no usa los caminos nuevos). Avisos aplicados: A3 (la spec acota «los errores que no son de la base» a los consumidores) y A5 (docstrings con el nombre del escenario). Sin cambio: A1 (más de 300 s sin poll saca al consumidor del grupo; E10 corta 30 s), A2 (`OperationalError` incluye deadlocks y timeouts: se reintentan, como antes el reinicio), A4 (espera de 1 s tras un error en los bucles), A6 (previo).
