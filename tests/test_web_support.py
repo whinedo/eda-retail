@@ -54,6 +54,22 @@ def test_support_disabled_by_default(tmp_path: Path, monkeypatch: pytest.MonkeyP
     assert client.get("/api/config").json()["support_enabled"] is False
 
 
+@pytest.mark.parametrize("raw", ['"x"', "{bad", "[]"])
+def test_support_disabled_rejects_any_body_with_403(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, raw: str):
+    """Soporte deshabilitado: 403 también con un cuerpo que no es un objeto JSON"""
+    monkeypatch.delenv("WEB_SUPPORT", raising=False)
+    response = _client(tmp_path, support=None).post("/api/support/runs", content=raw,
+                                                    headers={"Content-Type": "application/json"})
+    assert response.status_code == 403 and not _launched(tmp_path)
+
+
+@pytest.mark.parametrize("raw", ['"x"', "{bad", "[]"])
+def test_support_enabled_rejects_a_body_that_is_not_an_object(tmp_path: Path, raw: str):
+    """Soporte habilitado: un cuerpo que no es un objeto JSON es 422 y no lanza nada"""
+    response = _client(tmp_path).post("/api/support/runs", content=raw, headers={"Content-Type": "application/json"})
+    assert response.status_code == 422 and not _launched(tmp_path)
+
+
 @pytest.mark.parametrize(("value", "enabled"), [("true", True), ("1", True), ("no", False)])
 def test_support_enabled_by_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, value: str, enabled: bool):
     """`WEB_SUPPORT=true` (o `1`) habilita el soporte y /api/config lo dice"""
@@ -109,6 +125,9 @@ def test_confirm_from_the_front(tmp_path: Path):
     {"action": "rebuild", "view": "orders", "mode": "truncated"},
     {"action": "status", "confirm": TOKEN},
     {"action": "status", "origin": "cli"},
+    {"action": "replay-from", "component": "planner", "outbox_id": True},
+    {"action": "replay-from", "component": "planner", "outbox_id": "12"},
+    {"action": "replay-from", "component": "planner", "outbox_id": 12.0},
 ])
 def test_support_request_outside_the_whitelist(tmp_path: Path, request_body: dict):
     """Petición de soporte fuera de la lista blanca"""

@@ -29,7 +29,7 @@ class SupportRequest(BaseModel):
     action: Literal["status", "republish", "replay-from", "rebuild"]
     mode: Literal[MODES] | None = None  # type: ignore[valid-type]
     component: str | None = None
-    outbox_id: int | None = Field(default=None, ge=1)
+    outbox_id: int | None = Field(default=None, ge=1, strict=True)  # ni `true` ni "12": un entero de verdad
     view: str | None = None
     confirm: str | None = Field(default=None, pattern=TOKEN_PATTERN)
 

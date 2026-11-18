@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Annotated
 
 import psycopg
-from fastapi import Body, Depends, FastAPI, Header, HTTPException, Query, Request
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import ValidationError
@@ -331,14 +331,14 @@ def create_app(
         return {"run_id": run.run_id, "argv": [SCRIPT_LABEL, *body.args(free_text)]}
 
     @app.post("/api/support/runs", status_code=202)
-    def run_support(body: Annotated[dict, Body()]) -> dict:
-        # Deshabilitado, se rechaza antes de validar: ni la lista blanca se expone.
+    async def run_support(http: Request) -> dict:
+        # Deshabilitado, se rechaza antes de leer el cuerpo: 403 con cualquier petición, sin exponer la lista blanca.
         if not support:
             raise HTTPException(403, "el soporte técnico está deshabilitado (WEB_SUPPORT)")
         try:
-            request = SupportRequest.model_validate(body)
+            request = SupportRequest.model_validate_json(await http.body())
         except ValidationError as error:
-            raise HTTPException(422, error.errors(include_url=False, include_context=False)) from None
+            raise HTTPException(422, error.errors(include_url=False, include_context=False, include_input=False)) from None
         try:
             run = runner.start_script(support_script, request.args())
         except RunnerBusy:
