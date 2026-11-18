@@ -306,16 +306,24 @@ class BrokenConsumer:
         raise KafkaException(KafkaError(KafkaError._TRANSPORT))
 
 
+def _never_called() -> dict[int, int]:
+    raise AssertionError("no se consulta la asignación de un consumidor con hilo propio")
+
+
 def test_consumer_state_reports_positions_thread_and_errors():
-    """Diagnóstico: posiciones por consumidor, si su hilo sigue vivo y, si Kafka falla, el error sin interrumpir"""
-    interpreter = SimpleNamespace(name="interpreter", positions=lambda: {1: 3})
+    """Diagnóstico: posiciones de los consumidores de los turnos, si el hilo de los demás sigue vivo (sin consultar su
+    asignación, que se bloquea mientras su hilo está en `poll`) y, si Kafka falla, el error sin interrumpir"""
+    interpreter = SimpleNamespace(name="interpreter", positions=_never_called)
+    planner = SimpleNamespace(name="planner", positions=lambda: {1: 3})
     thread = threading.Thread(target=lambda: None, name="harness-interpreter")
     thread.start()
     thread.join()
     h = SimpleNamespace(_threads=[thread], _deliveries=[(SimpleNamespace(consumer=interpreter), None),
+                                                        (SimpleNamespace(consumer=planner), None),
                                                         (SimpleNamespace(consumer=BrokenConsumer()), None)])
     state = Harness.consumer_state(h)
-    assert state["interpreter"] == {"positions": {1: 3}, "thread_alive": False}
+    assert state["interpreter"] == {"thread_alive": False}
+    assert state["planner"] == {"positions": {1: 3}}
     assert set(state["orchestrator"]) == {"error"} and "_TRANSPORT" in state["orchestrator"]["error"]
 
 

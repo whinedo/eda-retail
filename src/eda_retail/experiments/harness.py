@@ -1249,20 +1249,22 @@ class Harness:
         return lags | {reader.consumer: reader.lag() for reader in self._readers}
 
     def consumer_state(self) -> dict[str, dict[str, Any]]:
-        """Diagnóstico de cada consumidor de Kafka (E9): particiones asignadas con su posición y, si tiene hilo
-        propio, si sigue vivo. Un error de Kafka al consultarlo queda en `error` en vez de interrumpir la ejecución."""
+        """Diagnóstico de cada consumidor de Kafka (E9). Uno que se atiende en los turnos: particiones asignadas con su
+        posición (un error de Kafka queda en `error`). Uno con hilo propio: solo si el hilo sigue vivo; consultar su
+        asignación desde este hilo mientras el suyo está en `poll` se bloquea sin límite (lo vio el CI de E9)."""
         alive = {t.name: t.is_alive() for t in self._threads}
         state: dict[str, dict[str, Any]] = {}
         for delivery, _ in self._deliveries:
             consumer = delivery.consumer
             entry: dict[str, Any] = {}
-            try:
-                entry["positions"] = consumer.positions()
-            except Exception as exc:  # noqa: BLE001 — diagnóstico: no debe tumbar el experimento
-                entry["error"] = repr(exc)
             thread = f"harness-{consumer.name}"
             if thread in alive:
                 entry["thread_alive"] = alive[thread]
+            else:
+                try:
+                    entry["positions"] = consumer.positions()
+                except Exception as exc:  # noqa: BLE001 — diagnóstico: no debe tumbar el experimento
+                    entry["error"] = repr(exc)
             state[consumer.name] = entry
         return state
 
