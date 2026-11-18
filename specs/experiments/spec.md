@@ -290,6 +290,7 @@ El sistema SHALL cumplir la hipótesis H14: ante una ráfaga de avisos con ejecu
 - **GIVEN** la ejecución completa de E14
 - **WHEN** se evalúa la hipótesis
 - **THEN** H14 se cumple si en `backpressure` hubo al menos un 503, ningún ejecutor superó su capacidad, las colas terminaron vacías, ningún paso tiene comandos duplicados, todas las incidencias se cerraron y I1 a I5 no tienen violaciones
+- **AND** en `baseline` I1 e I2 tampoco tienen violaciones (si se violan, la hipótesis no se da por cumplida)
 
 ### Requirement: E16 Consumidor zombie y rebalanceo (H16)
 
