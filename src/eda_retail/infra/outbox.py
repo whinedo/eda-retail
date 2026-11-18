@@ -125,8 +125,9 @@ def republish_in_order(conn: psycopg.Connection, producer: Producer, schemas: It
     de `schemas` en el orden de `republish_order`, con un solo productor (Kafka conserva así el orden de cada
     partición), y guarda en cada fila su posición nueva y `published_at`. Devuelve las filas republicadas por esquema.
 
-    Por lotes: si un lote no se confirma, lanza `RelayDeliveryError` y las filas de los lotes anteriores ya tienen su
-    posición nueva; el procedimiento se repite desde el principio con el topic vacío otra vez."""
+    Por lotes, pero las posiciones nuevas se guardan solo cuando se han confirmado todos, en una transacción: si un
+    lote no se confirma, lanza `RelayDeliveryError` sin tocar ninguna fila, y el procedimiento se repite desde el
+    principio (con el topic vacío otra vez) con el orden original intacto."""
     schemas = list(schemas)
     fields = ", ".join(_ENVELOPE_FIELDS)
     with conn.transaction():
@@ -137,6 +138,7 @@ def republish_in_order(conn: psycopg.Connection, producer: Producer, schemas: It
                 f" FROM {qualified(schema, 'outbox')}").fetchall()]
     counts = dict.fromkeys(schemas, 0)
     ordered = republish_order(rows)
+    published: list[tuple[Mapping[str, Any], tuple[int, int]]] = []
     for start in range(0, len(ordered), batch_size):
         batch = ordered[start:start + batch_size]
         errors: list[KafkaError] = []
@@ -157,14 +159,14 @@ def republish_in_order(conn: psycopg.Connection, producer: Producer, schemas: It
         pending = producer.flush(flush_timeout)
         if pending or errors:
             raise RelayDeliveryError(f"republicación no confirmada: pendientes={pending}, errores={errors}")
-        with conn.transaction():
-            for index, row in enumerate(batch):
-                partition, offset = positions[index]
-                conn.execute(
-                    f"UPDATE {qualified(row['schema'], 'outbox')} SET published_at = now(),"
-                    " attempts = attempts + 1, kafka_partition = %s, kafka_offset = %s WHERE id = %s",
-                    (partition, offset, row["id"]))
-                counts[row["schema"]] += 1
+        published += [(row, positions[index]) for index, row in enumerate(batch)]
+    with conn.transaction():
+        for row, (partition, offset) in published:
+            conn.execute(
+                f"UPDATE {qualified(row['schema'], 'outbox')} SET published_at = now(),"
+                " attempts = attempts + 1, kafka_partition = %s, kafka_offset = %s WHERE id = %s",
+                (partition, offset, row["id"]))
+            counts[row["schema"]] += 1
     return counts
 
 

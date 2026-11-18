@@ -1300,8 +1300,12 @@ class Harness:
         cada fila tenía en el topic perdido (`outbox.republish_in_order`), y arranca el sistema otra vez; devuelve las
         filas republicadas por componente."""
         schemas = [relay._schema for relay in self._relays if relay._has_outbox]
-        rows = outbox.republish_in_order(self._connect(), make_producer(self.settings.kafka_bootstrap_servers), schemas,
-                                         self.settings.events_topic)
+        conn = connect(self.settings.database_url)
+        try:
+            rows = outbox.republish_in_order(conn, make_producer(self.settings.kafka_bootstrap_servers), schemas,
+                                             self.settings.events_topic)
+        finally:
+            conn.close()
         self._init_threads()
         self._build_deliveries()
         self._start_threads()
