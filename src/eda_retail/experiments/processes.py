@@ -12,6 +12,12 @@ un proceso») es `SIGSTOP` y la reanudación `SIGCONT`.
 Los comandos que llegan por `CommandGateway` no pasan por `InProcessCommands`: los fallos de entrega del `FaultPlan`
 (`duplicates`, `concurrent_commands`, `reinvoke_steps`, `executor_faults`) no se aplican en este modo; los de las specs
 de los receptores (fallos, retrasos y caídas de los ejecutores) sí.
+
+Todos los componentes en procesos propios (spec experiments, «Todos los componentes en procesos propios»): `COMPONENTS`
+son los procesos de `scripts/run-agents.sh` (versión 1). `start_components` los lanza con el intérprete de este proceso
+y un log por proceso, `wait_ready` espera a que escuchen en su puerto y a que los consumidores de grupo tengan
+particiones, y `stop_all` los para a la vez. `ComponentProcess` dice si un proceso murió solo (`died`) y con qué
+código, y da su log (`log_text`); los ejecutores anotan sus ejecuciones en `executions_path`.
 """
 
 from __future__ import annotations
@@ -37,6 +43,8 @@ from fastapi import FastAPI
 
 from eda_retail.config import Settings
 from eda_retail.infra.commands import CommandEnvelope, CommandResponse, CommandSpec, command_router, execute_command
+from eda_retail.infra.component import listen_address
+from eda_retail.step_executors.actions import ACTIONS as EXECUTOR_ACTIONS
 
 ORCHESTRATOR_MODULE = "eda_retail.orchestrator.cli"
 # Como `python -m <módulo>`, pero con SIGINT convertido en `KeyboardInterrupt` aunque este proceso lo ignore (lanzado
@@ -137,8 +145,8 @@ def orchestrator_env(settings: Settings, urls: Mapping[str, str], *, session_tim
 
 
 @dataclass
-class OrchestratorProcess:
-    """Una instancia de `eda-orchestrator` con su log. `frozen_at`/`resumed_at`: instantes (epoch) de cada
+class ManagedProcess:
+    """Un proceso lanzado por el harness con su log. `frozen_at`/`resumed_at`: instantes (epoch) de cada
     congelación y reanudación."""
 
     name: str
@@ -171,18 +179,40 @@ class OrchestratorProcess:
         el proceso muere sin hacerlo y su miembro sigue en el grupo `orchestrator` hasta que vence su sesión,
         retrasando el rebalanceo de las ejecuciones siguientes."""
         if self.alive():
-            with contextlib.suppress(ProcessLookupError):
-                os.kill(self.pid, signal.SIGCONT)
-                self.popen.send_signal(signal.SIGINT)
-            try:
-                self.popen.wait(STOP_TIMEOUT_S)
-            except subprocess.TimeoutExpired:
-                self.popen.kill()
-                self.popen.wait(STOP_TIMEOUT_S)
+            self.interrupt()
+            self.wait_stopped()
         return self.popen.returncode
 
+    def interrupt(self) -> None:
+        """La primera mitad de `stop`: lo reanuda y le manda `SIGINT`, sin esperar."""
+        with contextlib.suppress(ProcessLookupError):
+            os.kill(self.pid, signal.SIGCONT)
+            self.popen.send_signal(signal.SIGINT)
+
+    def wait_stopped(self) -> int | None:
+        """La segunda mitad de `stop`: espera a que salga y, pasado `STOP_TIMEOUT_S`, lo mata."""
+        try:
+            self.popen.wait(STOP_TIMEOUT_S)
+        except subprocess.TimeoutExpired:
+            self.popen.kill()
+            self.popen.wait(STOP_TIMEOUT_S)
+        return self.popen.returncode
+
+    @property
+    def returncode(self) -> int | None:
+        return self.popen.poll()
+
+    def log_text(self) -> str:
+        """Lo que el proceso escribió hasta ahora (stdout y stderr); vacío si aún no hay fichero."""
+        return self.log_path.read_text(errors="replace") if self.log_path.is_file() else ""
+
+
+@dataclass
+class OrchestratorProcess(ManagedProcess):
+    """Una instancia de `eda-orchestrator` (E16)."""
+
     def log(self) -> ProcessLog:
-        return read_log(self.log_path.read_text(errors="replace").splitlines())
+        return read_log(self.log_text().splitlines())
 
 
 def start_orchestrators(n: int, settings: Settings, urls: Mapping[str, str], log_dir: Path, *,
@@ -201,6 +231,187 @@ def start_orchestrators(n: int, settings: Settings, urls: Mapping[str, str], log
                                      stdout=out, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL)
         processes.append(OrchestratorProcess(name, popen, log_path))
     return processes
+
+
+# -- todos los componentes en procesos propios -------------------------------------------------
+@dataclass(frozen=True)
+class Component:
+    """Un proceso de `scripts/run-agents.sh`: su nombre, su módulo (el de su comando `eda-*`) y sus argumentos.
+    `target`: el destino de comandos que atiende por REST (clave de `TARGET_URL_ENV`); `group`: el grupo de Kafka
+    cuyo log de asignación dice que ya consume."""
+
+    name: str
+    module: str
+    args: tuple[str, ...] = ()
+    target: str | None = None
+    group: str | None = None
+
+
+COMPONENTS: tuple[Component, ...] = (
+    Component("projector", "eda_retail.projectors.cli"),
+    Component("event-log", "eda_retail.event_log.cli"),
+    Component("intake", "eda_retail.intake.cli", target="intake"),
+    Component("inventory", "eda_retail.inventory.cli", target="inventory"),
+    Component("orchestrator", ORCHESTRATOR_MODULE, group="orchestrator"),
+    Component("interpreter", "eda_retail.interpreter.cli", group="interpreter"),
+    Component("planner", "eda_retail.planner.cli", target="planner"),
+    Component("replanner", "eda_retail.replanner.cli", target="replanner"),
+    *(Component(f"executor-{a}", "eda_retail.step_executors.cli", (a,), target=f"executor_{a}")
+      for a in EXECUTOR_ACTIONS),
+)
+COMPONENT_START_TIMEOUT_S = 90.0  # importar, migrar nada (la base ya existe), escuchar y unirse al grupo
+EXECUTIONS_ENV = "SERVICE_EXECUTIONS_LOG"  # step_executors/executions.py
+
+
+def component_launcher(module: str) -> str:
+    """Como `LAUNCHER`, para cualquier módulo: `SIGINT` es `KeyboardInterrupt` y, si el proceso sale por él tras su
+    limpieza, el código de salida es 0. Así un código distinto de 0 es siempre una muerte, no una parada."""
+    return ("import runpy, signal, sys\n"
+            "signal.signal(signal.SIGINT, signal.default_int_handler)\n"
+            "try:\n"
+            f"    runpy.run_module({module!r}, run_name='__main__', alter_sys=True)\n"
+            "except KeyboardInterrupt:\n"
+            "    sys.exit(0)\n")
+
+
+def free_ports(n: int) -> list[int]:
+    """`n` puertos libres de 127.0.0.1, todos distintos (se abren a la vez y se cierran antes de devolverlos)."""
+    socks = []
+    try:
+        for _ in range(n):
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.bind(("127.0.0.1", 0))
+            socks.append(sock)
+        return [sock.getsockname()[1] for sock in socks]
+    finally:
+        for sock in socks:
+            sock.close()
+
+
+def component_urls(ports: Mapping[str, int]) -> dict[str, str]:
+    """Destino de comandos -> URL base de su proceso, en 127.0.0.1."""
+    return {target: f"http://127.0.0.1:{port}" for target, port in ports.items()}
+
+
+def component_env(settings: Settings, urls: Mapping[str, str], *, extra: Mapping[str, str] | None = None,
+                  base: Mapping[str, str] | None = None) -> dict[str, str]:
+    """El entorno común de los procesos: el de `orchestrator_env` (base de datos, topic, plazos, las URL de cada
+    destino) más `extra`, sin sesión de Kafka propia."""
+    env = orchestrator_env(settings, urls, session_timeout_ms=None, base=base)
+    env.update(extra or {})
+    return env
+
+
+_ASSIGNED = r" \[{tag}\] {group}: particiones (asignadas|revocadas|perdidas) \[([\d, ]*)\]$"
+
+
+def assigned_partitions(lines: Iterable[str], tag: str, group: str) -> list[int] | None:
+    """Las particiones del grupo `group` tras el último rebalanceo que registró el proceso `tag`; None si no hay."""
+    pattern = re.compile(_ASSIGNED.format(tag=re.escape(tag), group=re.escape(group)))
+    current = None
+    for line in lines:
+        if m := pattern.search(line):
+            current = [int(p) for p in m[2].split(",") if p.strip()] if m[1] == "asignadas" else []
+    return current
+
+
+@dataclass
+class ComponentProcess(ManagedProcess):
+    """Un componente en su proceso. `url`: dónde atiende comandos (None si no atiende); `executions_path`: el JSONL de
+    las ejecuciones de su servicio simulado (solo los ejecutores); `stopping`: el harness lo está parando."""
+
+    component: Component | None = None
+    url: str | None = None
+    executions_path: Path | None = None
+    stopping: bool = False
+
+    def interrupt(self) -> None:
+        self.stopping = True
+        super().interrupt()
+
+    def died(self) -> bool:
+        """Terminó sin que el harness lo parase."""
+        return not self.alive() and not self.stopping
+
+    def assignment(self) -> list[int] | None:
+        group = self.component.group if self.component is not None else None
+        if group is None:
+            return None
+        return assigned_partitions(self.log_text().splitlines(), self.name, group)
+
+    def ready(self, is_open: Callable[[str], bool]) -> bool:
+        """Acepta conexiones en su `url` (si atiende comandos) y, si consume en un grupo, ya tiene particiones."""
+        if self.url is not None and not is_open(self.url):
+            return False
+        return self.component is None or self.component.group is None or bool(self.assignment())
+
+
+Popen = Callable[..., subprocess.Popen]
+
+
+def start_components(components: Iterable[Component], env: Mapping[str, str], urls: Mapping[str, str],
+                     log_dir: Path, *, processes: list[ComponentProcess] | None = None,
+                     popen: Popen = subprocess.Popen) -> list[ComponentProcess]:
+    """Lanza cada componente con el intérprete de este proceso (`component_launcher`), en `log_dir` (sin `.env`) y con
+    su log `<nombre>.log`. Los ejecutores reciben además `SERVICE_EXECUTIONS_LOG=<nombre>.executions.jsonl`. Los
+    añade a `processes` según arrancan, para que quien los pare los encuentre aunque falle uno posterior."""
+    processes = [] if processes is None else processes
+    for component in components:
+        log_path = log_dir / f"{component.name}.log"
+        own = dict(env)
+        executions = None
+        if component.module == "eda_retail.step_executors.cli":
+            executions = log_dir / f"{component.name}.executions.jsonl"
+            own[EXECUTIONS_ENV] = str(executions)
+        with log_path.open("wb") as out:
+            process = popen([sys.executable, "-c", component_launcher(component.module), *component.args],
+                            cwd=log_dir, env=own, stdout=out, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL)
+        processes.append(ComponentProcess(component.name, process, log_path, component=component,
+                                          url=urls.get(component.target) if component.target else None,
+                                          executions_path=executions))
+    return processes
+
+
+def port_open(url: str, timeout: float = 0.2) -> bool:
+    """El proceso de `url` acepta conexiones TCP."""
+    try:
+        with socket.create_connection(listen_address(url), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
+def _tail(process: ManagedProcess, lines: int = 20) -> str:
+    return "\n".join(process.log_text().splitlines()[-lines:])
+
+
+def wait_ready(processes: Iterable[ComponentProcess], timeout: float = COMPONENT_START_TIMEOUT_S, *,
+               is_open: Callable[[str], bool] = port_open, sleep: Callable[[float], None] = time.sleep,
+               clock: Callable[[], float] = time.monotonic) -> None:
+    """Espera a que cada proceso con `url` acepte conexiones y a que cada consumidor de grupo tenga particiones.
+    RuntimeError si uno muere (con su código y el final de su log) o si vence `timeout`."""
+    pending = list(processes)
+    end = clock() + timeout
+    while pending:
+        for process in pending:
+            if process.died():
+                raise RuntimeError(f"{process.name} terminó al arrancar con código {process.returncode}:\n"
+                                   f"{_tail(process)}")
+        pending = [p for p in pending if not p.ready(is_open)]
+        if not pending:
+            return
+        if clock() > end:
+            raise RuntimeError(f"los procesos no están listos en {timeout} s: {[p.name for p in pending]}")
+        sleep(0.1)
+
+
+def stop_all(processes: Iterable[ComponentProcess]) -> dict[str, int | None]:
+    """Para todos a la vez (`SIGINT` a cada uno y después la espera) y devuelve el código de salida de cada uno."""
+    processes = list(processes)
+    for process in processes:
+        if process.alive():
+            process.interrupt()
+    return {process.name: process.wait_stopped() for process in processes}
 
 
 # -- log de una instancia ---------------------------------------------------------------------

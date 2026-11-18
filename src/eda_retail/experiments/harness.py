@@ -63,6 +63,14 @@ Versión 2 (`POC_VERSION=2`): `notify_customer` envía el correo con su cliente 
 proceso (`mail_server_for`), sin el proceso `eda-mail-server`. Su buzón no deduplica: genera el `message_id`
 con el servicio simulado `mail`, que conserva la semántica de E1 (clave reconocida o no) y cuenta las
 ejecuciones. Con la versión 1, el ejecutor llama al servicio simulado directamente, como antes.
+
+Todos los componentes en procesos propios (`RunConfig.component_processes`; spec experiments, «Todos los componentes en
+procesos propios»): en lugar de montar los componentes, el harness lanza los procesos de `scripts/run-agents.sh`
+(`processes.COMPONENTS`) contra la base de datos y el topic de la ejecución, con el oráculo como LLM (`LLM_CLIENT`) y
+un puerto libre por componente, y solo siembra los datos, envía los avisos por REST y mide: un turno cuenta las filas
+nuevas de `event_log`, `closed` lee las vistas que mantiene el proceso de los proyectores y los efectos repetidos salen
+de los ficheros de ejecuciones de los ejecutores (`SERVICE_EXECUTIONS_LOG`). Los fallos del `FaultPlan`, los otros
+modos de idempotencia y la versión 2 son del harness en proceso: este modo los rechaza (`check_component_mode`).
 """
 
 from __future__ import annotations
@@ -92,10 +100,22 @@ from eda_retail.events.catalog import build_event
 from eda_retail.events.envelope import EventEnvelope
 from eda_retail.events.ids import incident_id_for_notice
 from eda_retail.experiments.oracle import Oracle
-from eda_retail.experiments.processes import CommandGateway, OrchestratorProcess, start_orchestrators
+from eda_retail.experiments.processes import (
+    COMPONENTS,
+    CommandGateway,
+    ComponentProcess,
+    OrchestratorProcess,
+    component_env,
+    component_urls,
+    free_ports,
+    start_components,
+    start_orchestrators,
+    stop_all,
+    wait_ready,
+)
 from eda_retail.infra import outbox
 from eda_retail.infra.backoff import Backoff
-from eda_retail.infra.command_client import CommandReply, CommandUnavailable
+from eda_retail.infra.command_client import CommandReply, CommandUnavailable, invoke
 from eda_retail.infra.commands import Accepted, CommandEnvelope, CommandSpec, execute_command
 from eda_retail.infra.consumer import EventConsumer
 from eda_retail.infra.db import connect
@@ -104,7 +124,7 @@ from eda_retail.infra.jobs import JobWorker, run_job_once
 from eda_retail.infra.kafka import make_consumer, make_producer
 from eda_retail.infra.migrations import upgrade
 from eda_retail.infra.outbox import ComponentRelay, RelayDeliveryError
-from eda_retail.infra.positions import high_watermark
+from eda_retail.infra.positions import caught_up, high_watermark
 from eda_retail.infra.schemas import qualified
 from eda_retail.intake import handler as intake
 from eda_retail.interpreter import consumer as interpreter
@@ -124,7 +144,8 @@ from eda_retail.replanner import handler as replanner
 from eda_retail.rules import BusinessRules
 from eda_retail.step_executors import component as step_executors
 from eda_retail.step_executors.actions import ACTIONS as EXECUTOR_ACTIONS
-from eda_retail.step_executors.services import Services
+from eda_retail.step_executors.executions import read_executions
+from eda_retail.step_executors.services import SERVICE_OF, Services
 from eda_retail.synthetic.faults import (
     INJECTED_FAILURE,
     ConsumerCrashed,
@@ -148,8 +169,6 @@ TURN_COMMANDS = 200  # comandos que el dispatcher invoca como mucho en un turno
 # Un aviso cuyo pedido aún no está en view_orders se aparca (design.md §4.3); en el arnés el plazo es corto
 # para que una carrera entre particiones no deje la incidencia abierta hasta el plazo del despliegue.
 PENDING_NOTICE_TIMEOUT_S = 2.0
-SERVICE_OF = {"notify_customer": "mail", "file_claim": "claims", "reissue_shipment": "carrier",
-              "issue_refund": "payments"}
 JOB_POLL_S = 0.05  # sondeo de un worker de trabajos sin trabajo
 CONSUMER_POLL_S = 0.1  # sondeo de Kafka de un consumidor en su hilo
 JOIN_TIMEOUT_S = 30.0  # espera al parar un hilo (puede estar dentro de una llamada al LLM)
@@ -161,6 +180,7 @@ THREADED_CONSUMERS = frozenset({interpreter.SCHEMA})  # consumidores con su prop
 PUBLISHERS = ("intake", "interpreter", "planner", "replanner", "orchestrator", "inventory",
               *(f"executor_{a}" for a in EXECUTOR_ACTIONS))
 READ_SIDE = ("event_log", "views")  # sin outbox; sus dead letters, migración 0024
+PROCESS_POLL_S = 0.2  # pausa de un turno sin avance con todos los componentes en procesos propios
 
 @contextlib.contextmanager
 def isolated_database(base: Settings, name: str) -> Iterator[str]:
@@ -581,10 +601,32 @@ class RunConfig:
     # E9: `session.timeout.ms` de los consumidores en proceso (intérprete y orquestador). Sin broker, un commit síncrono
     # espera un coordinador hasta este plazo, y un consumidor recreado espera a que caduque el miembro anterior.
     consumer_session_timeout_ms: int | None = None
+    # Todos los componentes en procesos propios, los de `scripts/run-agents.sh` (E10): el harness solo siembra los
+    # datos, envía los avisos por REST y mide. Ver `check_component_mode` para lo que no admite.
+    component_processes: bool = False
 
     @property
     def external_orchestrator(self) -> bool:
         return self.orchestrator_processes > 0
+
+
+def check_component_mode(config: RunConfig, poc_version: int, *, custom: bool) -> None:
+    """ValueError si la ejecución pide, con `component_processes`, algo que solo hace el harness en proceso.
+    `custom`: se pasó un `llm`, unos `data` o un `carrier` propios (los procesos usan el oráculo de `generate`)."""
+    if not config.component_processes:
+        return
+    mode = "el modo con todos los componentes en procesos propios"
+    if config.orchestrator_processes:
+        raise ValueError(f"{mode} no se combina con orchestrator_processes")
+    if config.idempotency != "full":
+        raise ValueError(f"{mode} solo admite idempotency='full'")
+    if config.faults != FaultPlan():
+        raise ValueError(f"{mode} no admite los fallos del FaultPlan: los inyecta el harness en proceso")
+    if poc_version != 1:
+        raise ValueError(f"{mode} solo admite POC_VERSION=1")
+    if custom:
+        raise ValueError(f"{mode} usa el oráculo sobre generate(seed, incidents): no admite llm, data ni carrier "
+                         "propios")
 
 
 def saga_deadlines(config: RunConfig) -> dict[str, float]:
@@ -644,6 +686,7 @@ class Harness:
         self.config = config
         self._carrier = carrier
         self._mail_server = mail_server
+        self._custom = llm is not None or data is not None or carrier is not None
         self.data = data or generate(config.seed, config.incidents)
         self._base = base
         self._llm = llm
@@ -668,6 +711,11 @@ class Harness:
         self.processes: list[OrchestratorProcess] = []  # modo multiproceso (E16)
         self._gateway: CommandGateway | None = None
         self._process_dir: tempfile.TemporaryDirectory | None = None
+        # Todos los componentes en procesos propios (E10): los procesos, sus URL y sus códigos al pararlos.
+        self.components: list[ComponentProcess] = []
+        self.component_urls: dict[str, str] = {}
+        self.exit_codes: dict[str, int | None] = {}
+        self._observed_events = 0
         self._init_threads()
 
     def _init_threads(self) -> None:
@@ -687,6 +735,7 @@ class Harness:
     def __enter__(self) -> Self:
         if self.config.idempotency not in IDEMPOTENCY_MODES:
             raise ValueError(f"modo de idempotencia desconocido: {self.config.idempotency}")
+        check_component_mode(self.config, self._base.poc_version, custom=self._custom)
         self._database = isolated_database(self._base, self.name)
         url = self._database.__enter__()
         try:
@@ -708,15 +757,20 @@ class Harness:
                                 pending_notice_timeout_s=self.config.pending_notice_timeout_seconds,
                                 **saga_deadlines(self.config))
         self.conn = connect(url)
-        self._set_idempotency(self.config.idempotency)
-        self._build()
-        self._start_threads()
-        if self.config.external_orchestrator:
-            self._start_orchestrators()
+        if self.config.component_processes:
+            self._start_components()
+        else:
+            self._set_idempotency(self.config.idempotency)
+            self._build()
+            self._start_threads()
+            if self.config.external_orchestrator:
+                self._start_orchestrators()
         if self.config.seed_orders:
             self.seed_orders()
 
     def __exit__(self, *exc: object) -> None:
+        with contextlib.suppress(Exception):
+            self.stop_components()
         self._stop_orchestrators()
         self._stop_threads()
         self._close_deliveries()
@@ -758,6 +812,82 @@ class Harness:
         if self._process_dir is not None:
             with contextlib.suppress(Exception):
                 self._process_dir.cleanup()
+
+    # -- todos los componentes en procesos propios (spec experiments; E10) ------------------------------
+    def _start_components(self) -> None:
+        """Lanza los procesos de `scripts/run-agents.sh`, cada uno con su puerto y su log, y espera a que estén
+        listos. Los añade a `components` según arrancan: `__exit__` los para aunque falle uno."""
+        targets = [c.target for c in COMPONENTS if c.target]
+        self.component_urls = component_urls(dict(zip(targets, free_ports(len(targets)), strict=True)))
+        env = component_env(self.settings, self.component_urls, extra={
+            "LLM_CLIENT": "oracle", "ORACLE_SEED": str(self.config.seed),
+            "ORACLE_INCIDENTS": str(self.config.incidents),
+            "PENDING_NOTICE_TIMEOUT_S": str(self.settings.pending_notice_timeout_s),
+            "EFFECT_KEYS_ENABLED": "true" if self.settings.effect_keys_enabled else "false",
+        })
+        self._process_dir = tempfile.TemporaryDirectory(prefix=f"{self.name}-")
+        start_components(COMPONENTS, env, self.component_urls, Path(self._process_dir.name),
+                         processes=self.components)
+        wait_ready(self.components)
+
+    def stop_components(self) -> dict[str, int | None]:
+        """Para todos los procesos a la vez (una sola vez) y devuelve el código de salida de cada uno: 0 si se paró
+        limpio. Con el sistema parado se pueden comprobar las invariantes (I5 reconstruye las vistas)."""
+        if self.components and not self.exit_codes:
+            self.exit_codes = stop_all(self.components)
+        return self.exit_codes
+
+    def process_deaths(self) -> dict[str, int | None]:
+        """Los procesos que terminaron sin que el harness los parase, con su código de salida."""
+        return {p.name: p.returncode for p in self.components if p.died()}
+
+    def service_executions(self) -> Counter[tuple[str, str]]:
+        """Ejecuciones de los servicios simulados de los ejecutores por (servicio, `idempotency_key`)."""
+        return read_executions(p.executions_path for p in self.components if p.executions_path is not None)
+
+    def _observe_components(self) -> int:
+        """Un turno con los componentes en procesos: las filas nuevas de `event_log` desde el anterior."""
+        row = self.conn.execute("SELECT count(*) AS n FROM event_log.events").fetchone()
+        self.conn.commit()
+        progressed, self._observed_events = row["n"] - self._observed_events, row["n"]
+        if not progressed:
+            time.sleep(PROCESS_POLL_S)
+        return progressed
+
+    def _catch_up_processes(self, timeout: float) -> bool:
+        """El proceso `event-log` llega a las marcas de agua altas de ahora; False si no llega en `timeout`."""
+        topic = self.settings.events_topic
+        probe = make_consumer(self.settings.kafka_bootstrap_servers, group_id=f"{topic}.probe")
+        try:
+            parts = probe.list_topics(topic, timeout=10).topics[topic].partitions
+            highs = {p: high_watermark(probe, TopicPartition(topic, p)) for p in parts}
+        finally:
+            probe.close()
+        end = time.monotonic() + timeout
+        while True:
+            rows = self.conn.execute("SELECT kafka_partition, kafka_offset FROM event_log.offsets"
+                                     " WHERE consumer = %s AND kafka_topic = %s",
+                                     (event_log.CONSUMER, topic)).fetchall()
+            self.conn.commit()
+            if caught_up({r["kafka_partition"]: r["kafka_offset"] for r in rows}, highs):
+                return True
+            if time.monotonic() > end:
+                log.warning("event_log no llegó a %s en %s s", highs, timeout)
+                return False
+            time.sleep(PROCESS_POLL_S)
+
+    def _open_process_jobs(self) -> int:
+        """Trabajos pendientes o en curso en el `command_jobs` de cada esquema que lo tenga."""
+        rows = self.conn.execute("SELECT table_schema AS s FROM information_schema.tables"
+                                 " WHERE table_name = 'command_jobs'").fetchall()
+        self.conn.commit()
+        if not rows:
+            return 0
+        counts = self.conn.execute(" UNION ALL ".join(
+            f"SELECT count(*) AS n FROM {qualified(r['s'], 'command_jobs')} WHERE status IN ('pending', 'running')"
+            for r in rows)).fetchall()
+        self.conn.commit()
+        return sum(r["n"] for r in counts)
 
     def _set_idempotency(self, mode: str) -> None:
         """Restricciones de unicidad de negocio y deduplicación de los servicios simulados según el modo."""
@@ -974,7 +1104,12 @@ class Harness:
         él, devuelve la respuesta."""
         command = CommandEnvelope(command_id=uuid.uuid4(), command_type=command_type, correlation_id=correlation_id,
                                   causation_id=None, payload=payload)
-        response = self.commands.deliver(self.targets[target], command, conn=self._seed_conn, entry=True)
+        if self.config.component_processes:  # por REST al proceso del destino; un 5xx o sin respuesta, excepción
+            response = invoke(self.component_urls[target], command_type, command_id=command.command_id,
+                              correlation_id=correlation_id, causation_id=None, payload=payload,
+                              timeout=self.settings.command_http_timeout_s)
+        else:
+            response = self.commands.deliver(self.targets[target], command, conn=self._seed_conn, entry=True)
         if check and response.status_code != 202:
             raise RuntimeError(f"{command_type} rechazado: {response.body}")
         return response
@@ -1035,7 +1170,10 @@ class Harness:
         return deliver_concurrently(lambda: connect(self.settings.database_url), [send] * times)
 
     def step(self) -> int:
-        """Un turno: relays, lado de lectura, consumidores, dispatcher y plazos. Devuelve cuánto avanzó."""
+        """Un turno: relays, lado de lectura, consumidores, dispatcher y plazos. Devuelve cuánto avanzó. Con los
+        componentes en procesos propios, solo mide lo que avanzaron."""
+        if self.config.component_processes:
+            return self._observe_components()
         progressed = sum(self._publish(r) for r in self._relays)
         progressed += sum(r.run_once(timeout=0) for r in self._active_readers())
         for i, (delivery, factory) in enumerate(self._deliveries):
@@ -1150,6 +1288,8 @@ class Harness:
 
     def _open_jobs(self) -> int:
         """Trabajos pendientes o en curso de los componentes con comandos largos."""
+        if self.config.component_processes:
+            return self._open_process_jobs()
         schemas = [t.schema for t in self.targets.values() if any(s.deferred for s in t.specs.values())]
         if not schemas:
             return 0
@@ -1197,6 +1337,8 @@ class Harness:
     def catch_up_log(self, timeout: float = LOG_CATCH_UP_S) -> bool:
         """`event_log` lee hasta las marcas de agua altas de ahora (I4 busca ahí cada fila publicada). False si no
         llega en `timeout`."""
+        if self.config.component_processes:
+            return self._catch_up_processes(timeout)
         try:
             self._readers[0].catch_up(timeout)
         except TimeoutError as exc:
@@ -1416,10 +1558,16 @@ class Harness:
     # -- métricas ----------------------------------------------------------------------------
     @property
     def crashes(self) -> int:
-        return self.consumer_crashes + self.commands.crashes
+        commands = getattr(self, "commands", None)  # con los componentes en procesos no hay comandos en proceso
+        return self.consumer_crashes + (commands.crashes if commands is not None else 0)
 
     def duplicates(self) -> dict[str, int]:
         self.conn.commit()  # cierra la transacción implícita de las lecturas anteriores
+        if self.config.component_processes:  # las ejecuciones las anotaron los procesos ejecutores
+            for attr in set(SERVICE_OF.values()):
+                getattr(self.services, attr).executions.clear()
+            for (service, key), n in self.service_executions().items():
+                getattr(self.services, service).executions[key] = n
         return effect_duplicates(self.conn, self.services)
 
     def result(self, elapsed: float) -> RunResult:

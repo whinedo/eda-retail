@@ -158,13 +158,58 @@ Cada experimento nuevo SHALL ejecutarse con `uv run eda-experiment <exp> --seed 
 
 ### Requirement: Modo multiproceso del harness
 
-El harness SHALL ofrecer un modo multiproceso (`RunConfig.orchestrator_processes`) que arranque una o varias instancias del orquestador como procesos propios (`eda-orchestrator`, el mismo proceso que `scripts/run-agents.sh`) contra PostgreSQL y Kafka reales, con la base de datos y el topic propios de la ejecución. El resto de componentes sigue en el harness, con el cliente LLM simulado (los procesos de los componentes con LLM solo usan Ollama), y atiende los comandos de esas instancias por REST en un servidor HTTP local de la ejecución. El experimento E16 MUST usar ese modo; el modo en proceso sigue siendo el de E1 a E7 y el de los demás experimentos, E12 incluido.
+El harness SHALL ofrecer un modo multiproceso (`RunConfig.orchestrator_processes`) que arranque una o varias instancias del orquestador como procesos propios (`eda-orchestrator`, el mismo proceso que `scripts/run-agents.sh`) contra PostgreSQL y Kafka reales, con la base de datos y el topic propios de la ejecución. El resto de componentes sigue en el harness, con el cliente LLM simulado, y atiende los comandos de esas instancias por REST en un servidor HTTP local de la ejecución. El experimento E16 MUST usar ese modo; el modo en proceso sigue siendo el de E1 a E7 y el de los demás experimentos, E12 incluido.
 
 #### Scenario: Aislamiento de la ejecución
 
 - **GIVEN** una ejecución multiproceso
 - **WHEN** termina o se aborta
 - **THEN** sus procesos están parados y su base de datos y su topic se han borrado
+
+### Requirement: Todos los componentes en procesos propios
+
+El harness SHALL ofrecer un modo (`RunConfig.component_processes`) en el que cada componente corre como proceso propio: exactamente los procesos de `scripts/run-agents.sh` en su versión 1 (proyector, log de eventos, intake, inventory, orquestador, intérprete, planificador, replanificador y los cuatro `eda-step-executor <acción>`), contra PostgreSQL y Kafka reales, con la base de datos y el topic propios de la ejecución y un puerto libre por proceso que atiende comandos. El harness solo siembra los datos, envía los avisos por REST al proceso de intake y mide; espera a que los procesos estén listos antes de empezar y los para al terminar, también si la ejecución falla. Los procesos con LLM eligen su cliente con `LLM_CLIENT`: `ollama` (por defecto, el de producción) u `oracle`, el oráculo sobre `generate(ORACLE_SEED, ORACLE_INCIDENTS)`; cualquier otro valor MUST impedir que el proceso arranque. Con `SERVICE_EXECUTIONS_LOG`, cada ejecutor anota cada ejecución de su servicio simulado con su `idempotency_key`; sin ella, nada cambia. El modo MUST rechazar lo que solo inyecta el harness en proceso: los fallos del `FaultPlan`, los modos de idempotencia distintos de `full`, la versión 2 y un LLM, unos datos o un transportista propios. El informe de cada proceso da si murió solo, su código de salida y su log. Sin el interruptor, el harness y los procesos de `scripts/run-agents.sh` no cambian.
+
+#### Scenario: Los mismos procesos que scripts/run-agents.sh
+
+- **GIVEN** el modo con todos los componentes en procesos propios
+- **WHEN** el harness lanza los procesos
+- **THEN** son exactamente los de `scripts/run-agents.sh`, con el mismo nombre, el módulo de su comando `eda-*` y sus argumentos
+
+#### Scenario: LLM simulado en los procesos
+
+- **GIVEN** un proceso con LLM
+- **WHEN** arranca sin `LLM_CLIENT` o con `LLM_CLIENT=oracle`
+- **THEN** usa Ollama o el oráculo sobre el conjunto de la ejecución, respectivamente
+- **AND** con otro valor no arranca y el error lo dice en español
+
+#### Scenario: Servicios simulados con su registro de ejecuciones
+
+- **GIVEN** un ejecutor con `SERVICE_EXECUTIONS_LOG`
+- **WHEN** su servicio simulado ejecuta un efecto
+- **THEN** queda una línea con el servicio y la `idempotency_key`, y una llamada repetida con la misma clave no deja otra
+- **AND** sin la variable el ejecutor no anota nada
+
+#### Scenario: Procesos listos antes de empezar
+
+- **GIVEN** los procesos recién lanzados
+- **WHEN** el harness espera a que estén listos
+- **THEN** cada proceso que atiende comandos acepta conexiones y cada consumidor de grupo tiene particiones
+- **AND** si uno muere al arrancar, el error da su nombre, su código de salida y el final de su log
+
+#### Scenario: Parada y procesos caídos
+
+- **GIVEN** una ejecución con todos los componentes en procesos
+- **WHEN** el harness los para
+- **THEN** cada proceso recibe `SIGINT`, ejecuta su limpieza y sale con código 0
+- **AND** un proceso que terminó antes sin que el harness lo parase consta como caído, con su código de salida
+
+#### Scenario: Ejecución de punta a punta con todos los componentes en procesos
+
+- **GIVEN** una ejecución pequeña con todos los componentes en procesos y el oráculo como LLM
+- **WHEN** se ejecuta hasta cerrar las incidencias
+- **THEN** todas se cierran, ningún proceso muere y todos salen limpios al pararlos
+- **AND** I1 a I5 no tienen violaciones y cada `idempotency_key` se ejecuta una vez en su servicio simulado
 
 ### Requirement: E9 Caída de Kafka (H9)
 

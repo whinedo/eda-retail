@@ -1,8 +1,8 @@
 """Proceso `eda-interpreter`: consume `CarrierNoticeReceived` y `OrderRegistered` (grupo `interpreter`),
 publica su outbox con su relay y resuelve los avisos aparcados cuyo plazo vence.
 
-Usa Ollama (`OLLAMA_HOST`, `LLM_MODEL`, `LLM_SEED`). Si un aviso falla, la excepción detiene el
-proceso sin confirmar el offset; al reiniciar, Kafka vuelve a entregarlo.
+Usa Ollama (`OLLAMA_HOST`, `LLM_MODEL`, `LLM_SEED`), o el cliente que diga `LLM_CLIENT` (`llm/select.py`).
+Si un aviso falla, la excepción detiene el proceso sin confirmar el offset; al reiniciar, Kafka vuelve a entregarlo.
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ from eda_retail.infra.outbox import start_relay
 from eda_retail.infra.tracing import setup_tracing
 from eda_retail.interpreter.consumer import build_consumer, expire_parked
 from eda_retail.interpreter.handler import SCHEMA
-from eda_retail.llm.ollama_client import OllamaClient
+from eda_retail.llm.select import client_from_env
 from eda_retail.rules import BusinessRules
 
 log = logging.getLogger("eda_retail.interpreter")
@@ -51,7 +51,7 @@ def main(argv: list[str] | None = None) -> None:
     expiry.start()
     consumer = build_consumer(
         connect(settings.database_url), make_consumer(settings.kafka_bootstrap_servers, group_id=SCHEMA),
-        settings, OllamaClient(), BusinessRules(),
+        settings, client_from_env(), BusinessRules(),
     ).with_reconnect(lambda: connect(settings.database_url))
     try:
         consumer.run_forever()

@@ -7,7 +7,8 @@ experimentos se pueden programar caídas (`down`), tiempos de espera vencidos
 (`timeouts`, el número de llamadas que fallarán) y rechazos de negocio (`reject`).
 
 Con `idempotent=False` (experimento E1 sin idempotencia) el servicio no reconoce la clave y
-repite el efecto; `executions` cuenta cuántas veces se ejecutó cada clave.
+repite el efecto; `executions` cuenta cuántas veces se ejecutó cada clave y `on_execute`, si se da, recibe
+cada ejecución (servicio, clave, identificador externo; `executions.ExecutionLog` la anota en un fichero).
 """
 
 from __future__ import annotations
@@ -15,9 +16,14 @@ from __future__ import annotations
 import threading
 import uuid
 from collections import Counter
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from eda_retail.step_executors.errors import BusinessError, Transient
+
+# Servicio simulado (atributo de `Services`) de cada acción de un ejecutor.
+SERVICE_OF = {"notify_customer": "mail", "file_claim": "claims", "reissue_shipment": "carrier",
+              "issue_refund": "payments"}
 
 
 @dataclass
@@ -30,6 +36,7 @@ class FakeService:
     idempotent: bool = True
     calls: int = 0
     executions: Counter[str] = field(default_factory=Counter)
+    on_execute: Callable[[str, str, str], None] | None = field(default=None, repr=False)
     _done: dict[str, str] = field(default_factory=dict)
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
@@ -48,6 +55,8 @@ class FakeService:
                 return self._done[key]
             self._done[key] = f"{self.prefix}-{uuid.uuid4().hex[:8]}"
             self.executions[key] += 1
+            if self.on_execute is not None:
+                self.on_execute(self.name, key, self._done[key])
             return self._done[key]
 
     @property
