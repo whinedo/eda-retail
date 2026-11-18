@@ -29,6 +29,10 @@
   conexión: `CommandUnavailable` al momento) o `hang` (acepta la petición y no responde: se espera el timeout del
   comando). El intervalo empieza con el primer comando a ese sistema (y acción, si se da) y dura `duration_s` (sin
   ella, para siempre); `ExecutorOutage` lo decide y el arnés lo aplica en `InProcessCommands`.
+- Capacidad de un ejecutor (`executor_capacity`, E14): con tantos trabajos abiertos (`pending` o `running`) como su
+  capacidad, el ejecutor responde 503 a un `ExecuteStep` nuevo (`CommandUnavailable`), como uvicorn con
+  `EXECUTOR_MAX_CONCURRENCY`. Trabajo lento (`prepare_delay_seconds`, E14): el `prepare` de los trabajos de ese
+  componente tarda esos segundos más (el LLM, el servicio externo). Los dos los aplica el arnés.
 """
 
 from __future__ import annotations
@@ -75,6 +79,8 @@ class FaultPlan:
     reinvoke_steps: tuple[str, ...] = ()  # acciones cuyo ExecuteStep llega también con otro command_id
     crash_between_effect_and_record: tuple[str, ...] = ()  # acciones que caen tras el efecto en su primer intento
     executor_faults: tuple[ExecutorFault, ...] = ()  # sistemas destino caídos o colgados
+    executor_capacity: Mapping[str, int] = field(default_factory=dict)  # ejecutor -> trabajos abiertos como máximo
+    prepare_delay_seconds: Mapping[str, float] = field(default_factory=dict)  # componente -> retraso del prepare
 
     def __post_init__(self) -> None:
         if self.duplicates < 1:
@@ -109,6 +115,14 @@ class FaultPlan:
                 raise ValueError(f"duration_s debe ser positivo para {fault.target}: {fault.duration_s}")
             if fault.action is not None and fault.action not in allowed:
                 raise ValueError(f"acción fuera de la lista permitida: {fault.action}")
+        for target, capacity in self.executor_capacity.items():
+            if not target.startswith("executor_"):
+                raise ValueError(f"executor_capacity solo admite ejecutores: {target}")
+            if capacity < 1:
+                raise ValueError(f"executor_capacity debe ser al menos 1 para {target}: {capacity}")
+        for component, seconds in self.prepare_delay_seconds.items():
+            if seconds < 0:
+                raise ValueError(f"prepare_delay_seconds no puede ser negativo para {component}: {seconds}")
 
 
 class ExecutorOutage:

@@ -30,6 +30,8 @@ env:
     tests/integration/test_e23_business_duplicates.py
     tests/integration/test_e11_late_results.py
     tests/integration/test_e6_compare.py
+    tests/integration/test_e17_parked.py
+    tests/integration/test_e14_burst_backpressure.py
 
 jobs:
   hygiene:

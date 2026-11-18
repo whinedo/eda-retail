@@ -94,7 +94,7 @@ Las hipótesis nuevas se llaman como su experimento (H11, H12...). Los marcados 
 | E11 (S) | Entrega retrasada y replanes | Resultados tardíos, 50 % de fallos en `reserve_stock` | Eventos obsoletos ignorados, compensaciones correctas | Implementado |
 | E12 (S) | Ejecutor caído y colgado | `file_claim` en `down` y en `hang` | Plazos, aislamiento, cabeza de línea del dispatcher | Implementado (en proceso) |
 | E13 (S) | Fallo de compensación | `release_stock` falla | Escalado `compensation_failed`, sin reembolso | Implementado (en proceso) |
-| E14 | Ráfaga y contrapresión | Pico de avisos, 503 de los ejecutores | Dispatcher y cola de trabajos se recuperan | En proceso |
+| E14 | Ráfaga y contrapresión | Pico de avisos, 503 de los ejecutores | Dispatcher y cola de trabajos se recuperan | Implementado (en proceso) |
 | E15 | Degradación del LLM | Latencia o salidas inválidas | `llm_output_invalid`, plazos, trabajos reintentados | En proceso |
 | E16 (S) | Consumidor zombie | `SIGSTOP` más allá de la sesión y rebalanceo | Sin transiciones inválidas ni comandos duplicados | Implementado (multiproceso) |
 | E17 (S) | Proyección atrasada | Proyectores parados | Avisos aparcados, reanudación y escalado | Implementado |
@@ -119,7 +119,7 @@ Todo experimento de resiliencia comprueba, además de su hipótesis, estos cinco
 
 Si I1 o I2 se violan, la hipótesis no se da por cumplida aunque su criterio propio sí lo esté.
 
-**Implementación.** `experiments/invariants.py` los comprueba al terminar, con el sistema parado: I1 con el log (incidencias con `CarrierNoticeReceived` sin `IncidentResolved` ni `IncidentEscalated`), I2 con los efectos repetidos que mide E1, I3 con `executor_issue_refund.refunds` y con el orden de los `StepRequested` y `StepCompleted` del log (un `issue_refund` pedido con una compensación pedida y sin completar), I4 con cada `outbox` (filas sin publicar o cuyo evento no está en `event_log.events`) e I5 reconstruyendo cada vista desde el topic. E11, E13, E16, E17, E18, E21, E22 y E23 los incluyen en `metrics.invariants` (E16, con las instancias del orquestador aún en marcha y ociosas); E21 los comprueba antes de sus observaciones y de su control, que repiten efectos a propósito.
+**Implementación.** `experiments/invariants.py` los comprueba al terminar, con el sistema parado: I1 con el log (incidencias con `CarrierNoticeReceived` sin `IncidentResolved` ni `IncidentEscalated`), I2 con los efectos repetidos que mide E1, I3 con `executor_issue_refund.refunds` y con el orden de los `StepRequested` y `StepCompleted` del log (un `issue_refund` pedido con una compensación pedida y sin completar), I4 con cada `outbox` (filas sin publicar o cuyo evento no está en `event_log.events`) e I5 reconstruyendo cada vista desde el topic. E11, E13, E14 (por variante), E16, E17, E18, E21, E22 y E23 los incluyen en `metrics.invariants` (E16, con las instancias del orquestador aún en marcha y ociosas); E21 los comprueba antes de sus observaciones y de su control, que repiten efectos a propósito.
 
 ## 5. Experimentos nuevos en detalle
 
@@ -149,6 +149,14 @@ Si I1 o I2 se violan, la hipótesis no se da por cumplida aunque su criterio pro
 - **Mide.** Compensaciones pedidas, completadas y fallidas; incidencias con una compensación fallida y, de ellas, las escaladas con `compensation_failed`, los `issue_refund` pedidos y las compensaciones pedidas tras el escalado; incidencias con la compensación completada y reembolsadas; escaladas por motivo; I1 a I5.
 - **Criterio.** H13: al menos una compensación fallida; toda incidencia con una compensación fallida escala con `compensation_failed`, sin `issue_refund` pedido ni compensaciones tras el escalado; I1 a I5 sin violaciones.
 - **Implementación.** `uv run eda-expexecutor run e13`. Las métricas salen del log (`event_log.events`, en orden de `seq`).
+
+### E14 Ráfaga y contrapresión (H14)
+
+- **Objetivo.** Comprobar que una ráfaga de avisos con ejecutores que responden 503 por encima de su capacidad no pierde ni duplica comandos y que el dispatcher y las colas de trabajos se recuperan (spec resilience, «Pico de incidencias»).
+- **Escenario.** En proceso, 200 avisos enviados de golpe y dos variantes: `baseline`, sin límite, y `backpressure`, con capacidad 3 en cada ejecutor. En las dos, el `prepare` del planner tarda 0,05 s (el LLM) y el de los ejecutores 0,1 s (el servicio externo), para que los pasos lleguen más deprisa de lo que se atienden.
+- **Mide.** Por variante: cerradas, resueltas y escaladas por motivo; 503 por ejecutor; intentos por comando (máximo y reintentados); máximo de trabajos abiertos por componente y de comandos pendientes; tiempo hasta vaciar las colas; colas al terminar; pasos con `ExecuteStep` de `command_id` distinto; latencia (media, mediana y p95); I1 a I5. El informe da también el cociente de la p95 frente a `baseline`.
+- **Criterio.** H14, sobre `backpressure`: al menos un 503, ningún ejecutor por encima de su capacidad, colas vacías al terminar, sin comandos duplicados, todas las incidencias cerradas e I1 a I5 sin violaciones. La latencia es un dato, no parte de H14.
+- **Implementación.** `uv run eda-expexecutor run e14`. La capacidad se cuenta en trabajos abiertos (`pending` o `running`) en el `command_jobs` del ejecutor: en proceso el dispatcher entrega un comando cada vez y un `ExecuteStep` solo se acepta, así que contar peticiones simultáneas no limitaría nada. `InProcessCommands` responde 503 (`CommandUnavailable`) a un `ExecuteStep` nuevo con el ejecutor lleno y deja pasar una reentrega cuyo trabajo ya existe; el dispatcher lo reprograma con backoff y el mismo `command_id`, y el plazo del paso sigue contando desde el primer envío. `QueueSampler` mide las colas en cada turno, como mucho cada 0,05 s.
 
 ### E16 Consumidor zombie y rebalanceo (H16)
 

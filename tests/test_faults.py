@@ -324,3 +324,29 @@ def test_outage_window_opens_at_the_first_command_and_ends_after_its_duration():
     clock.now = 10_000.0
     assert outage.active("executor_file_claim", "file_claim").mode == "hang"  # para siempre
     assert not outage.ended("executor_file_claim") and not outage.recovering("executor_file_claim")
+
+
+def test_capacity_and_prepare_delay_reject_invalid_values():
+    """Capacidad limitada de un ejecutor y trabajo lento: capacidad de al menos 1 y solo en ejecutores, retraso no
+    negativo"""
+    with pytest.raises(ValueError):
+        FaultPlan(executor_capacity={"executor_file_claim": 0})
+    with pytest.raises(ValueError):
+        FaultPlan(executor_capacity={"planner": 3})
+    with pytest.raises(ValueError):
+        FaultPlan(prepare_delay_seconds={"planner": -0.1})
+    FaultPlan(executor_capacity={"executor_file_claim": 3}, prepare_delay_seconds={"planner": 0.05})
+
+
+def test_slowed_delays_only_deferred_prepare(monkeypatch):
+    """Capacidad limitada de un ejecutor y trabajo lento: el `prepare` de un comando largo tarda los segundos dados;
+    un comando sin trabajo largo no cambia"""
+    slept = []
+    monkeypatch.setattr(harness.time, "sleep", slept.append)
+    deferred = CommandSpec(payload_model=ExecuteStep, handle=lambda *a: None, prepare=lambda c, p: "ok",
+                           deferred=True)
+    assert harness.slowed(deferred, 0.05).prepare(None, None) == "ok"
+    assert slept == [0.05]
+    immediate = CommandSpec(payload_model=ExecuteStep, handle=lambda *a: None)
+    assert harness.slowed(immediate, 0.05) is immediate
+    assert harness.slowed(deferred, 0.0) is deferred
