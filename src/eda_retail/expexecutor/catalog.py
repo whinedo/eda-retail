@@ -198,6 +198,23 @@ def _e12(report: dict[str, Any]) -> list[Check]:
     return checks
 
 
+def _e14(report: dict[str, Any]) -> list[Check]:
+    """H14 sobre `backpressure`: al menos un 503, sin superar la capacidad, colas vacías y sin comandos duplicados; I1 e
+    I2 en las dos variantes."""
+    prefix = "metrics.variants.backpressure"
+    checks = [
+        _check(report, "hypothesis.H14", "true", lambda v: v is True),
+        _check(report, f"{prefix}.unavailable_503", "> 0 en total",
+               lambda v: isinstance(v, dict) and sum(v.values()) > 0),
+        _check(report, f"{prefix}.over_capacity", "{} (ningún ejecutor)", lambda v: v == {}),
+        _check(report, f"{prefix}.final_queues.pending_commands", "0", lambda v: v == 0),
+        _check(report, f"{prefix}.duplicate_commands", "[]", lambda v: v == []),
+    ]
+    for variant in ("baseline", "backpressure"):
+        checks += _invariants(report, f"metrics.variants.{variant}")
+    return checks
+
+
 E22_VARIANTS = ("execute_step_2", "execute_step_4", "execute_step_8", "other_commands", "same_key",
                 "effect_record_crash")
 E22_SERVICE_ACTIONS = ("notify_customer", "file_claim", "reserve_stock", "reissue_shipment", "issue_refund")
@@ -288,6 +305,13 @@ CATALOG: dict[str, Entry] = {
         "H13: hay al menos una compensación fallida y cada incidencia con una compensación fallida escala con "
         "`compensation_failed`, sin `issue_refund` pedido y sin compensaciones pedidas tras el escalado; I1 a I5 "
         "sin violaciones.", _e13),
+    "e14": Entry(
+        "E14", "Mide una ráfaga con contrapresión, en proceso: 200 avisos de golpe, el `prepare` del planner a 0,05 s "
+        "y el de los ejecutores a 0,1 s, sin límite (`baseline`) y con capacidad 3 por ejecutor (`backpressure`), "
+        "que responde 503 a un `ExecuteStep` nuevo con 3 trabajos abiertos.",
+        "H14: en `backpressure` hay al menos un 503, ningún ejecutor supera su capacidad, las colas terminan "
+        "vacías, ningún paso tiene `ExecuteStep` con `command_id` distinto, todas las incidencias se cierran e I1 a "
+        "I5 no tienen violaciones.", _e14),
     "e16": Entry(
         "E16", "Mide un consumidor zombie en modo multiproceso: dos instancias del orquestador en el mismo grupo, "
         "50 incidencias en curso y un `SIGSTOP` a la que posee más particiones durante más tiempo que "

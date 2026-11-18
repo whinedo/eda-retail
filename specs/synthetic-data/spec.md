@@ -81,6 +81,22 @@ La inyección SHALL permitir dejar un ejecutor en uno de dos modos durante un in
 - **THEN** la petición vence a los 5 s con `CommandUnavailable`
 - **AND** el dispatcher reprograma el comando con backoff y el mismo `command_id`
 
+### Requirement: Capacidad limitada de un ejecutor y trabajo lento
+
+La inyección SHALL permitir dar a un ejecutor una capacidad (`executor_capacity`, trabajos abiertos como máximo) y retrasar el `prepare` de los trabajos de un componente (`prepare_delay_seconds`). En el modo en proceso, `InProcessCommands` responde 503 (`CommandUnavailable`) a un `ExecuteStep` nuevo cuando el ejecutor ya tiene tantos trabajos `pending` o `running` como su capacidad, como uvicorn con `EXECUTOR_MAX_CONCURRENCY`; un comando cuyo trabajo ya existe se entrega igual (es una reentrega).
+
+#### Scenario: Ejecutor lleno
+
+- **GIVEN** `executor_capacity` 3 en `executor_file_claim` y 3 trabajos abiertos en su `command_jobs`
+- **WHEN** el dispatcher le invoca un `ExecuteStep` nuevo
+- **THEN** la invocación falla con `CommandUnavailable` y el informe cuenta un 503 de `executor_file_claim`
+
+#### Scenario: Reentrega con el ejecutor lleno
+
+- **GIVEN** el mismo ejecutor lleno y un `ExecuteStep` cuyo trabajo ya está en su `command_jobs`
+- **WHEN** se entrega otra vez con su `command_id`
+- **THEN** se entrega al command handler, que lo trata como repetido
+
 ### Requirement: Congelación de un proceso
 
 En modo multiproceso, la inyección SHALL permitir congelar un proceso con `SIGSTOP` durante un tiempo y reanudarlo con `SIGCONT`, de modo que un consumidor de Kafka pierda su sesión (`session.timeout.ms` o `max.poll.interval.ms`) y vuelva a vivir después de que otra instancia haya asumido sus particiones.

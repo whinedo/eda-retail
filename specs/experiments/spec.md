@@ -261,6 +261,36 @@ El sistema SHALL cumplir la hipótesis H13: cuando una compensación termina en 
 - **WHEN** se evalúa la hipótesis
 - **THEN** H13 se cumple si hubo al menos una compensación fallida, toda incidencia con una compensación fallida terminó escalada con `compensation_failed`, sin `issue_refund` pedido y sin compensaciones pedidas tras el escalado, y I1 a I5 no tienen violaciones
 
+### Requirement: E14 Ráfaga y contrapresión (H14)
+
+El sistema SHALL cumplir la hipótesis H14: ante una ráfaga de avisos con ejecutores que rechazan con 503 por encima de su capacidad, el dispatcher reintenta cada comando con el mismo `command_id` y backoff, ningún ejecutor tiene más trabajos abiertos que su capacidad, las colas (`orchestrator.command_outbox` y los `command_jobs` de cada componente) se vacían, ningún comando se pierde ni se duplica con otro `command_id` y se mantienen I1 a I5 (spec resilience, «Pico de incidencias»). El experimento SHALL ejecutarse en modo en proceso con 200 incidencias enviadas de golpe y dos variantes: `baseline`, sin límite de capacidad, y `backpressure`, con capacidad 3 en cada uno de los cuatro ejecutores (`executor_<acción>`). En las dos, el `prepare` de los trabajos del planner tarda 0,05 s (el LLM) y el de los ejecutores 0,1 s (el servicio externo), para que los pasos lleguen a cada ejecutor más deprisa de lo que los atiende y las colas de trabajos crezcan. La capacidad se cuenta en trabajos abiertos (`pending` o `running`) en el `command_jobs` del ejecutor, porque en proceso el dispatcher entrega un comando cada vez y un `ExecuteStep` solo se acepta. El informe MUST dar, por variante: incidencias cerradas, resueltas y escaladas por motivo; respuestas 503 por ejecutor; intentos por comando (máximo y comandos reintentados); máximo de trabajos abiertos por componente y de comandos pendientes en `command_outbox`; tiempo hasta vaciar las colas; comandos pendientes y trabajos abiertos al terminar; pasos con `ExecuteStep` de `command_id` distinto; latencia (media, mediana y p95); e I1 a I5. La variante `backpressure` MUST provocar al menos un 503; si no, no cuenta como cumplida. La latencia frente a `baseline` se da como dato y no forma parte de H14.
+
+#### Scenario: Ejecutor saturado
+
+- **GIVEN** un ejecutor con capacidad 3 y 3 trabajos abiertos
+- **WHEN** el dispatcher le invoca otro `ExecuteStep`
+- **THEN** la invocación falla con 503 (`CommandUnavailable`) sin crear el trabajo
+- **AND** el dispatcher reprograma el comando con backoff y el mismo `command_id`
+
+#### Scenario: Las colas se vacían
+
+- **GIVEN** la ráfaga de 200 avisos de la variante `backpressure`
+- **WHEN** termina la ejecución
+- **THEN** no queda ningún comando `pending` en `orchestrator.command_outbox` ni ningún trabajo `pending` o `running` en los `command_jobs`
+- **AND** ningún ejecutor tuvo nunca más trabajos abiertos que su capacidad
+
+#### Scenario: Sin comandos duplicados
+
+- **GIVEN** comandos reintentados tras un 503
+- **WHEN** se cuentan los `ExecuteStep` de `command_outbox`
+- **THEN** ningún paso tiene dos `ExecuteStep` con `command_id` distinto en la misma versión del plan
+
+#### Scenario: Cumplimiento de H14
+
+- **GIVEN** la ejecución completa de E14
+- **WHEN** se evalúa la hipótesis
+- **THEN** H14 se cumple si en `backpressure` hubo al menos un 503, ningún ejecutor superó su capacidad, las colas terminaron vacías, ningún paso tiene comandos duplicados, todas las incidencias se cerraron y I1 a I5 no tienen violaciones
+
 ### Requirement: E16 Consumidor zombie y rebalanceo (H16)
 
 El sistema SHALL cumplir la hipótesis H16: cuando una instancia del orquestador se congela más que el timeout de sesión, otra toma sus particiones y la primera reanuda, no se produce ninguna transición de saga inválida ni ningún comando duplicado con `command_id` distinto para el mismo paso, y se mantienen I1 a I5. El experimento SHALL ejecutarse en modo multiproceso con dos instancias del orquestador en el mismo grupo, 50 incidencias en curso y un `SIGSTOP` a la instancia que posee más particiones durante un tiempo mayor que `session.timeout.ms`; después `SIGCONT`. El experimento sondea el supuesto de «único dueño sin concurrencia optimista» del diseño: el informe MUST dar, por incidencia, si dos instancias procesaron mensajes de ella solapados en el tiempo y qué transacciones esperaron al bloqueo de la incidencia.

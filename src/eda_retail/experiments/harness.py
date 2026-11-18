@@ -37,6 +37,10 @@ Fallos (spec experiments; L55):
   durante un intervalo o para siempre (`InProcessCommands`); al recuperarse, el sistema colgado atiende una vez lo
   que tenía aceptado (`flush_recovered`, en cada turno). Con `RunConfig.dispatcher_thread`, el dispatcher va en su
   propio hilo, como en el orquestador, y un ejecutor colgado no para los relays ni el lado de lectura.
+- E14 (spec synthetic-data, «Capacidad limitada de un ejecutor y trabajo lento»): con `executor_capacity`,
+  `InProcessCommands` responde 503 (`CommandUnavailable`) a un `ExecuteStep` nuevo si el ejecutor ya tiene tantos
+  trabajos abiertos como su capacidad y lo cuenta en `unavailable_503`; `prepare_delay_seconds` retrasa el `prepare`
+  de los trabajos de un componente (`slowed`).
 
 Modos de idempotencia (E1, supuesto A3):
 - `full`: inbox en los consumidores y en los comandos, `effect_keys` y servicios con clave.
@@ -260,6 +264,28 @@ def crashing(spec: CommandSpec, crashes: EffectRecordCrashes) -> CommandSpec:
     return replace(spec, prepare=prepare)
 
 
+def slowed(spec: CommandSpec, seconds: float) -> CommandSpec:
+    """Comando largo cuyo `prepare` tarda `seconds` más (E14: el LLM o el servicio externo, lentos)."""
+    if seconds <= 0 or not spec.deferred:
+        return spec
+
+    def prepare(command: CommandEnvelope, payload: Any) -> Any:
+        time.sleep(seconds)
+        return spec.prepare(command, payload) if spec.prepare is not None else None
+
+    return replace(spec, prepare=prepare)
+
+
+def open_jobs(conn: psycopg.Connection, schema: str, command_id: uuid.UUID) -> tuple[bool, int]:
+    """Si el comando ya tiene trabajo en el `command_jobs` de `schema` y cuántos trabajos hay abiertos."""
+    with conn.transaction():
+        row = conn.execute(
+            f"SELECT count(*) FILTER (WHERE command_id = %s) AS mine,"
+            f" count(*) FILTER (WHERE status IN ('pending', 'running')) AS open"
+            f" FROM {qualified(schema, 'command_jobs')}", (command_id,)).fetchone()
+    return row["mine"] > 0, row["open"]
+
+
 def counting_busy(spec: CommandSpec, count: Callable[[], None]) -> CommandSpec:
     """`ExecuteStep` que anota con `count` cada vez que su trabajo encuentra la clave `in_progress` (E22)."""
 
@@ -377,12 +403,16 @@ class InProcessCommands:
     `connect` abre la conexión de cada hilo en una entrega concurrente (E22) y al atender lo que un ejecutor
     colgado tenía aceptado (E12). Con `executor_faults` (E12), un sistema `down` rechaza la llamada y uno `hang` la
     acepta sin responder: se espera `timeout` con `sleep` y la petición queda en `backlog` hasta que se recupera.
-    `hang_wait_s` suma lo que el que invoca esperó a cada sistema colgado."""
+    `hang_wait_s` suma lo que el que invoca esperó a cada sistema colgado. Con `executor_capacity` (E14), un ejecutor
+    lleno responde 503 a un `ExecuteStep` nuevo; `unavailable_503` los cuenta por ejecutor. `jobs` dice si el comando
+    ya tiene trabajo y cuántos hay abiertos (por defecto, `open_jobs` con la conexión de las entregas)."""
 
     def __init__(self, conn: psycopg.Connection, targets: dict[str, Target], plan: FaultPlan,
                  crashed: set[str], *, connect: Callable[[], Any] | None = None,
-                 clock: Callable[[], float] = time.monotonic, sleep: Callable[[float], Any] = time.sleep) -> None:
+                 clock: Callable[[], float] = time.monotonic, sleep: Callable[[float], Any] = time.sleep,
+                 jobs: Callable[[str, uuid.UUID], tuple[bool, int]] | None = None) -> None:
         self._conn = conn
+        self._jobs = jobs or (lambda schema, command_id: open_jobs(self._conn, schema, command_id))
         self._targets = targets
         self._plan = plan
         self._crashed = crashed
@@ -395,6 +425,7 @@ class InProcessCommands:
         self.deliveries: list[CommandDelivery] = []
         self.backlog: dict[str, list[CommandEnvelope]] = {}
         self.hang_wait_s: Counter[str] = Counter()
+        self.unavailable_503: Counter[str] = Counter()
 
     def deliver(self, target: Target, command: CommandEnvelope, *, conn: psycopg.Connection | None = None,
                 entry: bool = False) -> Any:
@@ -436,6 +467,7 @@ class InProcessCommands:
                                   causation_id=causation_id, payload=payload)
         target = self._targets[url]
         self._suffer_outage(target, command, timeout)
+        self._refuse_when_full(target, command)
         response = self.deliver(target, command)
         if command_type == "ExecuteStep" and response.status_code == 202:
             self._crash_after_commit(f"executor-{payload['action']}")
@@ -455,6 +487,19 @@ class InProcessCommands:
                 self.hang_wait_s[target.schema] += timeout
             self._sleep(timeout)
         raise CommandUnavailable(f"{target.schema} {fault.mode}")
+
+    def _refuse_when_full(self, target: Target, command: CommandEnvelope) -> None:
+        """E14: un ejecutor con tantos trabajos abiertos como su capacidad responde 503 a un `ExecuteStep` nuevo, sin
+        crear el trabajo. Una reentrega (su trabajo ya existe) pasa: el command handler la trata como repetida."""
+        capacity = self._plan.executor_capacity.get(target.schema)
+        if capacity is None or command.command_type != "ExecuteStep":
+            return
+        known, open_ = self._jobs(target.schema, command.command_id)
+        if known or open_ < capacity:
+            return
+        with self._lock:
+            self.unavailable_503[target.schema] += 1
+        raise CommandUnavailable(f"{target.schema}: HTTP 503 ({open_} trabajos abiertos, capacidad {capacity})")
 
     def awaiting_recovery(self) -> bool:
         """Algún ejecutor colgado tiene peticiones aceptadas y se recuperará: el arnés debe seguir hasta atenderlas."""
@@ -712,9 +757,10 @@ class Harness:
         effects = replace(s, effect_keys_enabled=mode == "full")  # ejecutores e inventory
         targets = {
             "intake": Target(intake.SCHEMA, intake.specs(), mode != "none"),
-            "planner": Target(planner.SCHEMA, planner.specs(s, self.llm, self.rules, carrier=self._carrier),
-                              mode != "none"),
-            "replanner": Target(replanner.SCHEMA, replanner.specs(s, self.llm, self.rules), mode != "none"),
+            "planner": Target(planner.SCHEMA, self._slowed(planner.SCHEMA, planner.specs(
+                s, self.llm, self.rules, carrier=self._carrier)), mode != "none"),
+            "replanner": Target(replanner.SCHEMA, self._slowed(replanner.SCHEMA,
+                                                               replanner.specs(s, self.llm, self.rules)), mode != "none"),
             "inventory": Target(inventory.SCHEMA, dict(inventory.specs(effects), ExecuteStep=delaying(failing(
                 counting_busy(inventory.specs(effects)["ExecuteStep"], self._count_busy), inventory.SCHEMA, plan),
                 inventory.SCHEMA, plan, self._defer_result)), mode == "full"),
@@ -725,12 +771,17 @@ class Harness:
                                         service=getattr(self.services, SERVICE_OF[action]),
                                         mail_server=mail_server)["ExecuteStep"]
             spec = counting_busy(crashing(spec, self.effect_crashes), self._count_busy)
+            spec = slowed(spec, plan.prepare_delay_seconds.get(f"executor_{action}", 0.0))
             targets[f"executor_{action}"] = Target(f"executor_{action}",
                                                    {"ExecuteStep": delaying(failing(spec, f"executor-{action}", plan),
                                                                             f"executor_{action}", plan,
                                                                             self._defer_result)},
                                                    mode == "full")
         return targets
+
+    def _slowed(self, schema: str, specs: dict[str, CommandSpec]) -> dict[str, CommandSpec]:
+        seconds = self.config.faults.prepare_delay_seconds.get(schema, 0.0)
+        return {name: slowed(spec, seconds) for name, spec in specs.items()}
 
     def _record_timeouts(self) -> None:
         """Los `ExecuteStep` que `expire_once` va a tratar como `timeout` en este turno: plazo vencido y sin

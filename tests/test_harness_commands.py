@@ -301,3 +301,34 @@ def test_recovered_executor_answers_its_backlog_once(executed):
     assert not commands.awaiting_recovery()
     _invoke(commands, CLAIM)
     assert executed[0][1] == command_id and len(executed) == 2
+
+
+def _capacity_commands(known: bool, open_jobs: int):
+    target = harness.Target("executor_file_claim", {"ExecuteStep": None}, True)
+    return harness.InProcessCommands(None, {"http://x": target},
+                                     FaultPlan(executor_capacity={"executor_file_claim": 3}), set(),
+                                     connect=lambda: None, jobs=lambda schema, command_id: (known, open_jobs))
+
+
+def test_full_executor_answers_503(executed):
+    """Ejecutor lleno: con tantos trabajos abiertos como su capacidad, un `ExecuteStep` nuevo falla con
+    `CommandUnavailable` sin entregarse, y el informe cuenta un 503 del ejecutor"""
+    commands = _capacity_commands(known=False, open_jobs=3)
+    with pytest.raises(CommandUnavailable, match="503"):
+        _invoke(commands, CLAIM)
+    assert executed == []
+    assert commands.unavailable_503 == {"executor_file_claim": 1}
+
+
+def test_redelivery_to_a_full_executor_is_delivered(executed):
+    """Reentrega con el ejecutor lleno: un `ExecuteStep` cuyo trabajo ya existe se entrega al command handler"""
+    commands = _capacity_commands(known=True, open_jobs=3)
+    _invoke(commands, CLAIM)
+    assert len(executed) == 1 and commands.unavailable_503 == {}
+
+
+def test_executor_below_capacity_accepts(executed):
+    """Ejecutor saturado (control): por debajo de su capacidad, el `ExecuteStep` nuevo se entrega"""
+    commands = _capacity_commands(known=False, open_jobs=2)
+    _invoke(commands, CLAIM)
+    assert len(executed) == 1 and commands.unavailable_503 == {}
