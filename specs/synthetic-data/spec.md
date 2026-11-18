@@ -140,6 +140,23 @@ La inyección SHALL permitir cortar el broker de Kafka de dos formas, sobre su c
 - **WHEN** el experimento lanza una excepción antes de terminar el corte
 - **THEN** el broker vuelve igualmente a su estado y la excepción sigue su curso
 
+### Requirement: Caída de la base de datos
+
+La inyección SHALL permitir cortar PostgreSQL de dos formas, sobre su contenedor de Docker (`POSTGRES_CONTAINER`, por defecto `eda-postgres`), con la misma mecánica que la caída del broker: pararlo y arrancarlo (`stopped`, las conexiones se cortan y las transacciones abiertas se deshacen) o congelarlo y descongelarlo (`paused`, las conexiones quedan abiertas sin respuesta). Con una duración, un temporizador SHALL devolver la base a su estado a su hora aunque quien la usa esté bloqueado. Al terminar el corte, la inyección SHALL esperar a que la base acepte una conexión nueva y responda a `SELECT 1` antes de devolver el control, y MUST devolver la base a su estado aunque el experimento falle durante el corte o falle el propio corte.
+
+#### Scenario: Corte de la base de datos
+
+- **GIVEN** PostgreSQL en marcha
+- **WHEN** se corta en modo `stopped` o `paused`
+- **THEN** se ejecuta `docker stop` o `docker pause` sobre su contenedor
+- **AND** al terminar, `docker start` o `docker unpause`, y se espera a que la base responda
+
+#### Scenario: Fallo durante el corte de la base de datos
+
+- **GIVEN** la base de datos cortada
+- **WHEN** el experimento lanza una excepción antes de terminar el corte, o falla el propio `docker stop` o `docker pause`
+- **THEN** la base vuelve igualmente a su estado y la excepción sigue su curso
+
 ### Requirement: Parada de proyectores
 
 La inyección SHALL permitir parar los proyectores (lado de lectura) durante un intervalo mientras los demás componentes siguen publicando, y reanudarlos después.

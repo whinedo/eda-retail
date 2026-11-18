@@ -7,6 +7,9 @@ temporizador devuelve el broker a su estado a los `duration_s` segundos de corta
 bloqueado en una llamada a Kafka; así el corte dura lo previsto. Al salir, también por una excepción, lo devuelve si aún
 no lo estaba y espera a que responda (los metadatos del topic), de modo que una ejecución fallida no deja sin Kafka a
 los tests que vienen después. Si el propio corte falla, se intenta devolver el broker antes de propagar el error.
+
+`ContainerOutage` es el corte genérico de un contenedor; `BrokerOutage` lo concreta para Kafka y
+`synthetic.pg_faults.PostgresOutage` para PostgreSQL (E10).
 """
 
 from __future__ import annotations
@@ -56,8 +59,15 @@ def broker_ready(bootstrap_servers: str, topic: str) -> Callable[[], bool]:
     return ready
 
 
-class BrokerOutage:
-    """Corte del broker durante el bloque `with`. `run` y `ready` solo los cambian los tests."""
+class ContainerOutage:
+    """Corte de un contenedor de Docker durante el bloque `with`. `run` y `ready` solo los cambian los tests. Cada
+    subclase da su variable de entorno con el contenedor (`container_env`), su contenedor por defecto y cómo nombra
+    lo que corta en los logs y errores (`cut_label`, «del broker»; `subject`, «el broker»)."""
+
+    container_env = ""
+    default_container = ""
+    cut_label = "del contenedor"
+    subject = "el contenedor"
 
     def __init__(self, mode: str, *, ready: Callable[[], bool], container: str | None = None,
                  run: Callable[[Sequence[str]], Any] = docker, ready_timeout_s: float = READY_TIMEOUT_S,
@@ -66,7 +76,7 @@ class BrokerOutage:
         if mode not in MODES:
             raise ValueError(f"modo de corte desconocido: {mode}")
         self.mode = mode
-        self.container = container or kafka_container()
+        self.container = container or os.environ.get(self.container_env, self.default_container)
         self._ready = ready
         self._run = run
         self._ready_timeout_s = ready_timeout_s
@@ -76,7 +86,7 @@ class BrokerOutage:
         self._timer_factory = timer
         self._timer: Any = None
         self._lock = threading.Lock()
-        self.restoring = False  # se marca antes de devolver el broker: tras `docker unpause` responde antes de volver
+        self.restoring = False  # se marca antes de devolverlo: tras `docker unpause` responde antes de volver
         self.cut_at: float | None = None
         self.restored_at: float | None = None
         self.ready_at: float | None = None
@@ -86,7 +96,7 @@ class BrokerOutage:
         return self.restored_at is not None
 
     def __enter__(self) -> Self:
-        log.warning("corte del broker: docker %s %s", CUT[self.mode], self.container)
+        log.warning("corte %s: docker %s %s", self.cut_label, CUT[self.mode], self.container)
         try:
             self._run([CUT[self.mode], self.container])
         except BaseException:
@@ -104,7 +114,7 @@ class BrokerOutage:
         with self._lock:
             if self.restored_at is not None:
                 return
-            log.warning("fin del corte del broker: docker %s %s", RESTORE[self.mode], self.container)
+            log.warning("fin del corte %s: docker %s %s", self.cut_label, RESTORE[self.mode], self.container)
             self.restoring = True
             self._run([RESTORE[self.mode], self.container])
             self.restored_at = self._clock()
@@ -113,7 +123,7 @@ class BrokerOutage:
         try:
             self._restore()
         except Exception:  # se reintenta al salir del contexto
-            log.exception("no se pudo devolver el broker a su estado desde el temporizador")
+            log.exception("no se pudo devolver %s a su estado desde el temporizador", self.subject)
 
     def __exit__(self, exc_type: type[BaseException] | None, exc: BaseException | None,
                  tb: TracebackType | None) -> None:
@@ -124,13 +134,13 @@ class BrokerOutage:
         except Exception:
             if exc is None:
                 raise
-            log.exception("no se pudo devolver el broker a su estado")  # la excepción original sigue su curso
+            log.exception("no se pudo devolver %s a su estado", self.subject)  # la excepción original sigue su curso
             return
         deadline = self.restored_at + self._ready_timeout_s
         while not self._ready():
             if self._clock() > deadline:
                 if exc is None:
-                    raise TimeoutError(f"el broker no responde {self._ready_timeout_s} s después del corte")
+                    raise TimeoutError(f"{self.subject} no responde {self._ready_timeout_s} s después del corte")
                 return
             self._sleep(READY_POLL_S)
         self.ready_at = self._clock()
@@ -141,3 +151,12 @@ class BrokerOutage:
 
         return {"mode": self.mode, "cut_seconds": span(self.cut_at, self.restored_at),
                 "ready_seconds": span(self.restored_at, self.ready_at)}
+
+
+class BrokerOutage(ContainerOutage):
+    """Corte del broker de Kafka (`KAFKA_CONTAINER`, por defecto `eda-kafka`)."""
+
+    container_env = "KAFKA_CONTAINER"
+    default_container = DEFAULT_CONTAINER
+    cut_label = "del broker"
+    subject = "el broker"

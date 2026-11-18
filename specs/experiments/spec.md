@@ -242,6 +242,49 @@ El sistema SHALL cumplir la hipótesis H9: si el broker de Kafka se para o se co
 - **WHEN** se evalúa la hipótesis
 - **THEN** H9 se cumple si en todas las variantes no queda ninguna fila de outbox pendiente, no se publicó ninguna durante el corte, cada evento del outbox está en `event_log`, todas las incidencias (también las de los avisos del corte) se cerraron, I1 a I5 no tienen violaciones y cada variante con corte provocó su efecto
 
+### Requirement: E10 Caída de PostgreSQL (H10)
+
+El sistema SHALL cumplir la hipótesis H10: si PostgreSQL se para o se congela y vuelve, los componentes se reconectan solos, sin reiniciarlos a mano; no se pierde ningún evento, ningún efecto se repite, toda incidencia se cierra (también las de los avisos que llegan durante el corte) y se mantienen I1 a I5. El experimento SHALL ejecutarse con todos los componentes en procesos propios (requirement «Todos los componentes en procesos propios») y 50 incidencias: cuando la mitad tienen un `PlanCreated`, se corta el contenedor `eda-postgres` durante 30 s (spec synthetic-data, «Caída de la base de datos»), con un temporizador que lo devuelve a su hora. Durante el corte llegan 20 avisos por REST: fallan con 5xx o sin respuesta, y quien los envía los reintenta, con el mismo `command_id`, hasta que se aceptan (si un intento llegó a registrar el aviso y perdió la respuesta, el inbox de intake repite su 202; un 422 `duplicate_notice` solo llega si el aviso ya estaba registrado con otro `command_id`, no cuenta como aceptado y se informa aparte). Después se ejecuta hasta cerrar todas las incidencias. Tres variantes: `baseline`, sin corte (los 20 avisos llegan en el mismo momento); `stopped`, `docker stop` y `docker start` (las conexiones se cortan y las transacciones abiertas se deshacen); y `paused`, `docker pause` y `docker unpause` (las conexiones quedan abiertas sin respuesta). El harness MUST NOT leer su conexión durante el corte: solo envía los avisos, sondea la base con una conexión nueva y mira si algún proceso murió; al volver la base cambia su conexión si el corte la rompió, y una lectura posterior que falla se cuenta y se reintenta tras reconectarse, sin tumbar la ejecución. `event_log` se pone al día con los procesos aún en marcha; las invariantes se comprueban con los procesos ya parados.
+
+El informe MUST dar, por variante: incidencias cerradas, resueltas y escaladas por motivo; duración real del corte y tiempo hasta que la base responde; avisos enviados, aceptados, rechazados durante y después del corte, reintentos y rechazos de negocio; sondeos de la base sin respuesta durante el corte; por proceso, sus errores de conexión, los mensajes que volvió a atender tras un reintento en el proceso, los que Kafka le volvió a entregar porque su offset no se confirmó, los que descartó su inbox y los reintentos de comandos del dispatcher; procesos que murieron y código de salida de cada uno al pararlo; tiempo desde la vuelta de la base hasta que el lag (los grupos de Kafka y la posición guardada de `event_log` y de cada proyector) llega a 0 con el outbox vacío; filas de outbox pendientes al terminar, filas de outbox, filas de `event_log` y eventos del outbox que faltan en `event_log`; claves ejecutadas en los servicios simulados, máximo de ejecuciones por `idempotency_key` (debe ser 1) y ejecuciones repetidas; latencia (media, mediana y p95) y su cociente frente a `baseline`; e I1 a I5.
+
+Las métricas de cada proceso salen de su log. Un error de conexión es una línea WARNING o ERROR del propio proceso con «la base no responde» o «sin conexión a la base» (consumidores de Kafka, proyector, event-log y relay), «: error; se reintenta» (el relay de cada proceso y los bucles del dispatcher, de los plazos y de los avisos aparcados) o «worker de trabajos de» (el worker de trabajos largos). Un mensaje vuelto a atender es una segunda línea `-> tipo incidencia pX oY` del mismo offset: tras «se reintenta el mensaje pX oY» es un reintento en el proceso; sin esa línea, una entrega repetida de Kafka. Un descarte del inbox es una línea `<- tipo incidencia: duplicate`; un reintento de comando, una línea «sin respuesta (intento n)» del dispatcher. Un proceso queda colgado si no sale tras `SIGINT` y hay que matarlo: su código de salida no es 0.
+
+Cada variante con corte MUST provocar su efecto; si no, no cuenta como cumplida: al menos un aviso rechazado durante el corte y, en `stopped`, al menos un error de conexión en cada proceso (todos tienen un relay que consulta la base sin parar); en `paused`, al menos un sondeo con una conexión nueva sin respuesta, porque las conexiones abiertas esperan sin error (TCP keepalive no detecta una base congelada) y un proceso puede no registrar ninguno.
+
+#### Scenario: Base parada
+
+- **GIVEN** la variante `stopped`, con incidencias en curso y todos los componentes en procesos propios
+- **WHEN** PostgreSQL se para y vuelve a los 30 s
+- **THEN** cada proceso registra al menos un error de conexión y se reconecta solo, sin morir ni reiniciarse a mano
+- **AND** al terminar no queda ninguna fila de outbox pendiente, cada evento del outbox está en `event_log` y ninguna `idempotency_key` se ejecuta más de una vez
+
+#### Scenario: Base congelada
+
+- **GIVEN** la variante `paused`, con incidencias en curso y todos los componentes en procesos propios
+- **WHEN** PostgreSQL se congela y se descongela a los 30 s
+- **THEN** la base no acepta conexiones nuevas durante el corte y los procesos siguen al descongelarse, sin morir
+- **AND** al terminar no queda ninguna fila de outbox pendiente y ningún efecto se repite (I2)
+
+#### Scenario: Avisos durante la caída de la base
+
+- **GIVEN** la base cortada en `stopped` o `paused`
+- **WHEN** llegan 20 avisos por REST
+- **THEN** fallan con 5xx o sin respuesta y quien los envía los reintenta hasta que se aceptan
+- **AND** sus incidencias se cierran cuando la base vuelve
+
+#### Scenario: Procesos al terminar E10
+
+- **GIVEN** una variante de E10 terminada
+- **WHEN** el harness para los procesos
+- **THEN** el informe da los que murieron solos y el código de salida de cada uno, que es 0 si salió limpio
+
+#### Scenario: Cumplimiento de H10
+
+- **GIVEN** la ejecución completa de E10
+- **WHEN** se evalúa la hipótesis
+- **THEN** H10 se cumple si en todas las variantes ningún proceso murió ni quedó colgado, no queda ninguna fila de outbox pendiente, cada evento del outbox está en `event_log`, ningún efecto se repite, todas las incidencias (también las de los avisos del corte) se cerraron, I1 a I5 no tienen violaciones y cada variante con corte provocó su efecto
+
 ### Requirement: E11 Entrega retrasada y planes revisados (H11)
 
 El sistema SHALL cumplir la hipótesis H11: con revisiones forzadas del plan y resultados de pasos que llegan tarde, ningún resultado obsoleto cambia el estado de la saga, salvo la excepción del supuesto A4, y se mantienen los invariantes I1 a I5. El escenario son 50 incidencias con un 50 % de fallos en `reserve_stock` (`fail_probability`), planes con pasos en paralelo, `step_delay_seconds` en `reserve_stock`, `reissue_shipment` y `file_claim` para que haya resultados de una `plan_version` anterior después de un `PlanRevised`, y un plazo de `ExecuteStep` más corto que parte de esos retrasos. El orquestador descarta un resultado obsoleto sin registrarlo en ningún sitio, así que el experimento los cuenta desde el log: es obsoleto el `StepCompleted` o `StepFailed` cuya `plan_version` es anterior a la vigente cuando el orquestador lo consume (salvo el de una compensación, que no lo es por la versión: spec incident-planning, «Eventos obsoletos»), y el de un paso cuyo plazo ya venció con el paso pedido (el plazo no deja evento: lo anota el harness al tratarlo). Un obsoleto cambia el estado de la saga si el orquestador emite algún evento con él como causa. La excepción A4: el `StepCompleted` tardío de un `reserve_stock` cancelado se marca completado y pide su `release_stock`, para no dejar la reserva sin liberar; esa compensación MUST pedirse una sola vez. El informe MUST dar: `PlanRevised` por incidencia, resultados obsoletos por versión y tras el plazo, los que cambiaron el estado de la saga (fuera de A4) y las compensaciones A4, compensaciones pedidas y completadas, y el número de incidencias escaladas por motivo.
