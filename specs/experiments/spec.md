@@ -211,6 +211,59 @@ El harness SHALL ofrecer un modo (`RunConfig.component_processes`) en el que cad
 - **THEN** todas se cierran, ningún proceso muere y todos salen limpios al pararlos
 - **AND** I1 a I5 no tienen violaciones y cada `idempotency_key` se ejecuta una vez en su servicio simulado
 
+### Requirement: E8 Matriz de puntos de caída (H8)
+
+El sistema SHALL cumplir la hipótesis H8: si cualquier componente cae en cualquier punto de su transacción y se reinicia, toda incidencia se cierra, ningún efecto se repite, ningún evento se pierde ni aparece dos veces en `event_log` y se mantienen I1 a I5. El experimento SHALL ejecutarse en modo en proceso, con `--llm oracle`, 20 incidencias por celda y un 30 % de fallos en `reserve_stock` (para que haya planes revisados), y SHALL recorrer una matriz de componentes por puntos de caída (spec synthetic-data, «Caída en un punto de la transacción») con una sola caída por celda. Primero se ejecuta `baseline`, sin caídas; la unidad K de cada celda es la del medio (⌈n/2⌉) de las n que ese componente atendió en ese punto en `baseline` con la misma semilla. Las celdas son 25:
+
+- `before_tx`: `interpreter`, `planner` y `replanner`.
+- `after_commit_before_offset`: `interpreter`, `orchestrator`, `event_log` y el proyector `incident_status` (todos los proyectores comparten el consumidor posicionado).
+- `after_commit_before_response`: `intake` (`RegisterCarrierNotice`), `inventory` (`ExecuteStep` de `reserve_stock`), `planner` (`CreatePlan`), `replanner` (`RevisePlan`) y cada ejecutor (`notify_customer`, `file_claim`, `reissue_shipment` e `issue_refund`).
+- `relay_after_publish_before_mark`: el relay de `intake`, `interpreter`, `planner`, `replanner`, `orchestrator`, `inventory` y de cada ejecutor.
+
+La caída entre el efecto externo y el registro de su clave no forma parte de la matriz: la mide E22 (`crash_between_effect_and_record`).
+
+El informe MUST dar, por celda: si la caída se produjo, en qué unidad y a qué hora; incidencias cerradas, abiertas, resueltas y escaladas por motivo; tiempo de recuperación (desde la caída hasta que el componente reiniciado atiende su unidad siguiente); máximo de ejecuciones por `idempotency_key` en los servicios simulados (debe ser 1); `event_id` publicados más de una vez en `eda.events` frente a filas de `event_log.events` por `event_id` (debe ser 1); filas de outbox pendientes al terminar; descartes del inbox (y eventos que un proyector ya tenía en `views.applied_events`); respuestas repetidas por el inbox a un mismo `command_id`; llamadas al LLM de más frente a `baseline`, contadas en el cliente del LLM (las de una caída `before_tx` no dejan `LlmCallRecorded`); latencia (media, mediana y p95); e I1 a I5. Una celda solo cuenta si su caída se produjo y si se ve el mecanismo que la salva:
+
+- `before_tx`: la unidad se vuelve a atender y el cliente del LLM recibe al menos una llamada más que en `baseline`.
+- `after_commit_before_offset`: al menos un descarte del inbox (en `event_log`, un `event_id` que ya estaba; en el proyector, uno que ya estaba en `views.applied_events`).
+- `after_commit_before_response`: al menos una respuesta repetida por el inbox con el mismo `command_id`, que reenvía la saga o, en `intake`, el harness.
+- `relay_after_publish_before_mark`: al menos un `event_id` publicado dos veces en `eda.events`.
+
+#### Scenario: Caída antes de abrir la transacción
+
+- **GIVEN** la celda `before_tx` del planificador
+- **WHEN** su worker cae en el trabajo K tras llamar al LLM y antes de abrir la transacción
+- **THEN** el trabajo se retoma al vencer su lease, el LLM se vuelve a llamar y el plan se escribe una sola vez
+- **AND** el informe da al menos una llamada al LLM de más frente a `baseline`, contada en el cliente del LLM, y ningún `PlanCreated` repetido
+
+#### Scenario: Caída entre el commit y el offset
+
+- **GIVEN** la celda `after_commit_before_offset` del orquestador
+- **WHEN** cae tras el `COMMIT` del mensaje K y antes de confirmar su offset
+- **THEN** Kafka le vuelve a entregar el mensaje y su inbox lo descarta
+- **AND** ninguna transición de la saga ni ningún comando se repite
+
+#### Scenario: Caída entre el commit y la respuesta
+
+- **GIVEN** la celda `after_commit_before_response` de `issue_refund`
+- **WHEN** el ejecutor confirma la transacción del comando K y cae antes de responder
+- **THEN** la saga lo reinvoca con el mismo `command_id` y el inbox devuelve la respuesta guardada
+- **AND** el reembolso se ejecuta una sola vez (I2 e I3)
+
+#### Scenario: Caída del relay entre la publicación y la marca
+
+- **GIVEN** la celda `relay_after_publish_before_mark` del relay del intérprete
+- **WHEN** publica el lote que contiene la fila K y cae antes de marcarlo como publicado
+- **THEN** el relay reiniciado vuelve a publicar esas filas con el mismo `event_id`
+- **AND** cada consumidor las descarta por su inbox, `event_log` guarda una sola fila por `event_id` y ningún proyector las aplica dos veces (I5)
+
+#### Scenario: Cumplimiento de H8
+
+- **GIVEN** la ejecución completa de E8, con `baseline` y las 25 celdas
+- **WHEN** se evalúa la hipótesis
+- **THEN** H8 se cumple si en todas las celdas la caída se produjo y se vio su mecanismo, todas las incidencias se cerraron, ninguna `idempotency_key` se ejecutó más de una vez, no queda ninguna fila de outbox pendiente, cada evento del outbox tiene una sola fila en `event_log` e I1 a I5 no tienen violaciones
+- **AND** una celda cuya caída no se produjo hace que H8 no se cumpla
+
 ### Requirement: E9 Caída de Kafka: retirado
 
 E9 (H9, caída del broker de Kafka en proceso) queda retirado: `eda-experiment` y `eda-expexecutor` MUST NOT ofrecer `e9` y el CI no lo ejecuta. Motivo: la variante `paused` (`docker pause` y `docker unpause` del broker) fallaba de forma intermitente por un bloqueo dentro de librdkafka, no de la PoC. Con `debug=cgrp`, el consumidor del intérprete pierde sus particiones durante la congelación por `session.timeout.ms`; al descongelarse el broker, su `JoinGroup` recibe `Not coordinator` y su `FindCoordinator`, `COORDINATOR_NOT_AVAILABLE`; el cliente borra el coordinador y desde entonces solo registra «no broker available for coordinator query», más de 2 minutos y hasta el final, con el broker sano (el orquestador y los proyectores terminan con lag 0) y el hilo vivo haciendo `poll`. Las incidencias de los avisos del corte quedan abiertas. Un `max.poll.interval.ms` de 15 s no lo evitó. El módulo `experiments/e9_kafka_down.py` y la inyección de la caída del broker (spec synthetic-data, «Caída del broker») se conservan: E10 reutiliza sus funciones.

@@ -46,7 +46,7 @@ El sistema SHALL simular pedidos, existencias por almacén, transportistas, corr
 
 ### Requirement: Inyección de fallos
 
-El sistema SHALL permitir inyectar fallos configurables: duplicar eventos y comandos (de 1 a N veces), retrasar la entrega de los eventos y el resultado de un tipo de paso, hacer fallar un tipo de paso con una probabilidad dada, caer un consumidor o un ejecutor en un instante dado, dejar un ejecutor caído o colgado, congelar un proceso, parar los proyectores, inyectar mensajes veneno, reiniciar los offsets de un grupo, entregar un comando de forma concurrente, caer entre el efecto y el registro de su clave y dejar sin stock un almacén.
+El sistema SHALL permitir inyectar fallos configurables: duplicar eventos y comandos (de 1 a N veces), retrasar la entrega de los eventos y el resultado de un tipo de paso, hacer fallar un tipo de paso con una probabilidad dada, caer un consumidor o un ejecutor en un instante dado, caer un componente en un punto de su transacción, dejar un ejecutor caído o colgado, congelar un proceso, parar los proyectores, inyectar mensajes veneno, reiniciar los offsets de un grupo, entregar un comando de forma concurrente, caer entre el efecto y el registro de su clave y dejar sin stock un almacén.
 
 #### Scenario: Duplicación de eventos
 
@@ -59,6 +59,65 @@ El sistema SHALL permitir inyectar fallos configurables: duplicar eventos y coma
 - **GIVEN** una configuración con duplicados, fallos en `reserve_stock` y resultados retrasados
 - **WHEN** se ejecuta dos veces con la misma semilla
 - **THEN** los mismos pasos fallan y se retrasan en las dos ejecuciones
+
+### Requirement: Caída en un punto de la transacción
+
+La inyección SHALL permitir que un componente caiga una sola vez en un punto dado de su transacción, al atender su unidad K (`crash_at`: {(componente, punto): K}), y que el harness lo reinicie con el mismo plan sin que vuelva a caer. La unidad es un mensaje de Kafka, un comando REST, un trabajo o una fila de outbox, según el punto. Los puntos son:
+
+- `before_tx`: la llamada al LLM (`prepare`) ya se hizo y la transacción aún no se abrió, en el intérprete al atender un `CarrierNoticeReceived` y en el worker de trabajos del planificador y del replanificador. No se escribe nada: el consumidor vuelve a recibir el mensaje (su offset no se confirmó), el trabajo se retoma cuando vence su lease, y el LLM se vuelve a llamar. La llamada de antes de la caída no queda en `llm_calls` ni como `LlmCallRecorded`, que se escriben en la transacción que no se abrió: la inyección MUST contar las llamadas en el cliente del LLM. En los ejecutores, `prepare` es el efecto externo: esa caída es `crash_between_effect_and_record` (E22), no un punto de esta inyección.
+- `after_commit_before_offset`: un consumidor de Kafka (intérprete, orquestador, `event_log` o un proyector) confirmó la transacción de PostgreSQL del mensaje y cae antes de confirmar el offset.
+- `after_commit_before_response`: un command handler REST (intake, inventory, planificador, replanificador o un ejecutor) confirmó la transacción del comando (en un comando `deferred`, la que acepta el trabajo) y cae antes de responder. Quien envió el comando lo MUST reintentar con el mismo `command_id`: la saga, en los comandos que ella invoca, y el harness, en `RegisterCarrierNotice`, que envía él mismo en lugar del transportista.
+- `relay_after_publish_before_mark`: el relay de un componente publicó en Kafka el lote que contiene la fila K, con su `flush` completo, y cae antes de marcar las filas de `outbox` como publicadas.
+
+`crash_after` se mantiene para E2. Un punto que no aplica al componente (p. ej. `before_tx` en el orquestador o `relay_after_publish_before_mark` en `event_log`, que no tiene outbox) MUST rechazarse al crear el plan. Cada caída MUST quedar registrada con su componente, punto, unidad y hora, y también la hora a la que el componente reiniciado atiende su unidad siguiente.
+
+#### Scenario: Caída de un consumidor antes de la transacción
+
+- **GIVEN** `crash_at` con (`interpreter`, `before_tx`) y K = 3
+- **WHEN** el intérprete atiende su tercer `CarrierNoticeReceived`
+- **THEN** llama al LLM, cae sin abrir la transacción y sin confirmar el offset, y el harness lo reinicia
+- **AND** el mensaje se vuelve a entregar, el LLM se vuelve a llamar y la incidencia se abre una sola vez
+
+#### Scenario: Caída de un worker de trabajos antes de la transacción
+
+- **GIVEN** `crash_at` con (`replanner`, `before_tx`) y K = 1
+- **WHEN** el worker del replanificador toma su primer trabajo y el LLM responde
+- **THEN** el worker cae sin escribir nada y el trabajo sigue `running` hasta que vence su lease
+- **AND** el worker reiniciado lo retoma, vuelve a llamar al LLM y escribe un solo `PlanRevised`
+
+#### Scenario: Caída tras el commit, antes del offset
+
+- **GIVEN** `crash_at` con (`event_log`, `after_commit_before_offset`) y K = 5
+- **WHEN** `event_log` guarda su quinto evento y confirma la transacción
+- **THEN** cae sin confirmar el offset y, al reiniciarse, Kafka le vuelve a entregar ese evento
+- **AND** `event_log.events` tiene una sola fila con ese `event_id`
+
+#### Scenario: Caída tras el commit, antes de la respuesta
+
+- **GIVEN** `crash_at` con (`planner`, `after_commit_before_response`) y K = 2
+- **WHEN** el planificador acepta su segundo `CreatePlan` y confirma la transacción
+- **THEN** no responde a la saga, que lo reinvoca con el mismo `command_id`
+- **AND** el inbox devuelve la respuesta guardada y hay un solo trabajo para ese comando
+
+#### Scenario: Caída de intake tras el commit, antes de la respuesta
+
+- **GIVEN** `crash_at` con (`intake`, `after_commit_before_response`) y K = 2
+- **WHEN** intake registra el segundo aviso y confirma la transacción
+- **THEN** no responde al harness, que reenvía el aviso con el mismo `command_id`
+- **AND** el inbox devuelve la respuesta guardada y el aviso se registra una sola vez
+
+#### Scenario: Caída del relay tras publicar
+
+- **GIVEN** `crash_at` con (`orchestrator`, `relay_after_publish_before_mark`) y K = 4
+- **WHEN** el relay del orquestador publica el lote con su cuarta fila de outbox
+- **THEN** cae sin marcar las filas y el relay reiniciado las vuelve a publicar en orden, con el mismo `event_id`
+- **AND** al terminar no queda ninguna fila del outbox pendiente (I4)
+
+#### Scenario: Punto que no aplica
+
+- **GIVEN** `crash_at` con (`orchestrator`, `before_tx`)
+- **WHEN** se crea el plan de fallos
+- **THEN** se rechaza con un error que dice que `before_tx` no aplica al orquestador
 
 ### Requirement: Inyección de entrega retrasada por acción
 
