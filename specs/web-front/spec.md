@@ -311,7 +311,7 @@ El backend SHALL leer los eventos de la vista del log `event_log.events` y el es
 
 - **GIVEN** cualquier endpoint de la API
 - **WHEN** se inspecciona su acceso a datos
-- **THEN** solo emite consultas de lectura; los cambios de estado ocurren únicamente por `scripts/notice.sh`
+- **THEN** solo emite consultas de lectura; los cambios de estado ocurren únicamente por `scripts/notice.sh` y `scripts/support.sh`
 
 #### Scenario: Segunda ejecución simultánea
 
@@ -324,6 +324,42 @@ El backend SHALL leer los eventos de la vista del log `event_log.events` y el es
 - **GIVEN** una petición con la cabecera `Host: evil.example`
 - **WHEN** llega a cualquier endpoint
 - **THEN** se rechaza con 403
+
+### Requirement: Soporte técnico
+
+Con `WEB_SUPPORT=true`, el backend SHALL ejecutar `eda-support` (spec `support`) invocando `scripts/support.sh` con una lista blanca de argumentos, sin shell: `status`; `republish` con `mode` `truncated` o `recreated`; `replay-from` con un `component` que tenga outbox y un `outbox_id` entero positivo; y `rebuild` con una `view` de las vistas. Las tres que escriben admiten `confirm`, el token de su simulación: 16 caracteres hexadecimales. El backend MUST pasar siempre `--json` y, con `confirm`, `--confirm <token> --origin web`, y MUST rechazar con 422 cualquier otra cosa sin lanzar ningún proceso. Comparte con el menú de comandos la ejecución única (409 si hay otra en curso), el tiempo máximo de 15 minutos y el stream de salida. Como la PoC es un ejemplo académico, está deshabilitado por defecto: sin `WEB_SUPPORT=true`, el backend MUST rechazar con 403 cualquier petición de soporte sin lanzar ningún proceso, y `/api/config` lo dice en `support_enabled`. La conexión del backend con PostgreSQL sigue siendo de solo lectura: lo que se escribe lo escribe `eda-support` en su propio proceso.
+
+#### Scenario: Soporte deshabilitado
+
+- **GIVEN** el backend sin `WEB_SUPPORT=true`
+- **WHEN** llega `POST /api/support/runs`
+- **THEN** se rechaza con 403 y no se lanza ningún proceso
+- **AND** `/api/config` devuelve `support_enabled: false`
+
+#### Scenario: Simulación desde el front
+
+- **GIVEN** el soporte habilitado
+- **WHEN** llega `POST /api/support/runs` con `{"action": "republish", "mode": "truncated"}`
+- **THEN** el backend ejecuta `scripts/support.sh --json republish --mode truncated`
+- **AND** su salida llega por el stream de la ejecución con el código de salida al terminar
+
+#### Scenario: Confirmación desde el front
+
+- **GIVEN** el soporte habilitado y el token de una simulación
+- **WHEN** llega `POST /api/support/runs` con `{"action": "replay-from", "component": "planner", "outbox_id": 12, "confirm": "<token>"}`
+- **THEN** el backend ejecuta `scripts/support.sh --json replay-from planner 12 --confirm <token> --origin web`
+
+#### Scenario: Petición de soporte fuera de la lista blanca
+
+- **GIVEN** el soporte habilitado
+- **WHEN** llega una acción desconocida, un componente sin outbox, una vista que no existe, un token que no tiene 16 caracteres hexadecimales, un argumento de otra acción o `confirm` en `status`
+- **THEN** se rechaza con 422 y no se lanza ningún proceso
+
+#### Scenario: Soporte con otro comando en curso
+
+- **GIVEN** el soporte habilitado y un comando de `scripts/notice.sh` en ejecución
+- **WHEN** llega `POST /api/support/runs`
+- **THEN** se rechaza con 409
 
 ### Requirement: Comando interactivo
 
@@ -403,10 +439,11 @@ La cabecera SHALL ofrecer un enlace a la interfaz web de Jaeger, que se abre en 
 | `GET /api/analytics/orders?status=&incident_id=` | Contadores por estado y pedidos de `order_status`, con `applied` |
 | `GET /api/parked-notices` | Avisos aparcados de `parked_notices`, por plazo, con `applied` |
 | `GET /api/operations/summary`, `/incidents`, `/llm`, `/carriers`, `/freshness` | Vista de operaciones (spec `operations-view`, «API prevista») |
-| `GET /api/config` | Configuración para el front (`jaeger_ui_url`, `free_text_enabled`, `interactive_enabled`) |
+| `GET /api/config` | Configuración para el front (`jaeger_ui_url`, `free_text_enabled`, `interactive_enabled`, `support_enabled`, `poc_version`) |
 | `POST /api/commands` | Ejecuta un comando de la lista blanca; devuelve `run_id` |
 | `GET /api/commands/{run_id}/stream` | SSE con la salida y, al final, el código de salida |
 | `POST /api/commands/{run_id}/input` | Línea para `interactive` |
+| `POST /api/support/runs` | Ejecuta `eda-support` con la lista blanca de «Soporte técnico»; devuelve `run_id`. Su salida va por `GET /api/commands/{run_id}/stream` |
 
 ## Decisiones
 
