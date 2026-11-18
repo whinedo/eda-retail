@@ -1,7 +1,8 @@
 """E9 Caída de Kafka (spec experiments) y Caída del broker (spec synthetic-data): corte del broker, turno del harness
 con errores de entrega del relay, fallos de commit de offset, métricas y H9.
 
-Sin Kafka ni PostgreSQL. La ejecución de punta a punta está en tests/integration/test_e9_kafka_down.py.
+Sin Kafka ni PostgreSQL. E9 está retirado del catálogo (spec experiments, «E9 Caída de Kafka: retirado»): ya no tiene
+ejecución de punta a punta, pero E10 reutiliza este módulo y la inyección de la caída del broker sigue en uso.
 """
 
 from __future__ import annotations
@@ -406,3 +407,15 @@ def test_e9_bounds_the_rejoin_after_the_outage(monkeypatch):
     assert config.consumer_session_timeout_ms <= e9.MAX_POLL_INTERVAL_MS < e9.IDLE_SECONDS * 1000
     assert COMMIT_TIMEOUT_S * 1000 < e9.MAX_POLL_INTERVAL_MS
     assert config.consumer_kafka_debug == e9.KAFKA_DEBUG == "cgrp"
+
+
+def test_e9_is_retired_from_the_catalogs():
+    """E9 fuera del catálogo"""
+    from eda_retail.experiments.cli import DEFAULT_INCIDENTS, EXPERIMENTS, parse_args
+    from eda_retail.expexecutor.catalog import CATALOG
+
+    with pytest.raises(SystemExit):
+        parse_args(["e9"])
+    assert "e9" not in EXPERIMENTS and "e9" not in DEFAULT_INCIDENTS and "e9" not in CATALOG
+    assert parse_args(["e10"]).experiment == "e10"  # el resto del catálogo sigue igual
+    assert "e10" in CATALOG

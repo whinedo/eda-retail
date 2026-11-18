@@ -22,7 +22,6 @@ from eda_retail.experiments.e4_rebuild import run_e4
 from eda_retail.experiments.e5_plan_quality import run_e5
 from eda_retail.experiments.e6_compare import run_e6
 from eda_retail.experiments.e7_audit import run_e7
-from eda_retail.experiments.e9_kafka_down import run_e9
 from eda_retail.experiments.e10_postgres_down import run_e10
 from eda_retail.experiments.e11_late_results import run_e11
 from eda_retail.experiments.e12_executor_down_hung import run_e12
@@ -42,13 +41,14 @@ from eda_retail.experiments.report import Report, write_report
 from eda_retail.infra.logs import setup_logging
 from eda_retail.llm.ollama_client import OllamaClient
 
+# E9 (caída de Kafka) está retirado (spec experiments, «E9 Caída de Kafka: retirado»).
 EXPERIMENTS: dict[str, Callable[..., Report]] = {
-    "e1": run_e1, "e2": run_e2, "e3": run_e3, "e4": run_e4, "e5": run_e5, "e6": run_e6, "e7": run_e7, "e9": run_e9,
+    "e1": run_e1, "e2": run_e2, "e3": run_e3, "e4": run_e4, "e5": run_e5, "e6": run_e6, "e7": run_e7,
     "e10": run_e10, "e11": run_e11, "e12": run_e12, "e13": run_e13, "e14": run_e14, "e15": run_e15, "e16": run_e16, "e17": run_e17, "e18": run_e18, "e19": run_e19, "e20": run_e20, "e21": run_e21,
     "e22": run_e22, "e23": run_e23,
 }
 # Tamaño del escenario de cada experimento en la spec (E7 elige 10 de ellas al azar).
-DEFAULT_INCIDENTS = {"e1": 50, "e2": 50, "e3": 30, "e4": 200, "e5": 40, "e6": 50, "e7": 50, "e9": 50, "e10": 50, "e11": 50, "e12": 50, "e13": 50, "e14": 200, "e15": 50, "e16": 50, "e17": 50, "e18": 100, "e19": 200, "e20": 50, "e21": 50,
+DEFAULT_INCIDENTS = {"e1": 50, "e2": 50, "e3": 30, "e4": 200, "e5": 40, "e6": 50, "e7": 50, "e10": 50, "e11": 50, "e12": 50, "e13": 50, "e14": 200, "e15": 50, "e16": 50, "e17": 50, "e18": 100, "e19": 200, "e20": 50, "e21": 50,
                     "e22": 50, "e23": 50}
 LLM_EXPERIMENTS = {"e5", "e6"}  # con LLM real y repeticiones (spec «Repetición para el componente no determinista»)
 LLMS = {"oracle": lambda data, repetition: Oracle(data).client()}
@@ -62,7 +62,7 @@ def ollama_factory(seed: int, temperature: float) -> Callable[..., Any]:
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Experimentos de la PoC (E1 a E7, E9, E10, E11, E12, E13, E16, E17, E18, E21, E22 y E23)")
+    parser = argparse.ArgumentParser(description="Experimentos de la PoC (E1 a E7, E10, E11, E12, E13, E16, E17, E18, E21, E22 y E23)")
     parser.add_argument("experiment", choices=sorted(EXPERIMENTS))
     parser.add_argument("--seed", type=int, default=42, help="semilla del generador y de los fallos (42)")
     parser.add_argument("--incidents", type=int, help="número de incidencias (por defecto, el de la spec)")
