@@ -20,10 +20,10 @@ Design (assumptions):
 
 | ID | Specs | Route | Status | Commit |
 | --- | --- | --- | --- | --- |
-| T1 | S2 | inline | pending | |
-| T2 | S1, S2, S3 | inline | pending | |
-| T3 | S3 | inline | pending | |
-| T4 | S4 | inline | pending | |
+| T1 | S2 | inline | done | 7b80a78 |
+| T2 | S1, S2, S3 | inline | done | 7b80a78 |
+| T3 | S3 | inline | done | a7bb447 |
+| T4 | S4 | inline | done | branch feat/refund-over-reissue |
 
 T1: `view_reissued_shipments` (migration, projector, fingerprint). T2: `SHIPPING_COST_PCT`, `get_profit` and `GET /api/operations/profit`. T3: profit screen `#/analytics/operations/profit` with the waterfall and a link from the operations view. T4: rule in plan validation for planner and replanner.
 
@@ -33,4 +33,7 @@ T1: `view_reissued_shipments` (migration, projector, fingerprint). T2: `SHIPPING
 - L2 (2026-11-18) Answers: chart "Cascada total (Recommended)"; reissue cost "Producto + transporte".
 - L3 (2026-11-18) Map: costs in `queries/operations.py` `_money` with `Prices` (`EFFECT_COST_*`, default 0); `view_orders` has `order_id`, `customer_ref`, `amount` and no date; planner and replanner validate with `plan_validation.validate_plan(order_amounts=...)` from `view_orders`.
 - L4 (2026-11-18) User correction, verbatim: "indiquemos mejor que reembolso se hará automáticamente cuando el coste total sea mayor al 120% porque sino, el coste del transporte (10%) haría que cualquier intento de reentrega se haga un reembolso". S4 threshold now 120 %.
+- L5 (2026-11-18) T1–T3 on `feat/operations-profit`: 7b80a78 (view, query, endpoint) and a7bb447 (profit screen). RED observed (unit: missing `ProfitTotals`; front: 3 failing tests), then GREEN: unit 771, front 148, ruff, typecheck and hygiene ok. Screen checked in the browser with a stubbed `/api/operations/profit` (the backend was stopped). Risk: item 1 (migration 0027 and a new projected table): independent verifier launched. `.env.example` not updated: reading it is blocked here; `SHIPPING_COST_PCT` and `REFUND_OVER_REISSUE_PCT` are documented in docs/README.md.
+- L6 (2026-11-18) T4 on `feat/refund-over-reissue` (stacked on `feat/operations-profit`): requirement «Reembolso en lugar de un reenvío caro» in specs/incident-planning; `BusinessRules` gets `shipping_cost_pct`, `effect_cost_reissue` and `refund_over_reissue_pct` (env, defaults 10, 0, 120); `plan_validation.refund_over_reissue` applied after validation in `planner.check_plan` and `replanner.check_revision`, then validated again. The refund gets a new numbered `step_id` and no reserve dependency, so a completed reserve is compensated by the saga (tested with `orchestrator.rules.revise`). RED (collection error) then GREEN: 11 tests. Not applied to `baseline_sync` (E6); with the defaults the rule never fires, so E1–E23 are unchanged.
 - L7 (2026-11-18) Verifier on T1–T3 (a7bb447): S1, S2, S3 PASS; unit 771, front 148, ruff, typecheck ok; differential probe of `_money`, `Prices.from_settings` and `get_operations_summary` identical to the baseline. BLOCKER (item 1): on an existing volume the `operations` projector is already past old `ShipmentReissued`, so `view_reissued_shipments` starts empty and the reissue shipping is too low. Fix: migration 0027 empties the `operations` views, its `views.offsets` and `views.applied_events`, so it re-projects from the start (as `rebuild` does); new integration test `test_reissued_shipments_migration_reprojects_operations`. Advisories kept: `_reissued` touches `last_event_*` like the other fact handlers; `applied` reports only the `operations` position, as in the summary; `SHIPPING_COST_PCT` is not validated, like `EFFECT_COST_*`.
+- L8 (2026-11-18) Verifier recheck of 8d0cb6d (reading only): blocker fixed; with no stored offsets `start_offsets` starts at `OFFSET_BEGINNING`, so `operations` re-projects and backfills past reissues. Scratch removed. T4 Risk: none (requested planning rule; with the defaults it never fires; `BusinessRules` only gains fields with defaults). PR #85 merged (71afd22).

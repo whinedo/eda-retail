@@ -48,7 +48,7 @@ from eda_retail.infra.db import connect
 from eda_retail.llm.generation import Budget, LlmCall, LlmClient, generate
 from eda_retail.llm.prompts.planner import low_severity_plan, plan_request
 from eda_retail.llm.schemas import PlanProposal
-from eda_retail.plan_validation import PlanRejected, validate_plan
+from eda_retail.plan_validation import PlanRejected, refund_over_reissue, validate_plan
 from eda_retail.planner.carrier import CarrierConsultant, CarrierConsultation, render_options
 from eda_retail.queries.cost_per_incident import Prices, budget_from_cost, get_incident_cost
 from eda_retail.queries.incident_status import INCIDENT_CLOSED, incident_closed
@@ -93,9 +93,16 @@ class Prepared:
 
 def check_plan(steps: list[dict[str, Any]], rules: BusinessRules,
                amounts: dict[str, Decimal]) -> list[PlanStep] | str:
-    """Los pasos validados, o el motivo del rechazo (con su detalle) para explicárselo al LLM."""
+    """Los pasos validados, o el motivo del rechazo (con su detalle) para explicárselo al LLM. Un reenvío más caro
+    que el umbral se sustituye por un reembolso (spec incident-planning, «Reembolso en lugar de un reenvío caro»)."""
+    ctx = SimpleNamespace(rules=rules)
     try:
-        return validate_plan(SimpleNamespace(rules=rules), steps, external_ids=set(), order_amounts=amounts)
+        checked = validate_plan(ctx, steps, external_ids=set(), order_amounts=amounts)
+        swapped = refund_over_reissue(checked, rules, amounts, taken_ids=())
+        if swapped == checked:
+            return checked
+        return validate_plan(ctx, [s.model_dump(mode="json") for s in swapped], external_ids=set(),
+                             order_amounts=amounts)
     except PlanRejected as exc:
         return f"{exc.reason} ({exc.detail})" if exc.detail else exc.reason
 

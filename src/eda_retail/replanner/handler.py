@@ -42,7 +42,7 @@ from eda_retail.infra.db import connect
 from eda_retail.llm.generation import Budget, LlmCall, LlmClient, LlmRequest, generate
 from eda_retail.llm.prompts.replanner import MAX_REVISIONS, REPLACEABLE, SYSTEM, check_step_ids, revise_prompt
 from eda_retail.llm.schemas import PlanProposal, strict_schema
-from eda_retail.plan_validation import PlanRejected, validate_plan
+from eda_retail.plan_validation import PlanRejected, refund_over_reissue, validate_plan
 from eda_retail.queries.cost_per_incident import Prices, budget_from_cost, get_incident_cost
 from eda_retail.queries.incident_status import INCIDENT_CLOSED, incident_closed
 from eda_retail.queries.orders import get_orders
@@ -110,12 +110,18 @@ def check_revision(current: list[dict[str, Any]], proposed: list[dict[str, Any]]
     Reglas en código (spec incident-planning): las de cualquier plan (`validate_plan`, con los pasos
     completados como dependencias posibles y para `refund_and_reissue_conflict`); un paso con efecto no
     vuelve (`completed_step_in_plan`); un paso mantenido no cambia de acción; un paso nuevo no repite uno
-    abierto con otro `step_id` (`step_id_changed`)."""
+    abierto con otro `step_id` (`step_id_changed`). Un reenvío más caro que el umbral se sustituye antes por un
+    reembolso (`refund_over_reissue`)."""
     by_id = {s["step_id"]: s for s in current}
     completed = [s for s in current if s["status"] == "completed"]
+    ctx, external = SimpleNamespace(rules=rules), {s["step_id"] for s in completed}
     try:
-        steps = validate_plan(SimpleNamespace(rules=rules), proposed, external_ids={s["step_id"] for s in completed},
-                              completed=completed, order_amounts=amounts)
+        steps = validate_plan(ctx, proposed, external_ids=external, completed=completed, order_amounts=amounts)
+        swapped = refund_over_reissue(steps, rules, amounts, taken_ids=by_id,
+                                      external_actions={s["step_id"]: s["action"] for s in completed})
+        if swapped != steps:
+            steps = validate_plan(ctx, [s.model_dump(mode="json") for s in swapped], external_ids=external,
+                                  completed=completed, order_amounts=amounts)
     except PlanRejected as exc:
         return f"{exc.reason} ({exc.detail})" if exc.detail else exc.reason
     for s in steps:
