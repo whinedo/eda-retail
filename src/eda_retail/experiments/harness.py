@@ -124,7 +124,7 @@ from eda_retail.replanner import handler as replanner
 from eda_retail.rules import BusinessRules
 from eda_retail.step_executors import component as step_executors
 from eda_retail.step_executors.actions import ACTIONS as EXECUTOR_ACTIONS
-from eda_retail.step_executors.services import Services
+from eda_retail.step_executors.services import SERVICE_OF, Services
 from eda_retail.synthetic.faults import (
     INJECTED_FAILURE,
     ConsumerCrashed,
@@ -148,8 +148,6 @@ TURN_COMMANDS = 200  # comandos que el dispatcher invoca como mucho en un turno
 # Un aviso cuyo pedido aún no está en view_orders se aparca (design.md §4.3); en el arnés el plazo es corto
 # para que una carrera entre particiones no deje la incidencia abierta hasta el plazo del despliegue.
 PENDING_NOTICE_TIMEOUT_S = 2.0
-SERVICE_OF = {"notify_customer": "mail", "file_claim": "claims", "reissue_shipment": "carrier",
-              "issue_refund": "payments"}
 JOB_POLL_S = 0.05  # sondeo de un worker de trabajos sin trabajo
 CONSUMER_POLL_S = 0.1  # sondeo de Kafka de un consumidor en su hilo
 JOIN_TIMEOUT_S = 30.0  # espera al parar un hilo (puede estar dentro de una llamada al LLM)
