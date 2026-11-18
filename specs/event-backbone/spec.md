@@ -103,7 +103,7 @@ El bus MUST entregar cada evento a cada consumidor al menos una vez y reentregar
 - **GIVEN** un consumidor que ha atendido un evento y pide el commit de su offset
 - **WHEN** el broker no lo confirma en `commit_timeout_s`
 - **THEN** el commit falla con `KafkaException` al vencer el plazo, sin esperar más
-- **AND** el offset queda sin confirmar, así que el bus vuelve a entregar el evento al consumidor que se reinicia
+- **AND** el consumidor se reinicia sin dar el offset por confirmado: el bus puede volver a entregarle el evento (el commit pedido aún puede aplicarse cuando vuelva el broker) y el inbox descarta la reentrega
 
 ### Requirement: Invocación de comandos
 
