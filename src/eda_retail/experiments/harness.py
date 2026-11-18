@@ -78,9 +78,11 @@ from __future__ import annotations
 import contextlib
 import json
 import logging
+import sys
 import tempfile
 import threading
 import time
+import traceback
 import uuid
 from collections import Counter
 from collections.abc import Callable, Iterable, Iterator
@@ -171,6 +173,8 @@ TURN_COMMANDS = 200  # comandos que el dispatcher invoca como mucho en un turno
 PENDING_NOTICE_TIMEOUT_S = 2.0
 JOB_POLL_S = 0.05  # sondeo de un worker de trabajos sin trabajo
 CONSUMER_POLL_S = 0.1  # sondeo de Kafka de un consumidor en su hilo
+STALL_STREAM: Any = None  # dónde se vuelca el atasco al vencer `timeout_seconds`; None: `sys.__stderr__`
+STALL_FRAMES = 15  # marcos de la pila de cada hilo en ese volcado
 JOIN_TIMEOUT_S = 30.0  # espera al parar un hilo (puede estar dentro de una llamada al LLM)
 TOPIC_LOSS_MODES = ("truncated", "recreated")
 TOPIC_RECREATE_TIMEOUT_S = 60.0  # el borrado de un topic es asíncrono: se reintenta crearlo hasta este plazo
@@ -343,6 +347,14 @@ def counting_busy(spec: CommandSpec, count: Callable[[], None]) -> CommandSpec:
             raise
 
     return replace(spec, handle=handle)
+
+
+def _try(read: Callable[[], Any]) -> Any:
+    """Una lectura del diagnóstico de atasco: su error, si falla, en lugar de su valor."""
+    try:
+        return read()
+    except Exception as exc:  # noqa: BLE001 — diagnóstico: no debe tumbar el experimento
+        return {"error": repr(exc)}
 
 
 class Activity:
@@ -740,6 +752,7 @@ class Harness:
         self.recovered: Counter[str] = Counter()  # resultados de un ejecutor colgado que se recupera (E12)
         self._threads: list[threading.Thread] = []
         self._stuck: set[str] = set()  # hilos que siguen vivos tras la espera de `_stop_threads`
+        self.stall: dict[str, Any] | None = None  # diagnóstico de la ejecución que llegó a `timeout_seconds`
         self._workers: list[JobWorker] = []
         self._threaded = set(THREADED_CONSUMERS)
         self._seen_done = 0
@@ -1376,6 +1389,49 @@ class Harness:
             time.sleep(IDLE_SLEEP_S)
         return moved
 
+    def stall_snapshot(self) -> dict[str, Any]:
+        """Qué tiene la ejecución por ocupada cuando vence `timeout_seconds` sin cerrar las incidencias (E9 y E17 se
+        quedaban así): lo que cuenta como trabajo en curso, la pila de cada hilo (leer sus marcos no toca Kafka ni la
+        base de ese hilo) y las sesiones de PostgreSQL que esperan un bloqueo o tienen una transacción abierta."""
+        frames = sys._current_frames()
+        current = threading.get_ident()
+        threads = {t.name: traceback.format_stack(frames[t.ident])[-STALL_FRAMES:]
+                   for t in threading.enumerate() if t.ident in frames and t.ident != current}
+        commands = getattr(self, "commands", None)
+        return {"busy": self._activity.busy, "open_jobs": _try(self._open_jobs),
+                "awaiting_recovery": _try(commands.awaiting_recovery) if commands is not None else None,
+                "threads": threads, "database": self._database_waits()}
+
+    def _database_waits(self) -> dict[str, Any]:
+        conn = getattr(self, "conn", None)
+        if conn is None:
+            return {"error": "sin conexión"}
+        try:
+            with conn.transaction():
+                sessions = conn.execute(
+                    "SELECT pid, pg_blocking_pids(pid) AS blocked_by, state, wait_event_type, wait_event,"
+                    " now() - xact_start AS xact_age, left(query, 300) AS query FROM pg_stat_activity"
+                    " WHERE datname = current_database() AND pid <> pg_backend_pid()"
+                    " AND (wait_event_type = 'Lock' OR state LIKE 'idle in transaction%%')"
+                ).fetchall()
+                parked = conn.execute("SELECT count(*) AS n FROM interpreter.pending_notices").fetchone()["n"]
+        except Exception as exc:  # noqa: BLE001 — diagnóstico: no debe tumbar el experimento
+            return {"error": repr(exc)}
+        return {"sessions": [{k: str(v) for k, v in row.items()} for row in sessions], "pending_notices": parked}
+
+    @staticmethod
+    def _dump_stall(stall: dict[str, Any]) -> None:
+        """Al log y a `sys.__stderr__` (en consola al ejecutar el experimento; pytest lo captura, así que los tests de
+        integración lo sacan del informe)."""
+        summary = {k: v for k, v in stall.items() if k != "threads"}
+        log.warning("plazo vencido sin cerrar las incidencias: %s", json.dumps(summary, default=str))
+        stream = STALL_STREAM or sys.__stderr__
+        stream.write("== harness: plazo vencido sin cerrar las incidencias ==\n"
+                     + json.dumps(summary, indent=1, default=str, ensure_ascii=False) + "\n")
+        for name, stack in stall["threads"].items():
+            stream.write(f"-- hilo {name}\n{''.join(stack)}")
+        stream.flush()
+
     def _settle(self) -> None:
         """Último repaso, hasta `idle_seconds`: turnos mientras algo avance o un hilo trabaje, y, cuando todo parece
         quieto, uno más. Un hilo puede confirmar una fila de outbox (un resultado retrasado) justo después del último
@@ -1417,6 +1473,8 @@ class Harness:
         while self.closed() < target:
             now = time.monotonic()
             if now - start > self.config.timeout_seconds:
+                self.stall = self.stall_snapshot()
+                self._dump_stall(self.stall)
                 break
             if self._advance():
                 last = now

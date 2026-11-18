@@ -130,6 +130,7 @@ def run_variant(base: Settings, variant: str, *, seed: int, incidents: int, time
             observed["orders_projected_while_paused"] = h.projected_orders()
         h.resume_projectors()
         elapsed = h.run_until_closed()
+        observed["stall"] = h.stall  # qué había ocupado si la variante llegó a su plazo (`Harness.stall_snapshot`)
         result = h.result(elapsed)
         observed |= outcomes(h)
         observed["invariants"] = invariants.check(h)
