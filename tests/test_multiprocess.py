@@ -95,6 +95,23 @@ def test_make_consumer_sets_the_max_poll_interval_only_when_given(monkeypatch):
     assert "max.poll.interval.ms" not in kafka.make_consumer("k:9092", "interpreter", session_timeout_ms=6000)
 
 
+def test_make_consumer_keeps_the_librdkafka_debug_log_only_when_given(monkeypatch):
+    """`debug` y `log`: las líneas de librdkafka (p. ej. `cgrp`) van a un anillo propio del consumidor (E9)"""
+    import logging
+
+    monkeypatch.setattr(kafka, "Consumer", lambda config: config)
+    ring = kafka.KafkaLogRing(size=2)
+    config = kafka.make_consumer("k:9092", "interpreter", debug="cgrp", log=ring)
+    assert config["debug"] == "cgrp"
+    for text in ("CGRPJOINSTATE uno", "CGRPQUERY dos", "FETCH tres"):
+        config["logger"].log(logging.DEBUG, "%s", text)
+    lines = ring.snapshot()
+    assert len(lines) == 2 and lines[0].endswith("CGRPQUERY dos") and lines[1].endswith("FETCH tres")
+    assert [line.split(" ", 1)[1] for line in ring.transitions()] == ["CGRPJOINSTATE uno"]
+    plain = kafka.make_consumer("k:9092", "interpreter")
+    assert "debug" not in plain and "logger" not in plain
+
+
 def test_process_log_records_rebalances_messages_and_lock_waits(process_log, monkeypatch):
     """El log de una instancia da los rebalanceos, el inicio y el fin de cada mensaje y las esperas al bloqueo"""
     fake = _Kafka()

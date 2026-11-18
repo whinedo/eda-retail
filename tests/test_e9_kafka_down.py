@@ -362,6 +362,29 @@ def test_in_process_consumers_get_the_session_and_max_poll_interval(monkeypatch)
     assert calls == {"interpreter": expected, "orchestrator": expected}
 
 
+def test_with_kafka_debug_each_in_process_consumer_gets_its_own_log_ring(monkeypatch):
+    """`consumer_kafka_debug`: cada consumidor en proceso recibe `debug` y un anillo propio, que se conserva al
+    recrearlo"""
+    from eda_retail.experiments import harness as harness_module
+
+    calls: dict[str, list] = {}
+    monkeypatch.setattr(harness_module, "make_consumer",
+                        lambda servers, group, **kw: calls.setdefault(group, []).append(kw))
+    monkeypatch.setattr(harness_module.interpreter, "build_consumer", lambda *a, **kw: None)
+    monkeypatch.setattr(harness_module.orchestrator, "build_consumer", lambda *a, **kw: None)
+    h = SimpleNamespace(
+        settings=SimpleNamespace(kafka_bootstrap_servers="k:9092"), _inbox_off=set(), llm=None, rules=None,
+        _connect=lambda: None, _kafka_logs={},
+        config=RunConfig(seed=1, incidents=1, consumer_kafka_debug="cgrp"))
+    factories = Harness._factories(h)
+    factories["interpreter"]()
+    factories["interpreter"]()
+    factories["orchestrator"]()
+    first, again = calls["interpreter"]
+    assert first["debug"] == "cgrp" and first["log"] is again["log"] is h._kafka_logs["interpreter"]
+    assert calls["orchestrator"][0]["log"] is h._kafka_logs["orchestrator"] is not h._kafka_logs["interpreter"]
+
+
 def test_e9_bounds_the_rejoin_after_the_outage(monkeypatch):
     """Broker congelado: un consumidor que pierde sus particiones vuelve al grupo antes de que E9 se dé por quieto"""
     from eda_retail.infra.consumer import COMMIT_TIMEOUT_S
@@ -382,3 +405,4 @@ def test_e9_bounds_the_rejoin_after_the_outage(monkeypatch):
     assert config.consumer_max_poll_interval_ms == e9.MAX_POLL_INTERVAL_MS
     assert config.consumer_session_timeout_ms <= e9.MAX_POLL_INTERVAL_MS < e9.IDLE_SECONDS * 1000
     assert COMMIT_TIMEOUT_S * 1000 < e9.MAX_POLL_INTERVAL_MS
+    assert config.consumer_kafka_debug == e9.KAFKA_DEBUG == "cgrp"
