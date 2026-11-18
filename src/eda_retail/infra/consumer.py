@@ -18,8 +18,9 @@ import logging
 import threading
 import time
 import uuid
+from collections import Counter, deque
 from collections.abc import Callable, Mapping
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 import psycopg
 from confluent_kafka import Consumer, KafkaError, KafkaException, Message, TopicPartition
@@ -39,6 +40,7 @@ log = logging.getLogger("eda_retail.consumer")
 
 # Lo que espera un commit de offset a que el grupo lo tenga (spec event-backbone, «Entrega al menos una vez»).
 COMMIT_TIMEOUT_S = 10.0
+REBALANCES_KEPT = 20  # rebalanceos que guarda `health`: los últimos
 COMMIT_CHECK_S = 0.05  # pausa entre lecturas del offset confirmado
 
 
@@ -137,18 +139,54 @@ class EventConsumer:
         self._kafka = kafka_consumer
         self._handlers = dict(handlers)
         self._inbox_enabled = inbox_enabled
+        # Lo que el consumidor anota desde su propio hilo (`health`): leerlo desde otro no llama a Kafka.
+        self._health_lock = threading.Lock()
+        self._assignment: set[int] = set()
+        self._rebalances: deque[dict[str, Any]] = deque(maxlen=REBALANCES_KEPT)
+        self._poll_errors: Counter[str] = Counter()
+        self._polls = self._messages = 0
+        self._last_message_at: float | None = None
         self._kafka.subscribe([topic], on_assign=self._assigned, on_revoke=self._revoked, on_lost=self._lost)
 
     # Rebalanceos del grupo, en el log del proceso (E16 los lee para fechar el rebalanceo). Sin llamar a `assign`:
     # tras el callback, la biblioteca aplica la asignación.
     def _assigned(self, _consumer: Consumer, partitions: list[TopicPartition]) -> None:
         log.info("%s: particiones asignadas %s", self.name, sorted(p.partition for p in partitions))
+        self._rebalanced("assigned", partitions)
 
     def _revoked(self, _consumer: Consumer, partitions: list[TopicPartition]) -> None:
         log.info("%s: particiones revocadas %s", self.name, sorted(p.partition for p in partitions))
+        self._rebalanced("revoked", partitions)
 
     def _lost(self, _consumer: Consumer, partitions: list[TopicPartition]) -> None:
         log.info("%s: particiones perdidas %s", self.name, sorted(p.partition for p in partitions))
+        self._rebalanced("lost", partitions)
+
+    def _rebalanced(self, kind: str, partitions: list[TopicPartition]) -> None:
+        numbers = sorted(p.partition for p in partitions)
+        with self._health_lock:
+            if kind == "assigned":
+                self._assignment |= set(numbers)
+            else:
+                self._assignment -= set(numbers)
+            self._rebalances.append({"kind": kind, "partitions": numbers, "at": time.monotonic()})
+
+    def health(self) -> dict[str, Any]:
+        """Lo que el consumidor anotó desde su hilo: particiones asignadas, últimos rebalanceos (hace cuántos segundos),
+        errores de `poll` por código, `poll` y mensajes recibidos y segundos desde el último mensaje. No llama a Kafka:
+        el harness lo lee desde otro hilo (E9)."""
+        now = time.monotonic()
+        with self._health_lock:
+            return {
+                "assigned": sorted(self._assignment),
+                "rebalances": [{"kind": r["kind"], "partitions": r["partitions"],
+                                "seconds_ago": round(now - r["at"], 1)} for r in self._rebalances],
+                "poll_errors": dict(self._poll_errors),
+                "polls": self._polls,
+                "messages": self._messages,
+                "seconds_since_message": None if self._last_message_at is None
+                else round(now - self._last_message_at, 1),
+            }
 
     @classmethod
     def from_settings(
@@ -174,8 +212,22 @@ class EventConsumer:
         return self
 
     def poll(self, timeout: float) -> Message | None:
+        """El siguiente mensaje, o None. Un mensaje de error de librdkafka no se entrega: se cuenta por código en
+        `health` y se registra la primera vez que aparece cada código."""
         msg = self._kafka.poll(timeout)
-        if msg is None or msg.error():
+        error = msg.error() if msg is not None else None
+        with self._health_lock:
+            self._polls += 1
+            if error is not None:
+                code = error.name()
+                self._poll_errors[code] += 1
+                first = self._poll_errors[code] == 1
+            elif msg is not None:
+                self._messages += 1
+                self._last_message_at = time.monotonic()
+        if error is not None:
+            if first:
+                log.warning("%s: error de Kafka en poll: %s", self.name, error)
             return None
         return msg
 

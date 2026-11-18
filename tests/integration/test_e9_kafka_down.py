@@ -29,8 +29,8 @@ def _detail(report, variant: str) -> str:
             "max_pending_during_outage", "published_during_outage", "pending_at_end", "relay_errors", "commit_failures", "max_relay_turn_seconds",
             "drain_seconds",
             "messages", "outbox_rows", "log_rows", "missing_in_log", "repeated_messages", "inbox_duplicates",
-            "group_lag", "consumers")
-    return json.dumps({k: m[k] for k in keys}, default=str)
+            "group_lag", "consumers", "stall")
+    return json.dumps({k: m.get(k) for k in keys}, default=str)  # `stall`: pila de cada hilo si quedó algo abierto
 
 
 def _recovered(report, variant: str) -> None:
