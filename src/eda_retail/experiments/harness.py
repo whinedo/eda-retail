@@ -41,6 +41,10 @@ Fallos (spec experiments; L55):
   `InProcessCommands` responde 503 (`CommandUnavailable`) a un `ExecuteStep` nuevo si el ejecutor ya tiene tantos
   trabajos abiertos como su capacidad y lo cuenta en `unavailable_503`; `prepare_delay_seconds` retrasa el `prepare`
   de los trabajos de un componente (`slowed`).
+- E19 (spec synthetic-data, «Pérdida del topic»): con el sistema parado, `lose_topic` vacía el topic o lo borra y lo
+  crea de nuevo (recreando productores y lado de lectura, con los grupos en 0 y la posición del lado de lectura en -1),
+  y `republish` republica a la vez el outbox de todos los componentes en el orden que cada partición tenía
+  (`outbox.republish_in_order`).
 
 Modos de idempotencia (E1, supuesto A3):
 - `full`: inbox en los consumidores y en los comandos, `effect_keys` y servicios con clave.
@@ -91,7 +95,7 @@ from eda_retail.infra.consumer import EventConsumer
 from eda_retail.infra.db import connect
 from eda_retail.infra.effect_keys import EffectInProgress
 from eda_retail.infra.jobs import JobWorker, run_job_once
-from eda_retail.infra.kafka import make_consumer
+from eda_retail.infra.kafka import make_consumer, make_producer
 from eda_retail.infra.migrations import upgrade
 from eda_retail.infra.outbox import ComponentRelay
 from eda_retail.infra.positions import high_watermark
@@ -143,6 +147,8 @@ SERVICE_OF = {"notify_customer": "mail", "file_claim": "claims", "reissue_shipme
 JOB_POLL_S = 0.05  # sondeo de un worker de trabajos sin trabajo
 CONSUMER_POLL_S = 0.1  # sondeo de Kafka de un consumidor en su hilo
 JOIN_TIMEOUT_S = 30.0  # espera al parar un hilo (puede estar dentro de una llamada al LLM)
+TOPIC_LOSS_MODES = ("truncated", "recreated")
+TOPIC_RECREATE_TIMEOUT_S = 60.0  # el borrado de un topic es asíncrono: se reintenta crearlo hasta este plazo
 LOG_CATCH_UP_S = 30.0  # espera máxima de event_log a las marcas de agua altas antes de las invariantes
 IDLE_SLEEP_S = 0.01  # pausa de un turno sin avance mientras los hilos trabajan
 THREADED_CONSUMERS = frozenset({interpreter.SCHEMA})  # consumidores con su propio hilo
@@ -977,8 +983,10 @@ class Harness:
         return row["n"]
 
     # -- ejecución ---------------------------------------------------------------------------
-    def send_notices(self) -> None:
-        for n in self.data.notices:
+    def send_notices(self, indices: Iterable[int] | None = None) -> None:
+        """Envía los avisos del conjunto (los de `indices`, si se dan)."""
+        notices = self.data.notices if indices is None else [self.data.notices[i] for i in indices]
+        for n in notices:
             self._send_notice(n)
 
     def _send_notice(self, n: Any, *, check: bool = True) -> Any:
@@ -1151,12 +1159,14 @@ class Harness:
             return False
         return True
 
-    def run_until_closed(self, *, on_turn: Callable[[], Any] = lambda: None) -> float:
+    def run_until_closed(self, *, on_turn: Callable[[], Any] = lambda: None, upto: int | None = None) -> float:
         """Turnos hasta cerrar todas las incidencias, o hasta `idle_seconds` sin avance (con los hilos ociosos
         y sin trabajos pendientes) o `timeout_seconds` en total. `on_turn` se llama tras cada turno (E16 muestrea
-        el estado de la saga)."""
+        el estado de la saga). `upto`: incidencias cerradas que bastan (por defecto, todas las de la ejecución; E19 cierra
+        primero una parte)."""
         start = last = time.monotonic()
-        while self.closed() < self.config.incidents:
+        target = self.config.incidents if upto is None else upto
+        while self.closed() < target:
             now = time.monotonic()
             if now - start > self.config.timeout_seconds:
                 break
@@ -1235,6 +1245,71 @@ class Harness:
         self._build_deliveries()
         self._start_threads()
         return self.run_until_caught_up()
+
+    # -- pérdida del topic (E19) ----------------------------------------------------------------
+    def lose_topic(self, mode: str) -> dict[int, int]:
+        """Con el sistema parado, pierde el contenido de `eda.events` (spec synthetic-data, «Pérdida del topic»):
+        `truncated` lo vacía con `delete_records` (los offsets siguen) y `recreated` lo borra y lo crea de nuevo (los
+        offsets vuelven a 0), con productores y lado de lectura nuevos, los grupos en 0 y la posición del lado de
+        lectura en -1. Deja el sistema parado; devuelve las marcas de agua altas de antes de la pérdida."""
+        if mode not in TOPIC_LOSS_MODES:
+            raise ValueError(f"modo de pérdida del topic desconocido: {mode}")
+        self._stop_threads()
+        self._close_deliveries()
+        topic = self.settings.events_topic
+        highs = self._readers[0].high_watermarks()
+        if mode == "truncated":
+            for fut in self._admin.delete_records([TopicPartition(topic, p, high) for p, high in highs.items()]
+                                                  ).values():
+                fut.result(timeout=30)
+            return highs
+        for fut in self._admin.delete_topics([topic]).values():
+            fut.result(timeout=30)
+        self._recreate_topic(topic, len(highs))
+        for closable in [*self._relays, *self._readers]:
+            with contextlib.suppress(Exception):
+                closable.close()
+        s = self.settings
+        self._relays = [ComponentRelay.from_settings(s, schema) for schema in PUBLISHERS
+                        if not (schema == orchestrator.SCHEMA and self.config.external_orchestrator)]
+        self._relays += [ComponentRelay.from_settings(s, schema, outbox=False) for schema in READ_SIDE]
+        with self.conn.transaction():
+            for schema in READ_SIDE:
+                self.conn.execute(f"UPDATE {qualified(schema, 'offsets')} SET kafka_offset = -1 WHERE kafka_topic = %s",
+                                  (topic,))
+        self._readers = [event_log.build(s), *(consumer_for(p, s, self._connect()) for p in self._projectors)]
+        self._closables += [*self._relays, *self._readers]
+        reset_group_offsets(self._admin, self._factories(), topic, sorted(highs))
+        return highs
+
+    def _recreate_topic(self, topic: str, partitions: int) -> None:
+        deadline = time.monotonic() + TOPIC_RECREATE_TIMEOUT_S
+        while True:
+            try:
+                for fut in self._admin.create_topics([NewTopic(topic, num_partitions=partitions,
+                                                               replication_factor=1)]).values():
+                    fut.result(timeout=30)
+                return
+            except Exception:  # el broker aún está borrando el topic anterior
+                if time.monotonic() > deadline:
+                    raise
+                time.sleep(0.5)
+
+    def republish(self) -> dict[str, int]:
+        """Con el sistema parado, republica a la vez el outbox de todos los componentes, mezclado por la posición que
+        cada fila tenía en el topic perdido (`outbox.republish_in_order`), y arranca el sistema otra vez; devuelve las
+        filas republicadas por componente."""
+        schemas = [relay._schema for relay in self._relays if relay._has_outbox]
+        conn = connect(self.settings.database_url)
+        try:
+            rows = outbox.republish_in_order(conn, make_producer(self.settings.kafka_bootstrap_servers), schemas,
+                                             self.settings.events_topic)
+        finally:
+            conn.close()
+        self._init_threads()
+        self._build_deliveries()
+        self._start_threads()
+        return rows
 
     def run_until_caught_up(self) -> float:
         """Turnos hasta que nadie avance y el lag sea 0, o `timeout_seconds`; después, un último repaso."""

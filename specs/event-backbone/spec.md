@@ -66,14 +66,20 @@ Los eventos de una misma incidencia SHALL entregarse a cada consumidor en el ord
 
 ### Requirement: Kafka como bus de entrega
 
-Los eventos SHALL repartirse a los consumidores mediante Apache Kafka; los comandos MUST NOT publicarse en Kafka. El relay del outbox de cada componente MUST publicar en el topic `eda.events` con `incident_id` como clave de partición. Si el contenido del topic se pierde, cada componente SHALL poder republicar su outbox. Al confirmar el broker cada mensaje, el relay MUST guardar en su fila de `outbox` la partición y el offset que le asignó Kafka (`kafka_partition`, `kafka_offset`); si el evento se republica, se guarda la posición de la última publicación.
+Los eventos SHALL repartirse a los consumidores mediante Apache Kafka; los comandos MUST NOT publicarse en Kafka. El relay del outbox de cada componente MUST publicar en el topic `eda.events` con `incident_id` como clave de partición. Si el contenido del topic se pierde, el procedimiento de recuperación SHALL republicar, con el sistema parado, el outbox de todos los componentes a la vez y en el orden que cada partición tenía en el topic perdido (la posición `kafka_partition`, `kafka_offset` de cada fila), también entre componentes; las filas que nunca se publicaron van al final, por `created_at`. Republicar outbox a outbox no basta: conserva el orden de cada outbox pero no el causal entre componentes (un `StepCompleted` podría quedar antes del `PlanCreated` de su incidencia), y el lado de lectura no podría reconstruirse desde el topic. Al confirmar el broker cada mensaje, el relay MUST guardar en su fila de `outbox` la partición y el offset que le asignó Kafka (`kafka_partition`, `kafka_offset`); si el evento se republica, se guarda la posición de la última publicación.
 
 #### Scenario: Pérdida del topic
 
 - **GIVEN** un log con 200 incidencias y un topic `eda.events` vaciado
-- **WHEN** cada componente republica su outbox
-- **THEN** el topic recibe de nuevo todos los eventos, en el orden de cada outbox
+- **WHEN** se republica el outbox de todos los componentes
+- **THEN** el topic recibe de nuevo todos los eventos, en el orden que tenía cada partición, también entre componentes
 - **AND** los consumidores no repiten ningún efecto gracias al inbox y a las claves de idempotencia
+
+#### Scenario: Orden de la republicación
+
+- **GIVEN** filas de varios outbox con su posición en el topic perdido y alguna fila que nunca se publicó
+- **WHEN** se ordenan para republicarlas
+- **THEN** van por partición y offset antiguos, sin importar de qué componente sean, y las no publicadas al final por `created_at`
 
 #### Scenario: Posición del mensaje publicado
 

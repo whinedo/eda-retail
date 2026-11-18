@@ -7,7 +7,7 @@ import uuid
 from eda_retail.events.envelope import new_event
 from eda_retail.infra import dead_letters
 from eda_retail.infra.kafka import make_producer
-from eda_retail.infra.outbox import ComponentRelay, RelayThread, append
+from eda_retail.infra.outbox import ComponentRelay, RelayThread, append, republish_in_order
 
 from .kafka_helpers import read_all
 
@@ -90,6 +90,35 @@ def test_replay_republishes_its_own_outbox(conn, settings, topic):
     assert relay.run_once() >= 1
     messages = read_all(settings.kafka_bootstrap_servers, topic, expected=2)
     assert [m.key for m in messages] == [incident, incident]
+
+
+def test_republication_keeps_each_partition_order_across_components(conn, settings, topic):
+    """Pérdida del topic: se republica el outbox de todos los componentes en el orden que tenía cada partición, también
+    entre componentes"""
+    _drain(conn)
+    with conn.transaction():
+        conn.execute("UPDATE orchestrator.outbox SET published_at = now() WHERE published_at IS NULL")
+    incident = _incident()
+    planner, orchestrator = _relay(conn, settings, topic), _relay(conn, settings, topic, schema="orchestrator")
+    for schema, relay, event_type in (("planner", planner, "PlanCreated"), ("orchestrator", orchestrator, "StepCancelled"),
+                                      ("planner", planner, "IncidentResolved")):
+        with conn.transaction():
+            append(conn, schema, [_ev(incident, event_type)])
+        assert relay.run_once() == 1
+    rows = conn.execute("SELECT (SELECT count(*) FROM planner.outbox) + (SELECT count(*) FROM orchestrator.outbox) AS n"
+                        ).fetchone()["n"]
+    conn.commit()
+
+    counts = republish_in_order(conn, make_producer(settings.kafka_bootstrap_servers), ["planner", "orchestrator"], topic)
+
+    assert sum(counts.values()) == rows
+    mine = [m for m in read_all(settings.kafka_bootstrap_servers, topic, expected=3 + rows) if m.key == incident]
+    assert [m.event_type for m in mine] == ["PlanCreated", "StepCancelled", "IncidentResolved"] * 2
+    positions = conn.execute(
+        "SELECT kafka_offset FROM planner.outbox WHERE correlation_id = %s UNION ALL"
+        " SELECT kafka_offset FROM orchestrator.outbox WHERE correlation_id = %s", (incident, incident)).fetchall()
+    conn.commit()
+    assert sorted(r["kafka_offset"] for r in positions) == [m.offset for m in mine[3:]]
 
 
 def test_dead_letters_of_the_component_go_to_the_dlq(conn, settings, topic):

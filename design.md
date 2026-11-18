@@ -224,7 +224,7 @@ loop:
 
 - **Al menos una vez:** si el relay cae tras producir y antes del `COMMIT`, republica; los duplicados los absorbe el inbox de cada consumidor.
 - **Orden:** cada componente publica su outbox en orden y Kafka conserva el orden por partición (`incident_id`). Entre componentes el orden es causal: un evento se produce después de consumir el que lo causa.
-- **Republicación:** si se pierde el topic, cada componente republica su outbox (`--replay-from`); la vista del log de `event_log` conserva el histórico para consultarlo.
+- **Republicación:** si se pierde el topic, con el sistema parado se republica el outbox de todos los componentes a la vez, mezclado por la posición que cada fila tenía en el topic perdido (`outbox.republish_in_order`), para que cada partición conserve el orden causal entre componentes; republicar outbox a outbox lo rompería. La vista del log de `event_log` conserva el histórico para consultarlo. Aún no hay una CLI para lanzarlo fuera del harness de experimentos (E19).
 
 ## 6. Consumidores: inbox y confirmación del offset
 

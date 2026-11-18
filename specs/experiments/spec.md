@@ -433,6 +433,36 @@ El sistema SHALL cumplir la hipótesis H18: un mensaje inválido en mitad de una
 - **WHEN** se evalúa la hipótesis
 - **THEN** H18 se cumple si el lag final de todos los grupos es 0, todo veneno está en la DLQ de cada consumidor que atiende su tipo, el evento de tipo desconocido está en `event_log.events` y las 100 incidencias terminan (I1)
 
+### Requirement: E19 Pérdida del topic (H19)
+
+El sistema SHALL cumplir la hipótesis H19: si se pierde el contenido de `eda.events` y se republica el outbox de todos los componentes en el orden que tenía cada partición (spec event-backbone, «Pérdida del topic»), el topic vuelve a tener todos los eventos en ese orden, también entre componentes, no se repite ningún efecto, no aparece ningún evento nuevo, el estado de la saga y las vistas no cambian, el sistema sigue atendiendo avisos nuevos y se mantienen I1 a I5. El experimento SHALL ejecutarse en modo en proceso con 200 incidencias cerradas, un 30 % de fallos en `reserve_stock` (revisiones y compensaciones) y el sistema parado; después se pierde el topic, se republica el outbox completo de todos los componentes (`outbox.republish_in_order`), se arranca hasta que el lag sea 0 y llegan 20 avisos nuevos que deben cerrarse. Dos variantes: `truncated`, el topic se vacía con `delete_records` y sus offsets siguen creciendo; y `recreated`, el topic se borra y se crea de nuevo y sus offsets vuelven a 0. En `recreated`, el procedimiento de recuperación lleva a 0 los offsets de los grupos de Kafka y pone a -1 la posición que el lado de lectura guarda en PostgreSQL: sin ello, los consumidores quedarían más allá del final del topic nuevo y el lado de lectura descartaría los mensajes nuevos por tener un offset no posterior al guardado. Lo ya aplicado lo absorben el inbox, `views.applied_events` y el `ON CONFLICT` de `event_log`. I5 no compara la posición en Kafka (`kafka_partition`, `kafka_offset`) que guardan algunas vistas: cambia al republicar, y las vistas mantenidas conservan la original porque `views.applied_events` descarta el evento repetido. El informe MUST dar, por variante: incidencias cerradas antes y después de los avisos nuevos; filas republicadas por componente; mensajes publicados desde la pérdida; filas de outbox cuyo offset no crece en el orden del outbox dentro de su partición; filas que cambiaron de partición o cuyo offset nuevo no respeta, entre todos los outbox, el orden que tenían en el topic perdido; los cambios entre la foto de antes de la pérdida y la de después de la republicación (ejecuciones de los servicios, filas de outbox, inbox, `command_outbox`, reservas, reembolsos y log, huella de `orchestrator.plan_steps` y de cada vista); e I1 a I5 al terminar.
+
+#### Scenario: Topic vaciado
+
+- **GIVEN** la variante `truncated` con 200 incidencias cerradas
+- **WHEN** se republica el outbox de todos los componentes
+- **THEN** se publican tantos mensajes como filas tienen los outbox, en el orden que tenía cada partición, también entre componentes
+- **AND** no cambia ninguna ejecución de servicio, fila, huella de `plan_steps` ni vista
+
+#### Scenario: Topic recreado
+
+- **GIVEN** la variante `recreated`, con los offsets de los grupos en 0 y la posición del lado de lectura en -1
+- **WHEN** se republica el outbox de todos los componentes
+- **THEN** el topic nuevo tiene tantos mensajes como filas tienen los outbox, en el orden que tenía cada partición, también entre componentes
+- **AND** no cambia ninguna ejecución de servicio, fila, huella de `plan_steps` ni vista
+
+#### Scenario: Avisos nuevos tras la recuperación
+
+- **GIVEN** el topic recuperado en cualquiera de las dos variantes
+- **WHEN** llegan 20 avisos nuevos
+- **THEN** sus incidencias se cierran y las vistas reconstruidas desde el topic coinciden con las mantenidas (I5)
+
+#### Scenario: Cumplimiento de H19
+
+- **GIVEN** la ejecución completa de E19
+- **WHEN** se evalúa la hipótesis
+- **THEN** H19 se cumple si en las dos variantes se publicaron tantos mensajes como filas de outbox, en el orden de cada partición también entre componentes, la republicación no cambió nada, todas las incidencias (también las nuevas) se cerraron e I1 a I5 no tienen violaciones
+
 ### Requirement: E21 Reproducción total del log (H21)
 
 El sistema SHALL cumplir la hipótesis H21: reproducir el log completo ante todos los consumidores y los ejecutores no produce ningún efecto nuevo, ningún evento nuevo y ningún cambio de estado. El escenario son 50 incidencias cerradas con un 30 % de fallos en `reserve_stock` (para que haya revisiones y compensaciones); con el sistema parado se llevan los offsets de todos los grupos al principio de `eda.events` y se arranca de nuevo hasta que el lag sea 0. Como control, una variante `no_effect_keys` reentrega los `ExecuteStep` antiguos a los ejecutores sin inbox de comandos ni `effect_keys` (el modo de E1) y MUST producir efectos repetidos, para demostrar que el experimento detecta la ausencia de idempotencia. Desactivar el inbox de un solo consumidor no sirve de control: la saga descarta por estado los eventos de incidencias cerradas y los resultados obsoletos, y el intérprete deduplica cada aviso con el inbox de comandos de `OpenIncident`. Por eso la variante `inbox_off` (el orquestador, y después el intérprete) se mantiene como observación, fuera de H21. El informe MUST comparar, antes y después, las ejecuciones del servicio simulado por `idempotency_key`, el número de filas de cada `outbox`, `inbox` y `command_outbox`, la huella de `orchestrator.plan_steps` y de cada vista, y el número de mensajes descartados por el inbox.

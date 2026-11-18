@@ -33,6 +33,7 @@ env:
     tests/integration/test_e17_parked.py
     tests/integration/test_e14_burst_backpressure.py
     tests/integration/test_e15_llm_degradation.py
+    tests/integration/test_e19_topic_loss.py
 
 jobs:
   hygiene:
