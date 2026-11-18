@@ -41,6 +41,7 @@ describe("API client", () => {
     await api.getOperationsLlm();
     await api.getOperationsCarriers();
     await api.getOperationsFreshness();
+    await api.getOperationsProfit();
 
     expect(fetchFn.mock.calls.map((c) => c[0])).toEqual([
       "/api/operations/summary?incident_id=INC-0007",
@@ -49,6 +50,7 @@ describe("API client", () => {
       "/api/operations/llm",
       "/api/operations/carriers",
       "/api/operations/freshness",
+      "/api/operations/profit",
     ]);
     expect(fetchFn.mock.calls.every((c) => c[1]?.method === "GET")).toBe(true);
   });

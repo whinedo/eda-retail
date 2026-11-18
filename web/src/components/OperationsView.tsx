@@ -43,6 +43,7 @@ export interface OperationsViewProps {
   onLoadMore(): void;
   onViewEvents(incidentId: string): void;
   onOrders(): void;
+  onProfit(): void;
   onBack(): void;
 }
 
@@ -100,6 +101,7 @@ export function OperationsView(props: OperationsViewProps) {
         <h2 id="operations-title" className="panel-title">
           Operaciones
         </h2>
+        {link("Beneficio", props.onProfit, "#/analytics/operations/profit")}
       </div>
       <ul className="analytics__counters" aria-label="Incidencias por estado">
         {STATES.map(({ state: value, label }) => (

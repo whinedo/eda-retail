@@ -7,6 +7,7 @@ import { NodeDetailPanel } from "./components/NodeDetail";
 import { OperationsView } from "./components/OperationsView";
 import { OrderAnalytics } from "./components/OrderAnalytics";
 import { PanelResizer } from "./components/PanelResizer";
+import { ProfitView } from "./components/ProfitView";
 import { ParkedNoticesBanner } from "./components/ParkedNoticesBanner";
 import type { Highlight } from "./components/SystemMap";
 import { SystemMapPanel } from "./components/SystemMapPanel";
@@ -18,16 +19,24 @@ import { useOperations } from "./useOperations";
 import { useOrderAnalytics } from "./useOrderAnalytics";
 import { usePanelHeight } from "./usePanelHeight";
 import { useParkedNotices } from "./useParkedNotices";
+import { useProfit } from "./useProfit";
 
-export type Route = "main" | "orders" | "operations";
-const HASHES: Record<Route, string> = { main: "#/", orders: "#/analytics", operations: "#/analytics/operations" };
+export type Route = "main" | "orders" | "operations" | "profit";
+const HASHES: Record<Route, string> = {
+  main: "#/",
+  orders: "#/analytics",
+  operations: "#/analytics/operations",
+  profit: "#/analytics/operations/profit",
+};
 
 function routeOf(hash: string): Route {
+  if (hash === HASHES.profit) return "profit";
   if (hash === HASHES.operations) return "operations";
   return hash === HASHES.orders ? "orders" : "main";
 }
 
-// Vista abierta según el hash de la URL: la principal (auditoría), la de analítica de pedidos o la de operaciones.
+// Vista abierta según el hash de la URL: la principal (auditoría), la de analítica de pedidos, la de operaciones o la
+// de beneficio.
 function useRoute(): [Route, (next: Route) => void] {
   const [route, setRoute] = useState(() => routeOf(window.location.hash));
   useEffect(() => {
@@ -55,6 +64,7 @@ export default function App({ client, openStream = openEventSource }: { client?:
   const analyticsOpen = route !== "main";
   const analytics = useOrderAnalytics(api, route === "orders");
   const operations = useOperations(api, route === "operations");
+  const profit = useProfit(api, route === "profit");
   const parkedNotices = useParkedNotices(api);
   const [resetKey, setResetKey] = useState(0);
   const { reset: resetEvents } = events;
@@ -102,6 +112,15 @@ export default function App({ client, openStream = openEventSource }: { client?:
             navigate("main");
           }}
           onOrders={() => navigate("orders")}
+          onProfit={() => navigate("profit")}
+          onBack={() => navigate("main")}
+        />
+      )}
+      {route === "profit" && (
+        <ProfitView
+          data={profit.data}
+          error={profit.error}
+          onOperations={() => navigate("operations")}
           onBack={() => navigate("main")}
         />
       )}

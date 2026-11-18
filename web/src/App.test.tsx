@@ -12,7 +12,7 @@ import type {
   OrderStatusRow,
   ParkedNotice,
 } from "./api/client";
-import { incidentRow, operationsData } from "./test/operationsFixtures";
+import { incidentRow, operationsData, profit } from "./test/operationsFixtures";
 import type { StreamLike } from "./useCommandRun";
 import type { OperationsData } from "./useOperations";
 
@@ -528,6 +528,7 @@ function operationsClient(get: () => OperationsData): Partial<ApiClient> {
     getOperationsLlm: vi.fn(async () => get().llm),
     getOperationsCarriers: vi.fn(async () => get().carriers),
     getOperationsFreshness: vi.fn(async () => get().freshness),
+    getOperationsProfit: vi.fn(async () => profit()),
   };
 }
 
@@ -575,6 +576,25 @@ describe("Vista de operaciones en la pantalla", () => {
     await user.click(await screen.findByRole("link", { name: "← Vista principal" }));
     expect(screen.getByRole("region", { name: "Eventos intercambiados" })).toBeInTheDocument();
     expect(screen.getByRole("main").style.getPropertyValue("--events-height")).toBe("320px");
+  });
+
+  it("De operaciones al beneficio y vuelta: «Beneficio» abre #/analytics/operations/profit y «← Operaciones» vuelve", async () => {
+    window.location.hash = "#/analytics/operations";
+    const user = userEvent.setup();
+    render(<App client={client(operationsClient(() => operationsData()))} openStream={openStream} />);
+    await user.click(await screen.findByRole("link", { name: "Beneficio" }));
+    expect(window.location.hash).toBe("#/analytics/operations/profit");
+    expect(await screen.findByRole("img", { name: /Cascada del beneficio/ })).toBeInTheDocument();
+    await user.click(screen.getByRole("link", { name: "← Operaciones" }));
+    expect(window.location.hash).toBe("#/analytics/operations");
+    expect(await screen.findByRole("region", { name: "Operaciones" })).toBeInTheDocument();
+  });
+
+  it("Dirección directa al beneficio: cargar #/analytics/operations/profit abre la pantalla de beneficio", async () => {
+    window.location.hash = "#/analytics/operations/profit";
+    render(<App client={client(operationsClient(() => operationsData()))} openStream={openStream} />);
+    expect(await screen.findByRole("region", { name: "Beneficio" })).toBeInTheDocument();
+    expect(await screen.findByText("150,00 €", { selector: ".profit__total strong" })).toBeInTheDocument();
   });
 
   it("Dirección directa: cargar #/analytics/operations muestra la vista de operaciones", async () => {

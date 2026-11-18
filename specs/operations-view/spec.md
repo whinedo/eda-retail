@@ -232,9 +232,38 @@ Con un log vacío, o sin ninguna incidencia, la vista SHALL mostrar los contador
 - **WHEN** el front la pide
 - **THEN** aparece un error en rojo y la vista se recupera sola cuando la consulta vuelve a responder
 
+### Requirement: Pantalla de beneficio
+
+La vista de operaciones SHALL tener un enlace «Beneficio» que abre una pantalla propia (`#/analytics/operations/profit`), con los enlaces «← Operaciones» y «← Vista principal» para volver. La pantalla SHALL mostrar el beneficio total de la consulta de beneficio (spec `incident-metrics`, «Consultas de operaciones») como una gráfica de cascada: una barra de ingresos, una barra que baja por cada gasto (transporte, transporte de los reenvíos, coste fijo de los reenvíos, reembolsos, reclamaciones y LLM) y una barra final con el beneficio, en verde si es positivo y en rojo si es negativo. Debajo, una tabla con cada línea y su importe en euros, y una nota con el porcentaje de transporte configurado (`SHIPPING_COST_PCT`) y con que el coste del artículo reenviado no se cuenta. Como la vista de operaciones, se actualiza sola, muestra un error en rojo si la consulta falla y se recupera sola, y solo lee.
+
+#### Scenario: De operaciones al beneficio y vuelta
+
+- **GIVEN** la vista de operaciones abierta
+- **WHEN** el usuario pulsa «Beneficio»
+- **THEN** se abre `#/analytics/operations/profit` con la gráfica y la tabla
+- **AND** «← Operaciones» vuelve a la vista de operaciones
+
+#### Scenario: Cascada con un reenvío y un reembolso
+
+- **GIVEN** ingresos de 300 €, transporte de 30 €, transporte de reenvíos de 20 €, reembolsos de 100 € y los demás gastos a 0
+- **WHEN** el usuario abre la pantalla de beneficio
+- **THEN** la gráfica tiene la barra de ingresos, una barra por gasto y la del beneficio, y el beneficio total es 150,00 €
+
+#### Scenario: Beneficio negativo
+
+- **GIVEN** unos gastos mayores que los ingresos
+- **WHEN** el usuario abre la pantalla de beneficio
+- **THEN** el beneficio total aparece en negativo y su barra en rojo
+
+#### Scenario: Dirección directa al beneficio
+
+- **GIVEN** el front cerrado
+- **WHEN** el usuario carga `#/analytics/operations/profit`
+- **THEN** se abre la pantalla de beneficio
+
 ### Requirement: Acceso de solo lectura y local
 
-La vista de operaciones MUST NOT escribir nada: sus endpoints son `GET`, solo leen las vistas de `incident-metrics`, `cost_per_incident`, `carrier_dashboard`, las posiciones aplicadas (`views.offsets` y `event_log.offsets`) y los metadatos de Kafka de la consulta de retraso, y el backend sigue escuchando solo en `127.0.0.1` (spec `web-front`, «Acceso de solo lectura y local»).
+La vista de operaciones MUST NOT escribir nada: sus endpoints son `GET`, solo leen las vistas de `incident-metrics`, `cost_per_incident`, `carrier_dashboard`, las posiciones aplicadas (`views.offsets` y `event_log.offsets`) `view_orders` (el beneficio) y los metadatos de Kafka de la consulta de retraso, y el backend sigue escuchando solo en `127.0.0.1` (spec `web-front`, «Acceso de solo lectura y local»).
 
 #### Scenario: Escritura rechazada
 
@@ -251,11 +280,12 @@ La vista de operaciones MUST NOT escribir nada: sus endpoints son `GET`, solo le
 | `GET /api/operations/llm` | Llamadas, tokens, latencia media y p95 y validaciones por agente, con `applied` |
 | `GET /api/operations/carriers` | `carrier_dashboard` y, con la versión 2, las consultas A2A por resultado |
 | `GET /api/operations/freshness` | Posición aplicada, *end offset* y `lag` por proyector y partición |
+| `GET /api/operations/profit` | Ingresos, cada gasto y beneficio total, con el porcentaje de transporte y `applied` |
 
 ## Decisiones
 
 - **Navegación.** La analítica sigue teniendo una única entrada en la cabecera, y la vista de pedidos sigue siendo su pantalla por defecto; operaciones cuelga de ella con un enlace. Así no cambia la cabecera ni el recorrido que describe el manual.
-- **Rutas.** `#/analytics` (pedidos) y `#/analytics/operations` (operaciones).
+- **Rutas.** `#/analytics` (pedidos), `#/analytics/operations` (operaciones) y `#/analytics/operations/profit` (beneficio).
 - **«Ver eventos».** Abre la vista principal con el filtro de incidencia puesto; está en la spec `web-front`.
 - **Reseteo.** «Resetear simulación» no afecta a la analítica ni a esta vista, porque no borra datos y la analítica lee las proyecciones completas.
 - **Fuera de alcance.** El panel de resultados de experimentos (`experiments/results`), alarmas o umbrales, exportación a CSV y un historial por intervalos de tiempo.

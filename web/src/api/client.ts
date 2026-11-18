@@ -203,6 +203,20 @@ export interface Freshness {
   consumers: { consumer: string; partitions: PartitionLag[]; lag: number | null }[];
 }
 
+// Beneficio total (spec incident-metrics, «Consultas de operaciones»): importes en euros, como texto decimal.
+export interface Profit {
+  revenue: string | number;
+  shipping: string | number;
+  reissue_shipping: string | number;
+  reissue_fixed: string | number;
+  refunds: string | number;
+  claims: string | number;
+  llm: string | number;
+  profit: string | number;
+  shipping_pct: string | number;
+  applied: Record<string, number>;
+}
+
 export type CommandRequest =
   | { command: "seed" }
   | { command: "send"; example?: string; text?: string }
@@ -244,6 +258,7 @@ export interface ApiClient {
   getOperationsLlm(): Promise<LlmStats>;
   getOperationsCarriers(): Promise<CarrierOperations>;
   getOperationsFreshness(): Promise<Freshness>;
+  getOperationsProfit(): Promise<Profit>;
   runCommand(request: CommandRequest): Promise<CommandRun>;
   sendInput(runId: string, line: string): Promise<void>;
 }
@@ -289,6 +304,7 @@ export function createApiClient(fetchFn: FetchFn = (input, init) => fetch(input,
     getOperationsLlm: () => call("GET", "/api/operations/llm"),
     getOperationsCarriers: () => call("GET", "/api/operations/carriers"),
     getOperationsFreshness: () => call("GET", "/api/operations/freshness"),
+    getOperationsProfit: () => call("GET", "/api/operations/profit"),
     runCommand: (request) => call("POST", "/api/commands", request),
     sendInput: async (runId, line) => {
       await call("POST", `/api/commands/${encodeURIComponent(runId)}/input`, { line });
