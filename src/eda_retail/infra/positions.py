@@ -20,6 +20,7 @@ from dataclasses import dataclass
 import psycopg
 from confluent_kafka import OFFSET_BEGINNING, Consumer, KafkaError, KafkaException, Message, TopicPartition
 
+from eda_retail.infra.db import CONNECTION_ERRORS, RETRY_S, Reconnect, healthy, reopen
 from eda_retail.infra.schemas import qualified
 
 log = logging.getLogger(__name__)
@@ -101,9 +102,11 @@ class PositionedConsumer:
         schema: str,
         consumer: str,
         apply: ApplyMessage,
+        reconnect: Reconnect | None = None,
     ) -> None:
         self.consumer = consumer
         self._conn = conn
+        self._reconnect = reconnect  # None: conserva su conexión (harness en proceso); si no, `recover` abre otra
         self._kafka = kafka_consumer
         self._topic = topic
         self._offsets = qualified(schema, "offsets")
@@ -186,6 +189,15 @@ class PositionedConsumer:
             self._consumed[msg.partition()] = msg.offset()
         return applied
 
+    def recover(self) -> None:
+        """Tras un error: si la conexión se perdió y hay `reconnect`, abre otra y vuelve a asignar las particiones en
+        la posición guardada (spec resilience, «Reconexión a PostgreSQL»). Si la base aún no responde, el error de
+        conexión sube y quien llama lo vuelve a intentar."""
+        if self._reconnect is None or healthy(self._conn):
+            return
+        self._conn = reopen(self._conn, self._reconnect)
+        self._assigned = False  # `run_once` reasigna desde `views.offsets`/`event_log.offsets` con la conexión nueva
+
     def high_watermarks(self) -> dict[int, int]:
         return {p: high_watermark(self._kafka, TopicPartition(self._topic, p)) for p in self.partitions()}
 
@@ -214,3 +226,20 @@ class PositionedConsumer:
 
     def close(self) -> None:
         self._kafka.close()
+
+
+def run_resilient(consumer: PositionedConsumer, logger: logging.Logger, *, timeout: float = 0.0,
+                  retry_s: float = RETRY_S) -> int:
+    """`consumer.run_once`; si la base cae, espera `retry_s`, recupera la conexión (`recover`) y devuelve 0: el
+    mensaje que falló se vuelve a leer en la siguiente vuelta. Cualquier otro error sube (spec resilience,
+    «Reconexión a PostgreSQL»)."""
+    try:
+        return consumer.run_once(timeout=timeout)
+    except CONNECTION_ERRORS:
+        logger.warning("%s: la base no responde; se reintenta", consumer.consumer, exc_info=True)
+    time.sleep(retry_s)
+    try:
+        consumer.recover()
+    except CONNECTION_ERRORS:
+        logger.warning("%s: sin conexión a la base; se reintenta", consumer.consumer)
+    return 0

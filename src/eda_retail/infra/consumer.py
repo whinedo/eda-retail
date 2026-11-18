@@ -15,6 +15,8 @@ from __future__ import annotations
 import enum
 import json
 import logging
+import threading
+import time
 import uuid
 from collections.abc import Callable, Mapping
 from typing import Protocol, runtime_checkable
@@ -29,7 +31,7 @@ from eda_retail.events.catalog import CATALOG, PayloadError, PersonalDataError, 
 from eda_retail.events.envelope import EventEnvelope
 from eda_retail.events.upcasters import to_current
 from eda_retail.events.versioning import UpcastError
-from eda_retail.infra import dead_letters, inbox, tracing
+from eda_retail.infra import db, dead_letters, inbox, tracing
 from eda_retail.infra.db import connect
 from eda_retail.infra.kafka import make_consumer
 
@@ -119,8 +121,10 @@ class EventConsumer:
         inbox_enabled: bool = True,
         on_dead_letter: DeadLetterHook | None = None,
         schema: str,
+        reconnect: db.Reconnect | None = None,
     ) -> None:
         self.name = name
+        self._reconnect = reconnect  # None: un error de la base sube (harness en proceso); si no, se reconecta
         self.schema = schema  # esquema del componente: su inbox y sus dead letters
         self._on_dead_letter = on_dead_letter
         self._conn = conn
@@ -155,7 +159,13 @@ class EventConsumer:
             inbox_enabled=settings.inbox_enabled,
             on_dead_letter=on_dead_letter,
             schema=schema,
+            reconnect=lambda: connect(settings.database_url),
         )
+
+    def with_reconnect(self, reconnect: db.Reconnect) -> EventConsumer:
+        """Activa la reconexión a PostgreSQL de `run_forever` (los CLI de los componentes)."""
+        self._reconnect = reconnect
+        return self
 
     def poll(self, timeout: float) -> Message | None:
         msg = self._kafka.poll(timeout)
@@ -240,9 +250,38 @@ class EventConsumer:
         self.commit(msg)
         return outcome
 
-    def run_forever(self) -> None:
+    def run_forever(self, *, stop: threading.Event | None = None, retry_s: float = db.RETRY_S) -> None:
+        """Bucle del proceso. Con `reconnect`, si la base cae al atender un mensaje, abre otra conexión y vuelve a
+        atender ese mismo mensaje hasta conseguirlo; su offset solo se confirma después (spec resilience,
+        «Reconexión a PostgreSQL»). Cualquier otro error, o uno de la base sin `reconnect`, termina el bucle."""
+        while stop is None or not stop.is_set():
+            msg = self.poll(1.0)
+            if msg is None:
+                continue
+            self._handle_until_done(msg, retry_s)
+            self.commit(msg)
+
+    def _handle_until_done(self, msg: Message, retry_s: float) -> Outcome:
         while True:
-            self.run_once()
+            try:
+                return self.handle_message(msg)
+            except db.CONNECTION_ERRORS:
+                if self._reconnect is None:
+                    raise
+                log.warning("%s: la base no responde; se reintenta el mensaje p%d o%d", self.name,
+                            msg.partition(), msg.offset(), exc_info=True)
+            self._reopen_until_ready(retry_s)
+
+    def _reopen_until_ready(self, retry_s: float) -> None:
+        """Espera a tener una conexión sana: hasta que la base vuelva, otro intento cada `retry_s`."""
+        assert self._reconnect is not None
+        while True:
+            time.sleep(retry_s)
+            try:
+                self._conn = db.reopen(self._conn, self._reconnect)
+                return
+            except db.CONNECTION_ERRORS:
+                log.warning("%s: sin conexión a la base; se reintenta", self.name)
 
     def close(self) -> None:
         self._kafka.close()

@@ -16,6 +16,7 @@ from eda_retail.config import load_settings
 from eda_retail.infra.db import connect
 from eda_retail.infra.logs import setup_logging
 from eda_retail.infra.outbox import start_relay
+from eda_retail.infra.positions import run_resilient
 from eda_retail.infra.tracing import setup_tracing
 from eda_retail.projectors.base import SCHEMA, consumer_for
 from eda_retail.projectors.rebuild import rebuild
@@ -31,13 +32,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def _run(settings, conn, idle_seconds: float) -> None:
+def _run(settings, idle_seconds: float) -> None:
+    """Cada proyector con su conexión: si la base cae, el que falla abre otra y sigue desde su posición guardada."""
     log = logging.getLogger("eda_retail.projector")
-    consumers = [consumer_for(p, settings, conn) for p in build_all()]
+    reconnect = lambda: connect(settings.database_url)
+    consumers = [consumer_for(p, settings, reconnect=reconnect) for p in build_all()]
     relay = start_relay(settings, SCHEMA, outbox=False)  # publica views.dead_letters en eda.dlq
     try:
         while True:
-            advanced = sum(c.run_once(timeout=0) for c in consumers)
+            advanced = sum(run_resilient(c, log) for c in consumers)
             if advanced:
                 log.info("vistas al día: %d eventos aplicados", advanced)
             else:
@@ -64,13 +67,15 @@ def main(argv: list[str] | None = None) -> None:
     settings = load_settings()
     setup_logging("projector")
     provider = setup_tracing("projectors", settings)
-    conn = connect(settings.database_url)
     try:
         if args.command == "rebuild":
-            sys.exit(_rebuild(settings, conn, args.view))
-        _run(settings, conn, args.idle_seconds)
+            conn = connect(settings.database_url)
+            try:
+                sys.exit(_rebuild(settings, conn, args.view))
+            finally:
+                conn.close()
+        _run(settings, args.idle_seconds)
     finally:
-        conn.close()
         if provider is not None:
             provider.shutdown()
 

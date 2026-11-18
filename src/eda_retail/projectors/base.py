@@ -27,7 +27,7 @@ from eda_retail.events.upcasters import UPCASTERS
 from eda_retail.events.versioning import Upcasters
 from eda_retail.infra import dead_letters, tracing
 from eda_retail.infra.consumer import InvalidMessage, decode_checked
-from eda_retail.infra.db import connect
+from eda_retail.infra.db import Reconnect, connect
 from eda_retail.infra.kafka import make_consumer
 from eda_retail.infra.positions import Position, PositionedConsumer, position_of
 
@@ -106,8 +106,10 @@ class Projector:
                                event_id=event_id, correlation_id=correlation_id, raw=raw, schema=SCHEMA)
 
 
-def consumer_for(projector: Projector, settings: Settings, conn: psycopg.Connection | None = None) -> PositionedConsumer:
-    """Consumidor posicionado del proyector sobre `settings.events_topic` (su posición en `views.offsets`)."""
+def consumer_for(projector: Projector, settings: Settings, conn: psycopg.Connection | None = None, *,
+                 reconnect: Reconnect | None = None) -> PositionedConsumer:
+    """Consumidor posicionado del proyector sobre `settings.events_topic` (su posición en `views.offsets`).
+    `reconnect`: abre otra conexión si se pierde la base (el proceso de los proyectores)."""
     return PositionedConsumer(
         conn if conn is not None else connect(settings.database_url),
         make_consumer(settings.kafka_bootstrap_servers, group_id=f"views.{projector.name}"),
@@ -115,4 +117,5 @@ def consumer_for(projector: Projector, settings: Settings, conn: psycopg.Connect
         schema=SCHEMA,
         consumer=projector.name,
         apply=projector.apply_message,
+        reconnect=reconnect,
     )

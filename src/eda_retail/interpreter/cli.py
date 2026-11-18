@@ -11,8 +11,10 @@ import argparse
 import logging
 import threading
 
+import psycopg
+
 from eda_retail.config import Settings, load_settings
-from eda_retail.infra.db import connect
+from eda_retail.infra.db import connect, run_loop
 from eda_retail.infra.kafka import make_consumer
 from eda_retail.infra.logs import setup_logging
 from eda_retail.infra.outbox import start_relay
@@ -26,15 +28,16 @@ log = logging.getLogger("eda_retail.interpreter")
 EXPIRY_INTERVAL_S = 1.0
 
 
+def _expire_once(conn: psycopg.Connection) -> bool:
+    if resolved := expire_parked(conn):
+        log.info("plazo vencido: %d avisos aparcados resueltos", resolved)
+    return False  # una pasada por intervalo
+
+
 def _expire_forever(settings: Settings, stop: threading.Event) -> None:
-    conn = connect(settings.database_url)
-    try:
-        while not stop.is_set():
-            if resolved := expire_parked(conn):
-                log.info("plazo vencido: %d avisos aparcados resueltos", resolved)
-            stop.wait(EXPIRY_INTERVAL_S)
-    finally:
-        conn.close()
+    """Plazos de los avisos aparcados; si la base cae, el hilo sigue y abre otra conexión."""
+    run_loop(lambda: connect(settings.database_url), stop, _expire_once, interval=EXPIRY_INTERVAL_S,
+             name="parked-notices")
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -49,7 +52,7 @@ def main(argv: list[str] | None = None) -> None:
     consumer = build_consumer(
         connect(settings.database_url), make_consumer(settings.kafka_bootstrap_servers, group_id=SCHEMA),
         settings, OllamaClient(), BusinessRules(),
-    )
+    ).with_reconnect(lambda: connect(settings.database_url))
     try:
         consumer.run_forever()
     finally:

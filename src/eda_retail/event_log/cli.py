@@ -15,7 +15,7 @@ from eda_retail.infra.db import connect
 from eda_retail.infra.kafka import make_consumer
 from eda_retail.infra.logs import setup_logging
 from eda_retail.infra.outbox import start_relay
-from eda_retail.infra.positions import PositionedConsumer
+from eda_retail.infra.positions import PositionedConsumer, run_resilient
 from eda_retail.infra.tracing import setup_tracing
 
 
@@ -31,6 +31,7 @@ def build(settings) -> PositionedConsumer:
         schema=SCHEMA,
         consumer=CONSUMER,
         apply=apply_message,
+        reconnect=lambda: connect(settings.database_url),
     )
 
 
@@ -44,7 +45,7 @@ def main(argv: list[str] | None = None) -> None:
     log = logging.getLogger("eda_retail.event_log")
     try:
         while True:
-            if applied := consumer.run_once():
+            if applied := run_resilient(consumer, log, timeout=1.0):
                 log.info("log al día: %d mensajes", applied)
     finally:
         relay.stop(timeout=10)
