@@ -98,7 +98,7 @@ Las hipótesis nuevas se llaman como su experimento (H11, H12...). Los marcados 
 
 | Exp. | Nombre | Fallo inyectado | Qué se comprueba | Modo |
 |---|---|---|---|---|
-| E8 | Matriz de puntos de caída | Caída de cada componente en cada punto de la transacción | Recuperación sin duplicados ni pérdidas | En proceso |
+| E8 | Matriz de puntos de caída | Caída de cada componente en cada punto de la transacción | Recuperación sin duplicados ni pérdidas | Spec lista, sin implementar (en proceso) |
 | E9 | Caída de Kafka | Broker parado y reiniciado | El outbox acumula y el relay publica al volver, sin pérdidas | Retirado (§5) |
 | E10 | Caída de PostgreSQL | Base parada o congelada 30 s | Reconexión sola, sin pérdidas ni efectos repetidos | Implementado (multiproceso) |
 | E11 (S) | Entrega retrasada y replanes | Resultados tardíos, 50 % de fallos en `reserve_stock` | Eventos obsoletos ignorados, compensaciones correctas | Implementado |
@@ -132,6 +132,14 @@ Si I1 o I2 se violan, la hipótesis no se da por cumplida aunque su criterio pro
 **Implementación.** `experiments/invariants.py` los comprueba al terminar, con el sistema parado: I1 con el log (incidencias con `CarrierNoticeReceived` sin `IncidentResolved` ni `IncidentEscalated`), I2 con los efectos repetidos que mide E1, I3 con `executor_issue_refund.refunds` y con el orden de los `StepRequested` y `StepCompleted` del log (un `issue_refund` pedido con una compensación pedida y sin completar), I4 con cada `outbox` (filas sin publicar o cuyo evento no está en `event_log.events`) e I5 reconstruyendo cada vista desde el topic. E9, E10, E11, E13, E14, E15, E19 y E20 (por variante; E10, con los procesos ya parados), E16, E17, E18, E21, E22 y E23 los incluyen en `metrics.invariants` (E16, con las instancias del orquestador aún en marcha y ociosas); E21 los comprueba antes de sus observaciones y de su control, que repiten efectos a propósito.
 
 ## 5. Experimentos nuevos en detalle
+
+### E8 Matriz de puntos de caída (H8)
+
+- **Objetivo.** Comprobar que la recuperación no depende de dónde cae un componente: si cualquier componente cae en cualquier punto de su transacción y se reinicia, toda incidencia se cierra, ningún efecto se repite, ningún evento se pierde ni aparece dos veces en `event_log` y se mantienen I1 a I5.
+- **Escenario.** En proceso, con `--llm oracle`, 20 incidencias por celda y un 30 % de fallos en `reserve_stock`, para que haya planes revisados. Primero `baseline`, sin caídas; después 25 celdas con una sola caída cada una, en la unidad K del medio (⌈n/2⌉) de las n que ese componente atendió en ese punto en `baseline` con la misma semilla. Los puntos (spec synthetic-data, «Caída en un punto de la transacción»): `before_tx` (intérprete, planificador y replanificador: el LLM ya respondió y la transacción no se abrió); `after_commit_before_offset` (intérprete, orquestador, `event_log` y el proyector `incident_status`); `after_commit_before_response` (intake, inventory, planificador, replanificador y cada ejecutor); y `relay_after_publish_before_mark` (el relay de cada componente con outbox). La caída entre el efecto y el registro de su clave no entra: la mide E22.
+- **Mide.** Por celda: si la caída se produjo, en qué unidad y a qué hora; incidencias cerradas, abiertas, resueltas y escaladas por motivo; tiempo de recuperación; máximo de ejecuciones por `idempotency_key`; `event_id` repetidos en `eda.events` frente a filas de `event_log`; outbox pendiente al terminar; descartes del inbox; respuestas repetidas a un mismo `command_id`; llamadas al LLM de más frente a `baseline`, contadas en el cliente del LLM (una caída `before_tx` no deja `LlmCallRecorded`); latencia; e I1 a I5.
+- **Criterio.** H8: todas las celdas cierran todas sus incidencias, sin efectos repetidos ni eventos perdidos o duplicados en `event_log`, e I1 a I5 sin violaciones. Una celda solo cuenta si la caída se produjo y se ve el mecanismo que la salva: con `before_tx`, una llamada al LLM de más; con `after_commit_before_offset`, un descarte del inbox; con `after_commit_before_response`, una respuesta repetida por el inbox (la saga reenvía el comando; en intake, el harness reenvía el aviso con el mismo `command_id`); con `relay_after_publish_before_mark`, un `event_id` publicado dos veces.
+- **Implementación.** Pendiente, en dos PRs (`odd/tasks/e8-crash-matrix.md`): primero `FaultPlan.crash_at` y los hooks en consumer, relay, worker de trabajos y command handler; después `experiments/e8_crash_matrix.py`, su entrada en el catálogo y un test de integración. Aviso: `baseline` y 25 celdas de 20 incidencias pueden pasar de los 18 min de un shard del CI; la propuesta (L3) es que el test de integración ejecute un subconjunto de celdas.
 
 ### E9 Caída de Kafka (H9)
 
@@ -273,6 +281,6 @@ Si I1 o I2 se violan, la hipótesis no se da por cumplida aunque su criterio pro
 1. En proceso y con poco trabajo nuevo: E21, E23, E17, E18 y E11, que reutilizan el arnés con extensiones pequeñas (reinicio de offsets, replan forzado, parada de proyectores, inyección de veneno, retraso por acción).
 2. E22: requiere hilos con conexiones propias y un punto de caída nuevo en los ejecutores.
 3. E12, en proceso con el dispatcher en su propio hilo. Con modo multiproceso: E16 y E10 (todos los componentes en procesos propios). E9 está retirado (§5).
-4. El resto (E8, E14, E15, E19, E20) según el interés del trabajo.
+4. El resto (E14, E15, E19, E20) según el interés del trabajo. E8 tiene la spec lista y es el siguiente en implementarse.
 
 Los ficheros de especificación de los experimentos (S) están en `specs-experimentos-resiliencia.md`, en formato OpenSpec (Purpose, Requirements, Scenarios con GIVEN/WHEN/THEN).
