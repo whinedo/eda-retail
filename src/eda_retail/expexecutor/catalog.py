@@ -230,6 +230,21 @@ def _e15(report: dict[str, Any]) -> list[Check]:
     return checks
 
 
+E19_VARIANTS = ("truncated", "recreated")
+
+
+def _e19(report: dict[str, Any]) -> list[Check]:
+    """H19 y, por variante, su cumplimiento, sin cambios tras la republicación y con lag 0, e I1 e I2."""
+    checks = [_check(report, "hypothesis.H19", "true", lambda v: v is True)]
+    for variant in E19_VARIANTS:
+        prefix = f"metrics.variants.{variant}"
+        checks += [_check(report, f"{prefix}.h19", "true", lambda v: v is True),
+                   _check(report, f"{prefix}.changes", "{} (nada cambia)", lambda v: v == {}),
+                   _check(report, f"{prefix}.lag", "0", lambda v: v == 0),
+                   *_invariants(report, prefix)]
+    return checks
+
+
 E22_VARIANTS = ("execute_step_2", "execute_step_4", "execute_step_8", "other_commands", "same_key",
                 "effect_record_crash")
 E22_SERVICE_ACTIONS = ("notify_customer", "file_claim", "reserve_stock", "reissue_shipment", "issue_refund")
@@ -356,6 +371,14 @@ CATALOG: dict[str, Entry] = {
         "H18: ningún grupo se detiene (lag 0), cada veneno llega a la DLQ de cada consumidor que atiende su tipo y "
         "a ninguna más, el `event_type` desconocido queda en el log sin dead letter y todas las incidencias "
         "terminan.", _e18),
+    "e19": Entry(
+        "E19", "Mide la pérdida del topic, en proceso: 200 incidencias cerradas con un 30 % de fallos en "
+        "`reserve_stock`; con el sistema parado, el topic se vacía (`truncated`) o se borra y se crea de nuevo "
+        "(`recreated`, con los grupos en 0 y la posición del lado de lectura en -1), cada componente republica su "
+        "outbox y después llegan 20 avisos nuevos.",
+        "H19: en las dos variantes se publican tantos mensajes como filas de outbox, en su orden, la republicación "
+        "no cambia efectos, filas, `plan_steps` ni vistas, todas las incidencias (también las nuevas) se cierran e I1 "
+        "a I5 sin violaciones.", _e19),
     "e21": Entry(
         "E21", "Mide la reproducción total del log: con las incidencias cerradas y el sistema parado, se llevan "
         "los offsets de todos los grupos al principio de `eda.events` y se vuelve a consumir hasta que el lag "
