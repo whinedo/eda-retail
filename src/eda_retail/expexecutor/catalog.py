@@ -246,6 +246,25 @@ def _e19(report: dict[str, Any]) -> list[Check]:
     return checks
 
 
+E20_VARIANTS = ("baseline", "mail_down", "mail_invalid", "carrier_slow", "carrier_401", "carrier_bad_card")
+
+
+def _e20(report: dict[str, Any]) -> list[Check]:
+    """H20 y, por variante, su cumplimiento, con todos los `outcome` esperados, los planes de `baseline`, sin
+    correos repetidos ni direcciones en el log, e I1 e I2."""
+    checks = [_check(report, "hypothesis.H20", "true", lambda v: v is True)]
+    for variant in E20_VARIANTS:
+        prefix = f"metrics.variants.{variant}"
+        checks += [_check(report, f"{prefix}.h20", "true", lambda v: v is True),
+                   _check(report, f"{prefix}.outcome_mismatches", "[]", lambda v: v == []),
+                   _check(report, f"{prefix}.plans_differing_from_baseline", "[]", lambda v: v == []),
+                   _check(report, f"{prefix}.max_mail_executions_per_key", "<= 1",
+                          lambda v: isinstance(v, int) and v <= 1),
+                   _check(report, f"{prefix}.events_with_address", "0", lambda v: v == 0),
+                   *_invariants(report, prefix)]
+    return checks
+
+
 E22_VARIANTS = ("execute_step_2", "execute_step_4", "execute_step_8", "other_commands", "same_key",
                 "effect_record_crash")
 E22_SERVICE_ACTIONS = ("notify_customer", "file_claim", "reserve_stock", "reissue_shipment", "issue_refund")
@@ -381,6 +400,16 @@ CATALOG: dict[str, Entry] = {
         "también entre componentes, la republicación "
         "no cambia efectos, filas, `plan_steps` ni vistas, todas las incidencias (también las nuevas) se cierran e I1 "
         "a I5 sin violaciones.", _e19),
+    "e20": Entry(
+        "E20", "Mide las dependencias de V2, en proceso y con `POC_VERSION=2`: 50 incidencias con el servidor MCP de "
+        "correo y el agente A2A del transportista en proceso, `A2A_TIMEOUT_S` de 1 s y seis variantes con un solo "
+        "fallo: sin fallos, un 50 % de errores de `send_email`, un 30 % de salidas inválidas de `send_email` y un 50 % "
+        "de consultas con el agente lento (2 s), con un 401 o con la Agent Card distinta.",
+        "H20: en todas las variantes se cierran todas las incidencias, cada `CarrierConsulted` tiene el `outcome` del "
+        "fallo inyectado (o `answered`), la consulta no supera `A2A_TIMEOUT_S` más 1,5 s, el 401 y la Agent Card "
+        "distinta no llegan al agente, los planes coinciden con los de `baseline`, ninguna clave tiene más de un "
+        "correo, ningún evento contiene una dirección, I1 a I5 sin violaciones y cada variante provoca su efecto.",
+        _e20),
     "e21": Entry(
         "E21", "Mide la reproducción total del log: con las incidencias cerradas y el sistema parado, se llevan "
         "los offsets de todos los grupos al principio de `eda.events` y se vuelve a consumir hasta que el lag "

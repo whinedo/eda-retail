@@ -463,6 +463,38 @@ El sistema SHALL cumplir la hipótesis H19: si se pierde el contenido de `eda.ev
 - **WHEN** se evalúa la hipótesis
 - **THEN** H19 se cumple si en las dos variantes se publicaron tantos mensajes como filas de outbox, en el orden de cada partición también entre componentes, la republicación no cambió nada, todas las incidencias (también las nuevas) se cerraron e I1 a I5 no tienen violaciones
 
+### Requirement: E20 Dependencias de V2 (H20)
+
+El sistema SHALL cumplir la hipótesis H20: cuando el servidor MCP de correo (spec mcp-mail) o el agente A2A del transportista (spec a2a-carrier) fallan, tardan o no superan los guardrails, cada fallo termina en el resultado que dicen sus specs, el planificador sigue planificando sin las opciones del transportista, ningún correo se envía dos veces, ninguna dirección de correo llega al log, toda incidencia se cierra y se mantienen I1 a I5. El experimento SHALL ejecutarse en modo en proceso con `POC_VERSION=2`, 50 incidencias, el servidor de correo en proceso, el agente del transportista como app A2A en proceso, `A2A_TIMEOUT_S` de 1 s y seis variantes con un solo fallo cada una (spec synthetic-data, «Fallos de las dependencias de V2»): `baseline`, sin fallos; `mail_down`, un 50 % de las llamadas a `send_email` terminan en un error de la herramienta; `mail_invalid`, un 30 % devuelven una salida sin `message_id` o con la dirección del destinatario; `carrier_slow`, un 50 % de las consultas tardan 2 s; `carrier_401`, un 50 % llevan un token que el agente no acepta y responde 401; y `carrier_bad_card`, un 50 % encuentran una Agent Card con otra skill. El 401 es un `outcome` `failed` (spec a2a-carrier, «Consulta del planificador»). El informe MUST dar, por variante: incidencias cerradas, resueltas y escaladas por motivo; fallos inyectados; `CarrierConsulted` por `outcome`; consultas cuyo `outcome` no es el esperado (`timeout` en `carrier_slow`, `failed` en `carrier_401`, `rejected_by_guardrail` en `carrier_bad_card` y `answered` sin fallo inyectado); latencia máxima de la consulta; tareas que recibió el agente en las consultas con fallo; incidencias cuyo primer plan difiere del de `baseline` (con o sin `PlanCreated`); `StepFailed` de `notify_customer` por `error`; `CustomerNotified`; máximo de ejecuciones del correo por `idempotency_key`; eventos con algo que parece una dirección de correo; latencia (media, mediana y p95); e I1 a I5. Cada variante con fallos MUST provocar su efecto (al menos un fallo inyectado; en `mail_down`, además, al menos un reintento de `send_email`; y en `mail_invalid`, un `StepFailed` con `mcp_output_invalid` por cada salida inválida); si no, no cuenta como cumplida.
+
+#### Scenario: Servidor de correo caído
+
+- **GIVEN** la variante `mail_down`
+- **WHEN** `send_email` falla en las llamadas elegidas
+- **THEN** el ejecutor reintenta con espera exponencial y, si agota `STEP_MAX_ATTEMPTS`, publica `StepFailed` con `error` `mail_unavailable` y `retryable` verdadero
+- **AND** ninguna `idempotency_key` tiene más de una ejecución del correo
+
+#### Scenario: Salidas inválidas del servidor de correo
+
+- **GIVEN** la variante `mail_invalid`
+- **WHEN** `send_email` devuelve una salida sin `message_id` o con la dirección del destinatario
+- **THEN** cada salida inválida termina en un `StepFailed` no reintentable con `error` `mcp_output_invalid`
+- **AND** ningún evento del log contiene una dirección de correo
+
+#### Scenario: Agente del transportista inestable
+
+- **GIVEN** la variante `carrier_slow`, `carrier_401` o `carrier_bad_card`
+- **WHEN** el planificador consulta al agente en las incidencias elegidas
+- **THEN** `CarrierConsulted` tiene el `outcome` del fallo inyectado en todas ellas y `answered` en las demás, con una latencia de como mucho `A2A_TIMEOUT_S` más 1,5 s
+- **AND** en `carrier_401` y `carrier_bad_card` el agente no recibe ninguna tarea de esas consultas
+- **AND** cada incidencia tiene el mismo primer plan que en `baseline`
+
+#### Scenario: Cumplimiento de H20
+
+- **GIVEN** la ejecución completa de E20
+- **WHEN** se evalúa la hipótesis
+- **THEN** H20 se cumple si en todas las variantes se cerraron todas las incidencias, todo `outcome` es el esperado, la latencia de la consulta no superó su cota, ninguna consulta con fallo de autenticación o de Agent Card llegó al agente, los planes coinciden con `baseline`, ninguna `idempotency_key` tiene más de un correo, ningún evento contiene una dirección de correo, I1 a I5 no tienen violaciones y cada variante con fallos provocó su efecto
+
 ### Requirement: E21 Reproducción total del log (H21)
 
 El sistema SHALL cumplir la hipótesis H21: reproducir el log completo ante todos los consumidores y los ejecutores no produce ningún efecto nuevo, ningún evento nuevo y ningún cambio de estado. El escenario son 50 incidencias cerradas con un 30 % de fallos en `reserve_stock` (para que haya revisiones y compensaciones); con el sistema parado se llevan los offsets de todos los grupos al principio de `eda.events` y se arranca de nuevo hasta que el lag sea 0. Como control, una variante `no_effect_keys` reentrega los `ExecuteStep` antiguos a los ejecutores sin inbox de comandos ni `effect_keys` (el modo de E1) y MUST producir efectos repetidos, para demostrar que el experimento detecta la ausencia de idempotencia. Desactivar el inbox de un solo consumidor no sirve de control: la saga descarta por estado los eventos de incidencias cerradas y los resultados obsoletos, y el intérprete deduplica cada aviso con el inbox de comandos de `OpenIncident`. Por eso la variante `inbox_off` (el orquestador, y después el intérprete) se mantiene como observación, fuera de H21. El informe MUST comparar, antes y después, las ejecuciones del servicio simulado por `idempotency_key`, el número de filas de cada `outbox`, `inbox` y `command_outbox`, la huella de `orchestrator.plan_steps` y de cada vista, y el número de mensajes descartados por el inbox.

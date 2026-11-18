@@ -106,7 +106,7 @@ from eda_retail.inventory import handler as inventory
 from eda_retail.llm.generation import LlmClient
 from eda_retail.mail_server.directory import synthetic_directory
 from eda_retail.mail_server.server import build_server as build_mail_server
-from eda_retail.mail_server.store import MemoryMailStore
+from eda_retail.mail_server.store import MailStore, MemoryMailStore
 from eda_retail.orchestrator import consumer as orchestrator
 from eda_retail.orchestrator.dispatcher import dispatch_once, expire_once
 from eda_retail.orchestrator.saga import target_url
@@ -194,11 +194,13 @@ def service_duplicates(services: Services) -> Counter[str]:
     return out
 
 
-def mail_server_for(services: Services, poc_version: int) -> MCPServer | None:
-    """El servidor de correo MCP en proceso de la versión 2, respaldado por el servicio simulado `mail`."""
+def mail_server_for(services: Services, poc_version: int,
+                    build: Callable[[MailStore], MCPServer] = build_mail_server) -> MCPServer | None:
+    """El servidor de correo MCP en proceso de la versión 2, respaldado por el servicio simulado `mail`. `build`
+    construye el servidor sobre ese buzón (E20 lo cambia por uno con fallos)."""
     if poc_version != 2:
         return None
-    return build_mail_server(MemoryMailStore(synthetic_directory(), new_id=services.mail.call, dedup=False))
+    return build(MemoryMailStore(synthetic_directory(), new_id=services.mail.call, dedup=False))
 
 
 def effect_duplicates(conn: psycopg.Connection, services: Services) -> dict[str, int]:
@@ -623,11 +625,14 @@ class Harness:
     """Una ejecución aislada. Usar como contexto: crea y borra su base de datos y su topic."""
 
     def __init__(self, base: Settings, config: RunConfig, *, llm: LlmClient | None = None,
-                 data: Dataset | None = None, carrier: CarrierConsultant | None = None) -> None:
+                 data: Dataset | None = None, carrier: CarrierConsultant | None = None,
+                 mail_server: Callable[[MailStore], MCPServer] = build_mail_server) -> None:
         """`carrier`: un cliente A2A en proceso para el planificador. Sin él (por defecto) el planificador no
-        consulta al transportista, como en la versión 1, aunque POC_VERSION=2: E5 y E6 siguen comparables."""
+        consulta al transportista, como en la versión 1, aunque POC_VERSION=2: E5 y E6 siguen comparables.
+        `mail_server`: construye el servidor de correo de la versión 2 sobre su buzón (E20, uno con fallos)."""
         self.config = config
         self._carrier = carrier
+        self._mail_server = mail_server
         self.data = data or generate(config.seed, config.incidents)
         self._base = base
         self._llm = llm
@@ -771,7 +776,7 @@ class Harness:
                 counting_busy(inventory.specs(effects)["ExecuteStep"], self._count_busy), inventory.SCHEMA, plan),
                 inventory.SCHEMA, plan, self._defer_result)), mode == "full"),
         }
-        mail_server = mail_server_for(self.services, s.poc_version)
+        mail_server = mail_server_for(self.services, s.poc_version, self._mail_server)
         for action in EXECUTOR_ACTIONS:
             spec = step_executors.specs(effects, action, self.llm, self.rules,
                                         service=getattr(self.services, SERVICE_OF[action]),
