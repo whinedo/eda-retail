@@ -13,6 +13,7 @@ function setup(props: Partial<OperationsViewProps> = {}) {
     onLoadMore: vi.fn(),
     onViewEvents: vi.fn(),
     onOrders: vi.fn(),
+    onProfit: vi.fn(),
     onBack: vi.fn(),
   };
   render(

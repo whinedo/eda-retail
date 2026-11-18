@@ -85,15 +85,23 @@ Una incidencia sin evento de cierre está en `open`. Un estado final MUST NOT ca
 
 ### Requirement: Hechos de apoyo
 
-El proyector SHALL mantener además tres tablas de hechos, una fila por evento y con el `event_id` como clave, para que las consultas calculen agregados (medias, percentiles, recuentos) sin guardarlos:
+El proyector SHALL mantener además cuatro tablas de hechos, una fila por evento y con el `event_id` como clave, para que las consultas calculen agregados (medias, percentiles, recuentos) sin guardarlos:
 
 | Vista | Evento | Columnas |
 | --- | --- | --- |
 | `view_llm_calls` | `LlmCallRecorded` | `incident_id`, `agent`, `model`, `tokens_in`, `tokens_out`, `latency_ms`, `validated` (su `validation_passed`), `occurred_at` |
 | `view_step_failures` | `StepFailed` | `incident_id`, `step_id`, `action` (la del `StepRequested` del mismo `step_id`; `StepFailed` no la lleva), `error_code` (su `error`), `plan_version`, `occurred_at` |
 | `view_carrier_consults` | `CarrierConsulted` (solo versión 2) | `incident_id`, `outcome`, `rounds`, `latency_ms`, `occurred_at` |
+| `view_reissued_shipments` | `ShipmentReissued` | `incident_id`, `order_id`, `occurred_at` |
 
-Estas tablas MUST guardar solo ids, códigos y números, y las tres llevan, como `incident_metrics`, la posición en Kafka del evento. Para la acción de un paso fallido, el proyector guarda la de cada `StepRequested` en su propia tabla `view_operations_steps` (incidencia, paso y acción).
+Estas tablas MUST guardar solo ids, códigos y números, y las cuatro llevan, como `incident_metrics`, la posición en Kafka del evento. Para la acción de un paso fallido, el proyector guarda la de cada `StepRequested` en su propia tabla `view_operations_steps` (incidencia, paso y acción).
+
+#### Scenario: Reenvío registrado
+
+- **GIVEN** un `ShipmentReissued` del pedido `P-1002` en la incidencia I1
+- **WHEN** el proyector lo consume
+- **THEN** `view_reissued_shipments` tiene una fila con su `event_id`, I1 y `P-1002`
+- **AND** si el evento se entrega otra vez no se añade otra fila
 
 #### Scenario: Llamada al LLM registrada
 
@@ -137,6 +145,7 @@ El módulo `queries` SHALL ofrecer consultas de solo lectura sobre estas vistas 
 - **Incidencias** (`get_incident_metrics`): las filas de `incident_metrics` con su duración y su coste, de la más recientemente cambiada a la más antigua, con filtros por `state`, `escalation_reason` e `incident_id`, y paginación.
 - **LLM** (`get_llm_stats`): por agente, llamadas, tokens de entrada y de salida, latencia media y p95, y porcentaje de validaciones superadas.
 - **Transportistas**: lo que ya ofrece `carrier_dashboard` y, por `outcome`, el número, las rondas medias y la latencia media de `view_carrier_consults`.
+- **Beneficio** (`get_profit`): ingresos (la suma de `amount` de todos los pedidos de `view_orders`) menos los gastos, cada uno por separado: transporte (`SHIPPING_COST_PCT` % del importe de cada pedido, 10 por defecto), transporte de los reenvíos (el mismo porcentaje del importe del pedido de cada fila de `view_reissued_shipments`, así un pedido reenviado paga el transporte dos veces), coste fijo de los reenvíos (`EFFECT_COST_REISSUE` por reenvío), reembolsos (`refunds_amount` de `cost_per_incident`), reclamaciones (`EFFECT_COST_CLAIM` por reclamación) y LLM (tokens por sus precios); y el beneficio total, ingresos menos la suma de los gastos. Los importes se redondean a céntimos. El coste del artículo reenviado no se cuenta: la vista no guarda costes de producto.
 
 El p95 SHALL calcularse por el método del rango más próximo (*nearest-rank*) sobre `latency_ms`: el valor en la posición ⌈0,95·N⌉ de las N latencias ordenadas. La consulta MUST NOT escribir ni generar eventos, ni leer el estado de escritura de otro componente.
 
@@ -158,6 +167,19 @@ El p95 SHALL calcularse por el método del rango más próximo (*nearest-rank*) 
 - **GIVEN** ninguna variable de precios definida (Ollama local)
 - **WHEN** se consulta el resumen
 - **THEN** el coste del LLM y el de los efectos, salvo los reembolsos, valen 0 y los tokens siguen informados
+
+#### Scenario: Beneficio con un reenvío y un reembolso
+
+- **GIVEN** dos pedidos de 100 € y 200 €, `SHIPPING_COST_PCT` 10, el pedido de 200 € reenviado una vez, un reembolso de 100 € y ningún otro precio configurado
+- **WHEN** se consulta el beneficio
+- **THEN** los ingresos son 300 €, el transporte 30 €, el transporte de los reenvíos 20 €, los reembolsos 100 € y el beneficio 150 €
+- **AND** la respuesta incluye `applied`
+
+#### Scenario: Beneficio sin pedidos
+
+- **GIVEN** un sistema sin pedidos registrados
+- **WHEN** se consulta el beneficio
+- **THEN** los ingresos, cada gasto y el beneficio valen 0
 
 #### Scenario: Percentil 95 de la latencia
 

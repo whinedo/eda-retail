@@ -1,5 +1,5 @@
 // Datos de ejemplo de la vista de operaciones para los tests (spec operations-view).
-import type { IncidentMetricsRow } from "../api/client";
+import type { IncidentMetricsRow, Profit } from "../api/client";
 import type { OperationsData } from "../useOperations";
 
 export function incidentRow(incident_id: string, overrides: Partial<IncidentMetricsRow> = {}): IncidentMetricsRow {
@@ -64,6 +64,23 @@ export function operationsData(overrides: Partial<OperationsData> = {}): Operati
         { consumer: "operations", partitions: [{ partition: 1, applied: 126, end_offset: 130, lag: 3 }], lag: 3 },
       ],
     },
+    ...overrides,
+  };
+}
+
+// Beneficio de la cascada de la spec operations-view: 300 de ingresos, 30 + 20 de transporte y 100 de reembolsos.
+export function profit(overrides: Partial<Profit> = {}): Profit {
+  return {
+    revenue: "300.00",
+    shipping: "30.00",
+    reissue_shipping: "20.00",
+    reissue_fixed: "0.00",
+    refunds: "100.00",
+    claims: "0.00",
+    llm: "0.00",
+    profit: "150.00",
+    shipping_pct: "10",
+    applied: { "0": 12 },
     ...overrides,
   };
 }

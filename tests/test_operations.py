@@ -6,11 +6,13 @@ from __future__ import annotations
 
 import contextlib
 import re
+from decimal import Decimal
 
 import pytest
 from fastapi.testclient import TestClient
 
-from eda_retail.queries.operations import lag_of, llm_stats, p95
+from eda_retail.queries.cost_per_incident import Prices
+from eda_retail.queries.operations import ProfitTotals, lag_of, llm_stats, p95, profit_lines
 from eda_retail.web import app as web_app
 
 
@@ -68,6 +70,38 @@ def test_kafka_does_not_answer():
     assert lag.lag is None
 
 
+ZERO = Prices(Decimal(0), Decimal(0), Decimal(0), Decimal(0))
+
+
+def test_profit_with_a_reissue_and_a_refund():
+    """Beneficio con un reenvío y un reembolso: pedidos de 100 y 200 €, transporte al 10 %, el de 200 € reenviado y un
+    reembolso de 100 € dan ingresos 300, transporte 30, transporte de reenvíos 20, reembolsos 100 y beneficio 150"""
+    totals = ProfitTotals(revenue=Decimal(300), reissued_amount=Decimal(200), reissues=1,
+                          refunds=Decimal(100), claims=0, tokens_in=0, tokens_out=0)
+    p = profit_lines(totals, ZERO)
+    assert (p.revenue, p.shipping, p.reissue_shipping, p.refunds, p.profit) == (300, 30, 20, 100, 150)
+    assert (p.reissue_fixed, p.claims, p.llm) == (0, 0, 0)
+
+
+def test_profit_without_orders():
+    """Beneficio sin pedidos: ingresos, cada gasto y beneficio valen 0"""
+    p = profit_lines(ProfitTotals(Decimal(0), Decimal(0), 0, Decimal(0), 0, 0, 0), ZERO)
+    assert {p.revenue, p.shipping, p.reissue_shipping, p.reissue_fixed, p.refunds, p.claims, p.llm, p.profit} == {0}
+
+
+def test_profit_counts_every_configured_cost():
+    """Beneficio: cada gasto con sus precios (reenvío fijo, reclamación, LLM y otro porcentaje de transporte),
+    redondeado a céntimos"""
+    prices = Prices(Decimal("0.5"), Decimal(1), Decimal(3), Decimal(7), shipping_pct=Decimal(5))
+    totals = ProfitTotals(revenue=Decimal("99.99"), reissued_amount=Decimal("49.99"), reissues=2,
+                          refunds=Decimal(10), claims=2, tokens_in=1000, tokens_out=500)
+    p = profit_lines(totals, prices)
+    assert (p.shipping, p.reissue_shipping, p.reissue_fixed, p.claims, p.llm) == (
+        Decimal("5.00"), Decimal("2.50"), Decimal("14.00"), Decimal("6.00"), Decimal("1.00"))
+    assert p.profit == Decimal("99.99") - Decimal("5.00") - Decimal("2.50") - 14 - 10 - 6 - 1
+    assert p.shipping_pct == 5
+
+
 class _RecordingConn:
     """Conexión que anota cada SQL y no devuelve filas."""
 
@@ -89,7 +123,7 @@ class _RecordingConn:
         return []
 
 
-ROUTES = ("summary", "incidents", "llm", "carriers", "freshness")
+ROUTES = ("summary", "incidents", "llm", "carriers", "freshness", "profit")
 _TABLE = re.compile(r"\b(?:FROM|JOIN)\s+([a-z_]{2,}\.[a-z_]+)", re.IGNORECASE)  # esquema.tabla, no alias.columna
 _WRITE = re.compile(r"\b(INSERT|UPDATE|DELETE|TRUNCATE|CREATE|DROP|ALTER)\b", re.IGNORECASE)
 
@@ -109,7 +143,8 @@ def test_operations_endpoints_only_read_views(api):
     replies = [client.get(f"/api/operations/{route}") for route in ROUTES]
     assert [r.status_code for r in replies] == [200] * len(ROUTES)
     tables = {t for sql in conn.sql for t in _TABLE.findall(sql)}
-    assert {"views.view_incident_metrics", "views.view_llm_calls", "views.view_carrier_consults"} <= tables
+    assert {"views.view_incident_metrics", "views.view_llm_calls", "views.view_carrier_consults",
+            "views.view_orders", "views.view_reissued_shipments"} <= tables
     assert all(t.startswith("views.view_") for t in tables - {"views.offsets", "event_log.offsets"}), tables
     assert not [sql for sql in conn.sql if _WRITE.search(sql)]
 

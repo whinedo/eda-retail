@@ -562,6 +562,16 @@ El enlace **Operaciones**, junto al título «Estado de los pedidos», abre una 
 
 Por debajo, el front pide los datos a `GET /api/operations/summary`, `/incidents`, `/llm`, `/carriers` y `/freshness`.
 
+### 9.7 La pantalla de beneficio
+
+El enlace **Beneficio**, junto al título «Operaciones», abre `http://localhost:5173/#/analytics/operations/profit`; **← Operaciones** y **← Vista principal** vuelven atrás. Muestra el **beneficio total** y una gráfica de cascada: una barra de ingresos (el importe de todos los pedidos registrados), una barra que baja por cada gasto y la barra del beneficio, en verde si es positivo y en rojo si es negativo. Los gastos son:
+
+- **Transporte**: el `SHIPPING_COST_PCT` % (10 por defecto) del importe de cada pedido.
+- **Transporte de los reenvíos**: el mismo porcentaje del importe del pedido de cada reenvío; un pedido reenviado paga el transporte dos veces.
+- **Coste fijo de los reenvíos** (`EFFECT_COST_REISSUE` por reenvío), **reembolsos** (su importe), **reclamaciones** (`EFFECT_COST_CLAIM`) y **LLM** (tokens por sus precios).
+
+El coste del artículo reenviado no se cuenta, porque las vistas no guardan costes de producto. Debajo de la gráfica, una tabla da cada línea en euros. Los datos salen de `GET /api/operations/profit`, que solo lee vistas.
+
 ## 10. Recorridos típicos
 
 ### 10.1 Ver una incidencia de principio a fin

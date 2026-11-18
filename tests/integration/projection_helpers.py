@@ -131,6 +131,14 @@ class History:
         return self._add("CarrierNoticeReceived", {"carrier_notice_id": f"N-{self.incident}", "carrier": carrier,
                                                    "raw_text": raw_text}, "intake")
 
+    def reissued(self, order_id: str = "P1", new_shipment_id: str = "SH-2") -> EventEnvelope:
+        return self._add("ShipmentReissued", {"order_id": order_id, "new_shipment_id": new_shipment_id},
+                         "executor-reissue_shipment")
+
+    def refunded(self, order_id: str = "P1", amount: str = "10.00", refund_id: str = "RF-1") -> EventEnvelope:
+        return self._add("RefundIssued", {"order_id": order_id, "amount": amount, "refund_id": refund_id},
+                         "executor-issue_refund")
+
     def stock_released(self, reservation_id: str = "R1") -> EventEnvelope:
         return self._add("StockReleased", {"reservation_id": reservation_id}, "inventory")
 

@@ -149,6 +149,8 @@ class Settings:
     llm_price_out_per_1k: Decimal = field(default_factory=lambda: _env_decimal("LLM_PRICE_OUT_PER_1K"))
     effect_cost_claim: Decimal = field(default_factory=lambda: _env_decimal("EFFECT_COST_CLAIM"))
     effect_cost_reissue: Decimal = field(default_factory=lambda: _env_decimal("EFFECT_COST_REISSUE"))
+    # Transporte de cada pedido, en % de su importe (10 por defecto); un pedido reenviado lo paga otra vez.
+    shipping_cost_pct: Decimal = field(default_factory=lambda: Decimal(os.environ.get("SHIPPING_COST_PCT") or "10"))
     # Agente del transportista (A2A, spec a2a-carrier); solo se usa con POC_VERSION=2. CARRIER_AGENT_URL es
     # la URL que publica su Agent Card y que consulta el planificador; CARRIER_AGENT_PORT, donde escucha en
     # 127.0.0.1. A2A_TIMEOUT_S es el plazo total de una consulta y A2A_MAX_ROUNDS el máximo de rondas

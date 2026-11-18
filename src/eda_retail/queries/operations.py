@@ -1,6 +1,7 @@
 """Consultas de operaciones (spec incident-metrics, «Consultas de operaciones» y «Retraso de las vistas»).
 
-Solo leen las vistas del proyector `operations`, `view_cost_per_incident`, `view_carrier_dashboard` y las posiciones
+Solo leen las vistas del proyector `operations`, `view_cost_per_incident`, `view_carrier_dashboard`, `view_orders` (el
+beneficio) y las posiciones
 aplicadas (`views.offsets`, `event_log.offsets`); nunca escriben y cada respuesta lleva `applied` (la posición del
 proyector `operations`). Los agregados (medias, p95, costes, duraciones) se calculan aquí: las vistas solo guardan
 hechos. La única lectura que no es una vista son las marcas de agua de Kafka del retraso: metadatos del bus.
@@ -234,6 +235,73 @@ def get_carrier_operations(conn: psycopg.Connection, *, topic: str | None = None
             " avg(latency_ms)::float AS mean_latency_ms FROM views.view_carrier_consults GROUP BY 1 ORDER BY 1"
         ).fetchall()
     return CarrierOperations([CarrierRow(**r) for r in carriers], [dict(r) for r in consults], position)
+
+
+# -- beneficio ----------------------------------------------------------------------------------
+CENT = Decimal("0.01")
+
+
+@dataclass(frozen=True)
+class ProfitTotals:
+    """Hechos que suma la consulta de beneficio: ingresos, importe de los pedidos reenviados y los de cost_per_incident."""
+
+    revenue: Decimal  # suma de `amount` de todos los pedidos de view_orders
+    reissued_amount: Decimal  # suma del importe del pedido de cada reenvío (view_reissued_shipments)
+    reissues: int
+    refunds: Decimal
+    claims: int
+    tokens_in: int
+    tokens_out: int
+
+
+@dataclass(frozen=True)
+class Profit:
+    revenue: Decimal
+    shipping: Decimal  # `shipping_pct` % del importe de cada pedido
+    reissue_shipping: Decimal  # el mismo porcentaje del pedido de cada reenvío: un reenvío paga el transporte otra vez
+    reissue_fixed: Decimal  # `EFFECT_COST_REISSUE` por reenvío
+    refunds: Decimal
+    claims: Decimal
+    llm: Decimal
+    profit: Decimal  # ingresos menos la suma de los gastos
+    shipping_pct: Decimal
+    applied: dict[int, int]
+
+
+def profit_lines(totals: ProfitTotals, prices: Prices, applied_offsets: dict[int, int] | None = None) -> Profit:
+    """El beneficio y cada gasto por separado, redondeados a céntimos (spec incident-metrics, «Beneficio»)."""
+    pct = prices.shipping_pct / 100
+    llm, _ = _money(totals.tokens_in, totals.tokens_out, 0, 0, prices)
+    costs = {
+        "shipping": totals.revenue * pct, "reissue_shipping": totals.reissued_amount * pct,
+        "reissue_fixed": totals.reissues * prices.reissue, "refunds": Decimal(totals.refunds),
+        "claims": totals.claims * prices.claim, "llm": llm,
+    }
+    costs = {k: Decimal(v).quantize(CENT) for k, v in costs.items()}
+    revenue = Decimal(totals.revenue).quantize(CENT)
+    return Profit(revenue=revenue, **costs, profit=revenue - sum(costs.values()), shipping_pct=prices.shipping_pct,
+                  applied=applied_offsets or {})
+
+
+def get_profit(conn: psycopg.Connection, prices: Prices, *, topic: str | None = None) -> Profit:
+    """Beneficio total: `view_orders`, `view_reissued_shipments` y `view_cost_per_incident` (todas las incidencias)."""
+    with conn.transaction():
+        position = applied(conn, PROJECTOR_NAME, topic)
+        orders = conn.execute("SELECT coalesce(sum(amount), 0) AS revenue FROM views.view_orders").fetchone() or {}
+        reissued = conn.execute(
+            "SELECT coalesce(sum(o.amount), 0) AS amount FROM views.view_reissued_shipments r"
+            " LEFT JOIN views.view_orders o USING (order_id)").fetchone() or {}
+        cost = conn.execute(
+            "SELECT coalesce(sum(reissues), 0) AS reissues, coalesce(sum(refunds_amount), 0) AS refunds,"
+            " coalesce(sum(claims), 0) AS claims, coalesce(sum(tokens_in), 0) AS tokens_in,"
+            " coalesce(sum(tokens_out), 0) AS tokens_out FROM views.view_cost_per_incident").fetchone() or {}
+    totals = ProfitTotals(
+        revenue=Decimal(orders.get("revenue", 0)), reissued_amount=Decimal(reissued.get("amount", 0)),
+        reissues=int(cost.get("reissues", 0)), refunds=Decimal(cost.get("refunds", 0)),
+        claims=int(cost.get("claims", 0)), tokens_in=int(cost.get("tokens_in", 0)),
+        tokens_out=int(cost.get("tokens_out", 0)),
+    )
+    return profit_lines(totals, prices, position)
 
 
 # -- retraso de las vistas ----------------------------------------------------------------------
