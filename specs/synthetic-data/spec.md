@@ -160,6 +160,29 @@ La inyección SHALL permitir, con el sistema parado, perder el contenido de `eda
 - **WHEN** se borra y se crea de nuevo
 - **THEN** tiene las mismas particiones, sin mensajes, y el primer mensaje republicado de cada partición recibe el offset 0
 
+### Requirement: Fallos de las dependencias de V2
+
+La inyección SHALL permitir hacer inestables las dependencias de la versión 2 (design.md §15). En el servidor MCP de correo, dos modos: `down` (la llamada a `send_email` termina en un error de la herramienta sin guardar el correo) e `invalid` (devuelve una salida sin `message_id` o con la dirección del destinatario, sin guardar el correo). En el agente A2A del transportista, tres: `slow` (tarda más que `A2A_TIMEOUT_S` en completar la tarea), `unauthorized` (la consulta lleva un token que el agente no acepta y responde 401) y `bad_card` (la Agent Card anuncia otra skill). Cada modo tiene una probabilidad. La elección es determinista dada la semilla y el modo: en el correo, la `idempotency_key` y el número de llamada con esa clave; en el transportista, la incidencia. Las llamadas y consultas no elegidas se atienden como sin fallos.
+
+#### Scenario: Elección reproducible de los fallos de V2
+
+- **GIVEN** dos ejecuciones con la misma semilla, el mismo modo y la misma probabilidad
+- **WHEN** llega la n-ésima llamada con la misma `idempotency_key`, o la consulta de la misma incidencia
+- **THEN** las dos fallan o las dos se atienden sin fallo
+
+#### Scenario: Servidor de correo inestable
+
+- **GIVEN** el servidor de correo con el modo `down` o `invalid` y una llamada elegida
+- **WHEN** se invoca `send_email`
+- **THEN** responde con un error de la herramienta (`down`) o con una salida sin `message_id` o con la dirección (`invalid`)
+- **AND** el buzón no cambia
+
+#### Scenario: Agente del transportista inestable con fallos inyectados
+
+- **GIVEN** el agente del transportista con el modo `slow`, `unauthorized` o `bad_card` y una incidencia elegida
+- **WHEN** el planificador lo consulta
+- **THEN** la tarea no se completa dentro de `A2A_TIMEOUT_S` (`slow`), la petición recibe un 401 (`unauthorized`) o la Agent Card no anuncia `delivery_options` (`bad_card`)
+
 ### Requirement: Reinicio de offsets de un grupo
 
 La inyección SHALL permitir llevar los offsets de uno o todos los grupos de consumidores al principio de `eda.events` con el sistema parado, para reproducir el log completo ante los consumidores y los ejecutores.
