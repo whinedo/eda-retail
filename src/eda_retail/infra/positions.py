@@ -16,6 +16,7 @@ import logging
 import time
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
+from typing import Any
 
 import psycopg
 from confluent_kafka import OFFSET_BEGINNING, Consumer, KafkaError, KafkaException, Message, TopicPartition
@@ -40,13 +41,20 @@ _WATERMARK_RETRY_S = 0.2
 
 def high_watermark(kafka: Consumer, tp: TopicPartition, *, timeout: float = _METADATA_TIMEOUT,
                    sleep: Callable[[float], None] = time.sleep) -> int:
-    """La marca de agua alta de `tp`. Reintenta los errores transitorios de líder y metadata hasta `timeout`
+    """La marca de agua alta de `tp`, con los reintentos de `watermark_offsets`."""
+    return watermark_offsets(kafka, tp, timeout=timeout, sleep=sleep)[1]
+
+
+def watermark_offsets(kafka: Consumer, tp: TopicPartition, *, timeout: float = _METADATA_TIMEOUT,
+                      sleep: Callable[[float], None] = time.sleep) -> tuple[int, int]:
+    """Las marcas de agua baja y alta de `tp`. Reintenta los errores transitorios de líder y metadata hasta `timeout`
     segundos (cada intento espera solo lo que queda del plazo); otro error, o el mismo más allá del plazo, se
     propaga."""
     deadline = time.monotonic() + timeout
     while True:
         try:
-            return kafka.get_watermark_offsets(tp, timeout=max(deadline - time.monotonic(), 0.1))[1]
+            low, high = kafka.get_watermark_offsets(tp, timeout=max(deadline - time.monotonic(), 0.1))
+            return low, high
         except KafkaException as exc:
             if exc.args[0].code() not in _TRANSIENT_WATERMARK_ERRORS or time.monotonic() >= deadline:
                 raise
@@ -88,6 +96,17 @@ def caught_up(applied: Mapping[int, int], highs: Mapping[int, int]) -> bool:
 def pending_messages(consumed: Mapping[int, int], highs: Mapping[int, int]) -> int:
     """Mensajes que faltan por leer hasta la marca de agua alta de cada partición (el lag)."""
     return sum(max(0, high - 1 - consumed.get(p, -1)) for p, high in highs.items())
+
+
+def positioned_lags(rows: Iterable[Mapping[str, Any]], highs: Mapping[int, int],
+                    consumers: Iterable[str]) -> dict[str, int]:
+    """Lag de cada consumidor posicionado (`event_log`, cada proyector) desde sus filas de `*.offsets` (consumidor,
+    partición y último offset aplicado) frente a las marcas de agua altas; sin fila, la partición está sin leer."""
+    consumed: dict[str, dict[int, int]] = {c: {} for c in consumers}
+    for r in rows:
+        if r["consumer"] in consumed:
+            consumed[r["consumer"]][r["kafka_partition"]] = r["kafka_offset"]
+    return {c: pending_messages(offsets, highs) for c, offsets in consumed.items()}
 
 
 class PositionedConsumer:

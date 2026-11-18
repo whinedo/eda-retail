@@ -126,6 +126,15 @@ def test_high_watermark_retries_while_the_partition_has_no_leader():
     assert kafka.calls == 3 and len(slept) == 2
 
 
+def test_watermark_offsets_gives_both_marks_with_the_same_retries():
+    """Las marcas baja y alta (diagnóstico de eda-support) se reintentan igual que la alta"""
+    from confluent_kafka import KafkaError, TopicPartition
+
+    kafka = _Watermarks(KafkaError.UNKNOWN_TOPIC_OR_PART)
+    slept = []
+    assert positions.watermark_offsets(kafka, TopicPartition("t", 0), timeout=10, sleep=slept.append) == (0, 7)
+    assert kafka.calls == 2 and len(slept) == 1
+
 def test_high_watermark_does_not_retry_other_errors():
     """Otro error de Kafka se propaga al primer intento, sin reintentar"""
     import pytest

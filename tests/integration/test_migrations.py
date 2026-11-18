@@ -145,6 +145,17 @@ def test_reissued_shipments_migration_reprojects_operations(scratch_db):
     assert [r[0] for r in offsets] == ["orders"] and [r[0] for r in applied] == ["orders"]
 
 
+def test_support_runs_migration_reverts(scratch_db):
+    """0028 crea support.runs (spec support, «Registro de las ejecuciones») y su downgrade borra el esquema"""
+    upgrade(scratch_db)
+    assert {"id", "action", "args", "token", "origin", "started_at", "finished_at", "outcome", "summary"} == _columns(
+        scratch_db, "runs", "support")
+    downgrade(scratch_db, "0027")
+    assert _columns(scratch_db, "runs", "support") == set()
+    upgrade(scratch_db)
+    assert "outcome" in _columns(scratch_db, "runs", "support")
+
+
 def test_mail_server_migration_reverts(scratch_db):
     """0021 crea el esquema mail_server con su directorio y su buzón, y su downgrade lo borra"""
     upgrade(scratch_db)

@@ -164,7 +164,7 @@ Los comandos SHALL invocarse de forma síncrona por HTTP (REST): cada sistema ex
 
 ### Requirement: Propiedad de los datos
 
-Cada componente SHALL escribir únicamente en sus propias tablas, agrupadas en un esquema propio de PostgreSQL (`intake`, `interpreter`, `planner`, `replanner`, `orchestrator`, `executor_<acción>`, `inventory`, `event_log`, `views`). Los componentes MUST comunicarse solo por eventos en Kafka y por comandos REST: ninguno escribe ni lee las tablas de escritura de otro, ni hay claves foráneas o joins entre tablas de componentes distintos. Lo que un sistema necesita de otro dominio lo consulta en las proyecciones del lado de lectura (spec `cqrs-views`, "Consultas al lado de lectura") o le llega en el comando. La base de datos es una sola para la PoC.
+Cada componente SHALL escribir únicamente en sus propias tablas, agrupadas en un esquema propio de PostgreSQL (`intake`, `interpreter`, `planner`, `replanner`, `orchestrator`, `executor_<acción>`, `inventory`, `event_log`, `views`). Los componentes MUST comunicarse solo por eventos en Kafka y por comandos REST: ninguno escribe ni lee las tablas de escritura de otro, ni hay claves foráneas o joins entre tablas de componentes distintos. Lo que un sistema necesita de otro dominio lo consulta en las proyecciones del lado de lectura (spec `cqrs-views`, "Consultas al lado de lectura") o le llega en el comando. La base de datos es una sola para la PoC. La herramienta de soporte técnico `eda-support` no es un componente: solo en sus acciones de recuperación, con sus condiciones previas comprobadas y confirmadas, escribe en tablas de otros esquemas (spec `support`); su propio registro va en el esquema `support`.
 
 #### Scenario: Dato de otro componente
 
