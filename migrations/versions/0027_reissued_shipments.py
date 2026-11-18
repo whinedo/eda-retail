@@ -2,6 +2,10 @@
 fila por `ShipmentReissued`, con el `event_id` como clave, para que la consulta de beneficio cobre el transporte del
 pedido reenviado. Solo identificadores y la posición en Kafka.
 
+El proyector ya pasó los `ShipmentReissued` antiguos de un volumen existente: la migración vacía sus vistas, su
+posición (`views.offsets`) y sus eventos aplicados (`views.applied_events`), como hace la reconstrucción, para que
+vuelva a consumir `eda.events` desde el principio (retención infinita) y la tabla nueva tenga también el pasado.
+
 Revision ID: 0027
 Revises: 0026
 """
@@ -12,6 +16,11 @@ revision = "0027"
 down_revision = "0026"
 branch_labels = None
 depends_on = None
+
+
+PROJECTOR = "operations"
+VIEWS = ("view_incident_metrics", "view_llm_calls", "view_step_failures", "view_carrier_consults",
+         "view_operations_steps")
 
 
 def upgrade() -> None:
@@ -26,6 +35,10 @@ CREATE TABLE views.view_reissued_shipments (
     kafka_offset    BIGINT      NOT NULL
 )"""
     )
+    for table in VIEWS:
+        op.execute(f"DELETE FROM views.{table}")
+    op.execute(f"DELETE FROM views.offsets WHERE consumer = '{PROJECTOR}'")
+    op.execute(f"DELETE FROM views.applied_events WHERE projector = '{PROJECTOR}'")
 
 
 def downgrade() -> None:
