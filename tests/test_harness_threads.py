@@ -160,6 +160,43 @@ def test_a_crash_of_the_threaded_interpreter_restarts_its_consumer(monkeypatch):
     assert h.consumer_crashes == 1 and crashed == {"interpreter"}
 
 
+class _StuckConsumer(_Consumer):
+    """Su commit no vuelve hasta `release`, como un commit síncrono de librdkafka tras perder el coordinador (E9)."""
+
+    def __init__(self, release: threading.Event) -> None:
+        super().__init__(["m1"])
+        self.release = release
+        self.in_commit = threading.Event()
+
+    def commit(self, msg):
+        self.in_commit.set()
+        self.release.wait(10)
+        super().commit(msg)
+
+
+def test_a_consumer_whose_thread_is_still_alive_is_not_closed_from_another_thread(monkeypatch):
+    """Al parar, un consumidor cuyo hilo sigue vivo tras la espera no se cierra desde el hilo principal (se colgaba
+    E9) y el diagnóstico lo da por vivo"""
+    monkeypatch.setattr(harness, "JobWorker", _Worker)
+    monkeypatch.setattr(harness, "JOIN_TIMEOUT_S", 0.1)
+    release = threading.Event()
+    consumer = _StuckConsumer(release)
+    h = _bare()
+    h.targets = {}
+    h._deliveries = [(FaultyDelivery(h._tracked(consumer), FaultPlan()), lambda: h._tracked(consumer))]
+    h._threaded = {"interpreter"}
+
+    h._start_threads()
+    try:
+        assert _wait(consumer.in_commit.is_set)
+        h._stop_threads()
+        h._close_deliveries()
+        assert not consumer.closed
+        assert h.consumer_state() == {"interpreter": {"thread_alive": True}}
+    finally:
+        release.set()
+
+
 def test_run_does_not_finish_while_jobs_are_pending(monkeypatch):
     """El arnés no da la ejecución por terminada mientras quedan trabajos pendientes o en curso"""
     h = _bare(harness.RunConfig(seed=1, incidents=1, idle_seconds=0.05, timeout_seconds=10))

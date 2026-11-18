@@ -48,9 +48,9 @@ Fallos (spec experiments; L55):
 - E9 (spec synthetic-data, «Caída del broker»): con `RunConfig.tolerate_relay_errors`, el turno trata un lote que el
   broker no confirma como `ComponentRelay.run_until`: lo cuenta en `relay_errors` y sigue (las filas quedan
   pendientes), con el plazo de entrega `relay_flush_timeout_seconds`; `consumer_session_timeout_ms` acorta lo que un
-  commit espera sin broker. Un fallo de commit de offset (`KafkaException`)
+  commit espera sin broker. Un fallo de commit de offset (`KafkaException`, también si no se confirma en su plazo)
   reinicia el consumidor como cualquier caída, pero cuenta en `commit_failures` y no como veneno: el mensaje ya se
-  procesó y el inbox descarta la reentrega.
+  procesó y el inbox descarta la reentrega. Al parar, un consumidor cuyo hilo no termina no se cierra.
 
 Modos de idempotencia (E1, supuesto A3):
 - `full`: inbox en los consumidores y en los comandos, `effect_keys` y servicios con clave.
@@ -739,6 +739,7 @@ class Harness:
         self.timed_out: list[dict[str, Any]] = []  # pasos cuyo plazo venció con el paso pedido (E11)
         self.recovered: Counter[str] = Counter()  # resultados de un ejecutor colgado que se recupera (E12)
         self._threads: list[threading.Thread] = []
+        self._stuck: set[str] = set()  # hilos que siguen vivos tras la espera de `_stop_threads`
         self._workers: list[JobWorker] = []
         self._threaded = set(THREADED_CONSUMERS)
         self._seen_done = 0
@@ -1091,7 +1092,11 @@ class Harness:
             self._deliveries.append((delivery, factory))
 
     def _close_deliveries(self) -> None:
+        """Cierra los consumidores. Uno cuyo hilo sigue vivo se queda abierto: cerrarlo desde este hilo mientras el
+        suyo está dentro de librdkafka se bloquea sin límite (lo vio el CI de E9); el hilo es daemon."""
         for delivery, _ in self._deliveries:
+            if f"harness-{delivery.consumer.name}" in self._stuck:
+                continue
             with contextlib.suppress(Exception):
                 delivery.consumer.close()
 
@@ -1148,6 +1153,9 @@ class Harness:
             worker.stop(JOIN_TIMEOUT_S)
         for thread in self._threads:
             thread.join(JOIN_TIMEOUT_S)
+        self._stuck = {thread.name for thread in self._threads if thread.is_alive()}
+        if self._stuck:
+            log.warning("hilos que no terminan al parar: %s", ", ".join(sorted(self._stuck)))
         self._workers, self._threads = [], []
 
     def _command(self, target: str, command_type: str, correlation_id: str, payload: dict[str, Any], *,
@@ -1450,7 +1458,7 @@ class Harness:
         """Diagnóstico de cada consumidor de Kafka (E9). Uno que se atiende en los turnos: particiones asignadas con su
         posición (un error de Kafka queda en `error`). Uno con hilo propio: solo si el hilo sigue vivo; consultar su
         asignación desde este hilo mientras el suyo está en `poll` se bloquea sin límite (lo vio el CI de E9)."""
-        alive = {t.name: t.is_alive() for t in self._threads}
+        alive = {t.name: t.is_alive() for t in self._threads} | dict.fromkeys(self._stuck, True)
         state: dict[str, dict[str, Any]] = {}
         for delivery, _ in self._deliveries:
             consumer = delivery.consumer
