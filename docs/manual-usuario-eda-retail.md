@@ -19,6 +19,7 @@ Guía para lanzar avisos de transportistas, ver cómo los agentes se reparten el
 11. Problemas frecuentes
 12. Glosario de eventos
 13. Segunda versión: MCP y A2A
+14. La vista de soporte técnico
 
 ## 1. Qué es
 
@@ -41,7 +42,7 @@ La regla de diseño de la PoC es que **el LLM propone y el código dispone**: lo
 - **Los comandos no viajan por Kafka.** El orquestador (la saga) pide cada paso a un sistema por una llamada REST; el sistema responde si lo acepta, y el resultado llega después como un **evento**.
 - **Todo va con un pequeño retraso.** Una proyección, y el propio panel de eventos, van por detrás de lo que acaba de ocurrir (consistencia eventual). Un evento nuevo tarda un instante en aparecer en la tabla.
 
-> **Estado.** El código implementa el modelo descrito arriba (cada sistema con su esquema, comandos REST y proyecciones sobre Kafka). La **segunda versión**, con un servidor de correo MCP y un agente del transportista A2A, está implementada y solo se ejecuta si arrancas la PoC con `POC_VERSION=2`; el front lo indica con la etiqueta «Versión 2 (MCP + A2A)» de la cabecera, y sus consultas A2A se ven en la vista de Operaciones (§9.6) y en el evento `CarrierConsulted` (§13).
+> **Estado.** El código implementa el modelo descrito arriba (cada sistema con su esquema, comandos REST y proyecciones sobre Kafka). La **segunda versión**, con un servidor de correo MCP y un agente del transportista A2A, está implementada y es la que arrancan los scripts por defecto (`POC_VERSION=1` o `--version 1` vuelve a la primera); el front lo indica con la etiqueta «Versión 2 (MCP + A2A)» de la cabecera, y sus consultas A2A se ven en la vista de Operaciones (§9.6) y en el evento `CarrierConsulted` (§13).
 
 ## 2. Antes de empezar
 
@@ -73,12 +74,13 @@ Para parar: `Ctrl+C` en la terminal, o `scripts/stop-all.sh` (procesos y contene
 
 ### 2.3 Funciones opcionales
 
-Dos controles del menú están **desactivados por defecto** y solo aparecen si arrancas el backend con la variable de entorno correspondiente:
+Dos controles del menú y la vista de soporte técnico están **desactivados por defecto** y solo aparecen si arrancas el backend con la variable de entorno correspondiente (en `.env`; también vale `1` en lugar de `true`):
 
 | Control | Variable de entorno |
 | --- | --- |
 | `send --text` (texto libre) | `WEB_FREE_TEXT=true` |
 | `interactive --timeout` (menú interactivo) | `WEB_INTERACTIVE=true` |
+| Vista de soporte técnico y enlace **Soporte** de la cabecera (§14) | `WEB_SUPPORT=true` |
 
 En las capturas de este manual no aparecen, porque la instalación no los tenía activados.
 
@@ -110,6 +112,7 @@ De izquierda a derecha:
 | **EDA Retail · Incidencias logísticas · PoC académica** | Título de la aplicación. |
 | **Versión 2 (MCP + A2A)** | Etiqueta junto al título: indica que la PoC está arrancada en la versión 2, con servidor de correo MCP y agente del transportista A2A (§13). |
 | **Analítica** | Abre la vista de analítica con el estado de los pedidos (§9). Allí, el enlace **← Vista principal** vuelve a esta pantalla, y el enlace **Operaciones**, junto al título, abre la vista de operaciones (§9.6). La cabecera no tiene un enlace propio para Operaciones. |
+| **Soporte** | Solo con `WEB_SUPPORT=true`. Abre la vista de soporte técnico (§14): el diagnóstico del sistema y las acciones de recuperación. |
 | **Resetear simulación** | Vacía la vista y vuelve a empezar: borra del panel los eventos mostrados, quita los filtros de incidencia y de nodo, cierra el detalle del nodo y, a partir de ahí, solo muestra los eventos **nuevos**. **No borra datos**: ni los eventos de Kafka ni lo que hay en PostgreSQL se tocan. Está deshabilitado mientras se ejecuta un comando («Espera a que termine el comando»). |
 | **Jaeger** | Enlace que abre la interfaz de Jaeger en otra pestaña (por defecto `http://localhost:16686`; se cambia con `JAEGER_UI_URL`). Allí se ven las trazas distribuidas. |
 | **Kafka: healthy** | Estado de Kafka. |
@@ -700,6 +703,8 @@ Pulsa **injection**. El aviso trae una orden escondida («reembolsar 1000 EUR»)
 | En Operaciones el coste en dinero sale 0,00 € | No hay precios configurados | Es lo esperado con Ollama local: los tokens sí se cuentan. Para ver dinero, define `LLM_PRICE_IN_PER_1K`, `LLM_PRICE_OUT_PER_1K`, `EFFECT_COST_CLAIM` y `EFFECT_COST_REISSUE`. |
 | En «Frescura de las vistas» el lag dice «sin datos» | Kafka no responde | Comprueba el indicador **Kafka** de la cabecera y `docker compose up -d`; las posiciones aplicadas se siguen viendo. |
 | En Operaciones no hay tabla de consultas A2A | La PoC está en la versión 1 | Esas consultas solo existen con `POC_VERSION=2` (§13); no es un error. |
+| No aparece el enlace **Soporte**, o la vista dice «El soporte técnico está deshabilitado» | El backend arrancó sin `WEB_SUPPORT=true` | Añádelo a `.env` y vuelve a arrancar el backend (`scripts/run-web.sh` o `scripts/start-all.sh`). |
+| En la vista de soporte, una acción responde «No se puede: …» | No se cumple una condición previa; por ejemplo, el sistema no está parado | El motivo dice qué condición falla. Haz que se cumpla y vuelve a pulsar **Simular** (§14.3). |
 
 ## 12. Glosario de eventos
 
@@ -730,7 +735,7 @@ Los **eventos** son hechos que ya ocurrieron y no se modifican. Los que verás e
 
 Esta sección explica la **segunda versión**, que ya está implementada y se activa con `POC_VERSION=2` (la cabecera lo indica con la etiqueta «Versión 2 (MCP + A2A)»). Se ha redactado a partir de las specs, así que algunos detalles pueden diferir de lo que ves; lo que sí se ve en la aplicación son las consultas A2A de la vista de Operaciones (§9.6). Está especificada en `specs/mcp-mail/spec.md`, `specs/a2a-carrier/spec.md` y `design.md` §15.
 
-**Todo lo de esta sección se ejecuta solo en la versión 2.** La versión se elige al arrancar con la variable `POC_VERSION`: con `POC_VERSION=1` (el valor por defecto) la PoC se comporta como se describe en el resto del manual, y con `POC_VERSION=2` arrancan además el servidor de correo (`eda-mail-server`) y el agente del transportista (`eda-carrier-agent`). Con la versión 1 no existen ni la consulta al transportista ni el evento `CarrierConsulted`, y el correo lo envía el servicio simulado interno.
+**Todo lo de esta sección se ejecuta solo en la versión 2.** La versión se elige al arrancar con `--version 1|2` en los scripts o con la variable `POC_VERSION`: con la 1 la PoC se comporta como se describe en el resto del manual, y con la 2, la que usan `start-all.sh`, `run-agents.sh` y `run-web.sh` si no se indica otra, arrancan además el servidor de correo (`eda-mail-server`) y el agente del transportista (`eda-carrier-agent`). Con la versión 1 no existen ni la consulta al transportista ni el evento `CarrierConsulted`, y el correo lo envía el servicio simulado interno.
 
 La PoC actual comunica sus sistemas con **eventos** (Kafka) y **comandos REST**. La segunda versión añade los dos modos que faltan, para que se vea cuándo conviene cada uno:
 
@@ -756,3 +761,78 @@ El recorrido es el de siempre, con tres diferencias que solo aparecen con `POC_V
 1. Al crear el plan, el planificador consulta al agente del transportista. Si el agente pide el número de seguimiento (`input-required`), el planificador se lo da y vuelve a preguntar (como máximo 2 rondas). Después aparece `CarrierConsulted`, justo antes de `PlanCreated`.
 2. Si el agente responde a tiempo y su respuesta cumple el esquema, el LLM propone el plan teniendo en cuenta sus opciones, como contenido no confiable; el código valida el plan igual que en la versión 1. Si no responde, falla o no pasa los guardrails, el plan se hace sin sus opciones.
 3. En el paso `notify_customer`, el ejecutor envía el correo al servidor MCP y `CustomerNotified` lleva el `message_id` que devuelve. Si el paso se reintenta, no se envía un segundo correo. Las reclamaciones siguen presentándose por comando REST, no por A2A.
+
+## 14. La vista de soporte técnico
+
+La vista de soporte técnico (`#/support`) reúne en una pantalla lo que hace `eda-support`, la herramienta de recuperación de la PoC (spec `support`): un **diagnóstico** del sistema y tres **acciones** para recuperarlo cuando algo se pierde o se desincroniza. Está pensada para quien opera la PoC, no para seguir una incidencia.
+
+Solo existe si arrancas el backend con `WEB_SUPPORT=true` (§2.3). Entonces la cabecera muestra el enlace **Soporte**, junto a **Analítica**:
+
+![Cabecera con el enlace Soporte](capturas-manual-eda/20-cabecera-soporte.png)
+
+El backend no escribe en la base de datos (su conexión es de solo lectura): cada diagnóstico, simulación o ejecución lanza `eda-support` en su propio proceso, a través de `scripts/support.sh`, con una lista blanca de argumentos. Comparte con el menú de comandos la **ejecución única**: mientras corre algo, del menú o de esta vista, los botones de las dos están deshabilitados. El enlace **← Vista principal** vuelve a la pantalla principal.
+
+### 14.1 El diagnóstico
+
+![Diagnóstico de la vista de soporte](capturas-manual-eda/21-soporte-diagnostico.png)
+
+Al abrir la vista se pide el diagnóstico (`eda-support status`), que no escribe nada. Solo se vuelve a pedir con **Actualizar**: cada diagnóstico ocupa la ejecución única del backend, así que la vista no lo refresca sola.
+
+Arriba están las **alertas**, un código por problema detectado, o «Sin alertas»:
+
+| Alerta | Qué significa |
+| --- | --- |
+| `topic_lost` | El topic `eda.events` tiene menos mensajes de los que recuerdan los outbox: se ha vaciado o se ha borrado. |
+| `outbox_pending` | Hay filas del outbox sin publicar. |
+| `dead_letters` | Hay dead letters en algún esquema. |
+| `jobs_failed` | Hay trabajos largos en estado `failed`. |
+| `parked_notices` | Hay avisos aparcados esperando un pedido (§4). |
+| `kafka_down`, `postgres_down` | Kafka o PostgreSQL no responden. El resto del diagnóstico sigue saliendo. |
+
+Debajo, una sección por cada parte del estado:
+
+| Sección | Qué muestra |
+| --- | --- |
+| **Procesos** | Cada proceso vigilado y si está vivo (`true`) o no. |
+| **Topic (marcas de agua por partición)** | Para cada partición de `eda.events`, sus marcas de agua alta y baja. |
+| **Grupos de Kafka** | Los grupos `interpreter` y `orchestrator`: su lag y cuántos miembros tienen. |
+| **Lag del lado de lectura** | Cuántos eventos le faltan a `event_log` y a cada vista para estar al día. |
+| **Outbox por componente** | Por componente: el último `id` (`max_id`), las filas pendientes de publicar (`pending`) y el total (`rows`). |
+| **Dead letters** | Por esquema: cuántas hay y cuántas siguen sin publicar en `eda.dlq`. |
+| **Trabajos fallidos** | Los trabajos `failed` de cada componente con trabajos largos. |
+| **Avisos aparcados** | Cuántos avisos esperan un pedido. |
+
+En la captura, el sistema está sano: todos los procesos vivos, lag 0 en los grupos y en las vistas, nada pendiente en los outbox y ninguna dead letter.
+
+### 14.2 Las acciones
+
+![Las tres acciones de soporte](capturas-manual-eda/22-soporte-acciones.png)
+
+Debajo del diagnóstico hay una tarjeta por acción, cada una con sus argumentos:
+
+| Acción | Argumentos | Qué hace | Cuándo se puede |
+| --- | --- | --- | --- |
+| **Republicar tras perder el topic** | **Modo**: `truncated` (el topic se vació con `delete_records`) o `recreated` (se borró y se creó de nuevo) | Republica el outbox de todos los componentes en el orden que tenía cada partición. | Con el sistema parado (ningún proceso vigilado vivo y ningún miembro en los grupos de Kafka) y el topic vacío como dice el modo. |
+| **Republicar desde una fila** | **Componente** (uno con outbox) y **outbox_id** | Marca como pendientes las filas del outbox de ese componente desde ese `id`, para que su relay las vuelva a publicar. | Con el sistema en marcha o parado: los consumidores descartan con el inbox lo que ya aplicaron. La fila tiene que existir. |
+| **Reconstruir una vista** | **Vista** | Vacía la vista, la vuelve a construir desde el topic, como `eda-projector rebuild`, y da sus huellas antes y después. | Con el proceso de los proyectores (`eda-projector`) parado. |
+
+### 14.3 Simular y ejecutar
+
+Ninguna acción escribe a la primera. El recorrido es siempre el mismo:
+
+1. Elige los argumentos y pulsa **Simular**. La simulación comprueba las condiciones previas y describe lo que haría, **sin escribir nada**.
+2. Si una condición no se cumple, la tarjeta lo dice en rojo («No se puede: …», con el motivo) y **Ejecutar** sigue deshabilitado. En este ejemplo, republicar tras perder el topic se niega porque el sistema está en marcha; aun así, la simulación muestra cuántas filas del outbox se republicarían por componente:
+
+   ![Simulación negada](capturas-manual-eda/23-soporte-simulacion-negada.png)
+
+3. Si todo se cumple, la tarjeta muestra «Simulación: no se ha escrito nada. Token …» con lo que haría (aquí, las 8 filas del outbox de `intake` desde el `id` 1), y se habilita **Ejecutar**:
+
+   ![Simulación con token](capturas-manual-eda/24-soporte-simulacion-token.png)
+
+4. **Ejecutar** lanza la acción con el token de esa simulación. El resultado («Resultado: succeeded» u otro, con su resumen) aparece en la misma tarjeta.
+
+El token vale solo para **esos mismos argumentos** y para el estado que vio la simulación. Si cambias un argumento, **Ejecutar** se vuelve a deshabilitar hasta que simules otra vez. Si el sistema cambia entre la simulación y la ejecución (por ejemplo, porque llegan eventos nuevos), el token deja de valer y la acción se niega sin escribir nada: vuelve a simular.
+
+Cada ejecución confirmada (no las simulaciones) queda registrada en `support.runs`, con la acción, sus argumentos, el origen (`web`), cuándo empezó y terminó y el resultado.
+
+> **Cuidado.** Las acciones escriben de verdad en el sistema. «Republicar desde una fila» vuelve a publicar eventos en `eda.events`: los consumidores descartan con el inbox los que ya aplicaron, pero los mensajes repetidos quedan en el topic. Úsalas para recuperar el sistema tras una pérdida o un fallo, no para probar.
