@@ -166,6 +166,37 @@ El harness SHALL ofrecer un modo multiproceso (`RunConfig.orchestrator_processes
 - **WHEN** termina o se aborta
 - **THEN** sus procesos están parados y su base de datos y su topic se han borrado
 
+### Requirement: E9 Caída de Kafka (H9)
+
+El sistema SHALL cumplir la hipótesis H9: si el broker de Kafka se para o se congela y vuelve, los componentes siguen aceptando comandos y guardando sus eventos en el outbox, el relay publica todo lo pendiente al volver el broker, no se pierde ningún evento, los mensajes que el broker recibe más de una vez (un lote sin confirmar que el productor reenvía y el relay vuelve a publicar) no repiten efectos ni filas, toda incidencia se cierra y se mantienen I1 a I5. El experimento SHALL ejecutarse en modo en proceso con 50 incidencias: cuando la mitad tienen un `PlanCreated` en el log, se corta el broker durante 30 s y en ese tiempo llegan 20 avisos más; después el broker vuelve y se ejecuta hasta cerrar todas las incidencias. Tres variantes (spec synthetic-data, «Caída del broker»): `baseline`, sin corte (los 20 avisos llegan en el mismo momento); `stopped`, el contenedor de Kafka se para y se arranca (conexión rechazada); y `paused`, el contenedor se congela y se descongela (conexiones abiertas sin respuesta). Mientras el broker no está, el relay de cada componente reintenta como `ComponentRelay.run_until` (spec event-backbone): un lote sin confirmar se deshace y sus filas siguen pendientes. Un commit de offset que falla con el broker caído hace caer al consumidor, que se reinicia sin confirmar el offset; Kafka vuelve a entregar el mensaje y el inbox lo descarta. El corte lo termina un temporizador a los 30 s, aunque un turno quede bloqueado en una llamada a Kafka, y los consumidores usan un `session.timeout.ms` de 6 s: sin broker, un commit síncrono espera un coordinador hasta ese plazo, y un consumidor recreado espera a que caduque el miembro anterior del grupo. El informe MUST dar, por variante: incidencias cerradas, resueltas y escaladas por motivo; duración real del corte; filas pendientes de outbox, máximas por componente durante el corte y al terminar; filas publicadas durante el corte; avisos aceptados durante el corte; errores de entrega del relay por componente; caídas de consumidores por fallo de commit; tiempo desde la vuelta del broker hasta vaciar el outbox; mensajes en el topic, filas de outbox, filas de `event_log` y mensajes repetidos (mensajes menos filas de `event_log`); descartes del inbox por consumidor; latencia (media, mediana y p95) y su cociente frente a `baseline`; e I1 a I5. Como diagnóstico, el informe da también, al terminar cada variante y antes de que `event_log` se ponga al día, el lag de cada grupo y, por consumidor, las particiones asignadas con su posición o, si tiene hilo propio, si el hilo sigue vivo. Cada variante con corte MUST provocar su efecto (al menos un error de entrega del relay y una fila de outbox pendiente durante el corte); si no, no cuenta como cumplida.
+
+#### Scenario: Broker parado
+
+- **GIVEN** la variante `stopped`, con incidencias en curso
+- **WHEN** el broker se para y vuelve a los 30 s
+- **THEN** durante el corte el relay no marca ninguna fila como publicada y el outbox acumula las pendientes
+- **AND** al volver, el relay las publica todas: no queda ninguna fila pendiente y cada evento del outbox está en `event_log`
+
+#### Scenario: Broker congelado
+
+- **GIVEN** la variante `paused`, con incidencias en curso
+- **WHEN** el broker se congela y se descongela a los 30 s
+- **THEN** ningún turno del relay se bloquea más que su plazo de entrega y no queda ninguna fila pendiente al terminar
+- **AND** los mensajes repetidos en el topic no repiten efectos (I2) ni filas en `event_log`
+
+#### Scenario: Avisos durante la caída
+
+- **GIVEN** el broker cortado en `stopped` o `paused`
+- **WHEN** llegan 20 avisos nuevos
+- **THEN** el intake los acepta todos, porque los comandos no pasan por Kafka
+- **AND** sus incidencias se cierran cuando el broker vuelve
+
+#### Scenario: Cumplimiento de H9
+
+- **GIVEN** la ejecución completa de E9
+- **WHEN** se evalúa la hipótesis
+- **THEN** H9 se cumple si en todas las variantes no queda ninguna fila de outbox pendiente, no se publicó ninguna durante el corte, cada evento del outbox está en `event_log`, todas las incidencias (también las de los avisos del corte) se cerraron, I1 a I5 no tienen violaciones y cada variante con corte provocó su efecto
+
 ### Requirement: E11 Entrega retrasada y planes revisados (H11)
 
 El sistema SHALL cumplir la hipótesis H11: con revisiones forzadas del plan y resultados de pasos que llegan tarde, ningún resultado obsoleto cambia el estado de la saga, salvo la excepción del supuesto A4, y se mantienen los invariantes I1 a I5. El escenario son 50 incidencias con un 50 % de fallos en `reserve_stock` (`fail_probability`), planes con pasos en paralelo, `step_delay_seconds` en `reserve_stock`, `reissue_shipment` y `file_claim` para que haya resultados de una `plan_version` anterior después de un `PlanRevised`, y un plazo de `ExecuteStep` más corto que parte de esos retrasos. El orquestador descarta un resultado obsoleto sin registrarlo en ningún sitio, así que el experimento los cuenta desde el log: es obsoleto el `StepCompleted` o `StepFailed` cuya `plan_version` es anterior a la vigente cuando el orquestador lo consume (salvo el de una compensación, que no lo es por la versión: spec incident-planning, «Eventos obsoletos»), y el de un paso cuyo plazo ya venció con el paso pedido (el plazo no deja evento: lo anota el harness al tratarlo). Un obsoleto cambia el estado de la saga si el orquestador emite algún evento con él como causa. La excepción A4: el `StepCompleted` tardío de un `reserve_stock` cancelado se marca completado y pide su `release_stock`, para no dejar la reserva sin liberar; esa compensación MUST pedirse una sola vez. El informe MUST dar: `PlanRevised` por incidencia, resultados obsoletos por versión y tras el plazo, los que cambiaron el estado de la saga (fuera de A4) y las compensaciones A4, compensaciones pedidas y completadas, y el número de incidencias escaladas por motivo.

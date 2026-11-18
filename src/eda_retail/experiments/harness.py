@@ -45,6 +45,12 @@ Fallos (spec experiments; L55):
   crea de nuevo (recreando productores y lado de lectura, con los grupos en 0 y la posición del lado de lectura en -1),
   y `republish` republica a la vez el outbox de todos los componentes en el orden que cada partición tenía
   (`outbox.republish_in_order`).
+- E9 (spec synthetic-data, «Caída del broker»): con `RunConfig.tolerate_relay_errors`, el turno trata un lote que el
+  broker no confirma como `ComponentRelay.run_until`: lo cuenta en `relay_errors` y sigue (las filas quedan
+  pendientes), con el plazo de entrega `relay_flush_timeout_seconds`; `consumer_session_timeout_ms` acorta lo que un
+  commit espera sin broker. Un fallo de commit de offset (`KafkaException`)
+  reinicia el consumidor como cualquier caída, pero cuenta en `commit_failures` y no como veneno: el mensaje ya se
+  procesó y el inbox descarta la reentrega.
 
 Modos de idempotencia (E1, supuesto A3):
 - `full`: inbox en los consumidores y en los comandos, `effect_keys` y servicios con clave.
@@ -76,7 +82,7 @@ from pathlib import Path
 from typing import Any, Self
 
 import psycopg
-from confluent_kafka import TopicPartition
+from confluent_kafka import KafkaException, TopicPartition
 from confluent_kafka.admin import AdminClient, NewTopic
 from mcp.server.mcpserver import MCPServer
 
@@ -97,7 +103,7 @@ from eda_retail.infra.effect_keys import EffectInProgress
 from eda_retail.infra.jobs import JobWorker, run_job_once
 from eda_retail.infra.kafka import make_consumer, make_producer
 from eda_retail.infra.migrations import upgrade
-from eda_retail.infra.outbox import ComponentRelay
+from eda_retail.infra.outbox import ComponentRelay, RelayDeliveryError
 from eda_retail.infra.positions import high_watermark
 from eda_retail.infra.schemas import qualified
 from eda_retail.intake import handler as intake
@@ -570,6 +576,11 @@ class RunConfig:
     # proceso; los demás componentes siguen aquí y les atienden los comandos por REST (`processes.CommandGateway`).
     orchestrator_processes: int = 0
     session_timeout_ms: int | None = None  # KAFKA_SESSION_TIMEOUT_MS de esas instancias; None: el de librdkafka
+    relay_flush_timeout_seconds: float = 30.0  # plazo de entrega de un lote del relay en cada turno (E9: corto)
+    tolerate_relay_errors: bool = False  # E9: un lote sin confirmar se cuenta y el turno sigue, como `run_until`
+    # E9: `session.timeout.ms` de los consumidores en proceso (intérprete y orquestador). Sin broker, un commit síncrono
+    # espera un coordinador hasta este plazo, y un consumidor recreado espera a que caduque el miembro anterior.
+    consumer_session_timeout_ms: int | None = None
 
     @property
     def external_orchestrator(self) -> bool:
@@ -647,6 +658,9 @@ class Harness:
         self._closables: list[Any] = []
         self.consumer_crashes = 0
         self.poison_messages = 0
+        self.relay_errors: Counter[str] = Counter()  # lotes sin confirmar por componente (E9)
+        self.commit_failures = 0  # caídas de un consumidor por un commit de offset fallido (E9)
+        self.relay_max_seconds = 0.0  # lo que más tardó un relay en un turno con `tolerate_relay_errors` (E9)
         self.outcomes: Counter[tuple[str, str]] = Counter()  # (consumidor, resultado) de cada mensaje
         self._inbox_off: frozenset[str] = frozenset()  # consumidores sin inbox (control de E21)
         self.effect_crashes = EffectRecordCrashes(config.faults)  # caídas entre efecto y registro (E22)
@@ -874,12 +888,14 @@ class Harness:
 
         factories: dict[str, Callable[[], EventConsumer]] = {
             interpreter.SCHEMA: lambda: interpreter.build_consumer(
-                self._connect(), make_consumer(s.kafka_bootstrap_servers, interpreter.SCHEMA),
+                self._connect(), make_consumer(s.kafka_bootstrap_servers, interpreter.SCHEMA,
+                                               session_timeout_ms=self.config.consumer_session_timeout_ms),
                 settings_for(interpreter.SCHEMA), self.llm, self.rules),
         }
         if not self.config.external_orchestrator:  # en modo multiproceso, el grupo es de las instancias
             factories[orchestrator.SCHEMA] = lambda: orchestrator.build_consumer(
-                self._connect(), make_consumer(s.kafka_bootstrap_servers, orchestrator.SCHEMA),
+                self._connect(), make_consumer(s.kafka_bootstrap_servers, orchestrator.SCHEMA,
+                                               session_timeout_ms=self.config.consumer_session_timeout_ms),
                 settings_for(orchestrator.SCHEMA), self.rules)
         return factories
 
@@ -1020,7 +1036,7 @@ class Harness:
 
     def step(self) -> int:
         """Un turno: relays, lado de lectura, consumidores, dispatcher y plazos. Devuelve cuánto avanzó."""
-        progressed = sum(r.run_once() + r.publish_dead_letters() for r in self._relays)
+        progressed = sum(self._publish(r) for r in self._relays)
         progressed += sum(r.run_once(timeout=0) for r in self._active_readers())
         for i, (delivery, factory) in enumerate(self._deliveries):
             if delivery.consumer.name in self._threaded:
@@ -1052,6 +1068,26 @@ class Harness:
             progressed += expire_once(self._timer_conn, self.settings, self.rules)
         progressed += interpreter.expire_parked(self._timer_conn)
         return progressed
+
+    def _publish(self, relay: ComponentRelay) -> int:
+        """Outbox y dead letters de un relay. Con `tolerate_relay_errors`, un lote que el broker no confirma (o un
+        productor que no puede encolar) se cuenta y el turno sigue, como `ComponentRelay.run_until`."""
+        timeout = self.config.relay_flush_timeout_seconds
+        if not self.config.tolerate_relay_errors:
+            return relay.run_once(flush_timeout=timeout) + relay.publish_dead_letters(flush_timeout=timeout)
+        started = time.monotonic()
+        try:
+            return relay.run_once(flush_timeout=timeout) + relay.publish_dead_letters(flush_timeout=timeout)
+        except (RelayDeliveryError, KafkaException, BufferError) as exc:
+            self.relay_errors[relay._schema] += 1
+            error = exc.args[0] if isinstance(exc, KafkaException) and exc.args else None
+            if error is not None and getattr(error, "fatal", lambda: False)():  # el productor ya no se recupera
+                log.error("relay de %s: error fatal del productor: %s", relay._schema, error)
+            else:
+                log.info("relay de %s sin confirmar: %s", relay._schema, type(exc).__name__)
+            return 0
+        finally:
+            self.relay_max_seconds = max(self.relay_max_seconds, time.monotonic() - started)
 
     def _result_freshness(self, command: CommandEnvelope) -> str:
         """E12: el resultado del comando llegará `stale` si su plazo ya se resolvió (venció o llegó otro resultado),
@@ -1088,7 +1124,11 @@ class Harness:
             self.consumer_crashes += 1
         msg = delivery.current
         key = (delivery.consumer.name, msg.partition(), msg.offset()) if msg is not None else None
-        if not isinstance(exc, ConsumerCrashed):
+        if isinstance(exc, KafkaException):  # commit de offset sin broker: el mensaje ya se procesó, no es veneno
+            log.warning("%s cae sin confirmar el offset: %r", delivery.consumer.name, exc)
+            with self._crash_lock:
+                self.commit_failures += 1
+        elif not isinstance(exc, ConsumerCrashed):
             log.warning("%s cae: %r", delivery.consumer.name, exc)
             if key is not None:
                 with self._crash_lock:
@@ -1207,6 +1247,25 @@ class Harness:
         topic = self.settings.events_topic
         lags = {group: group_lag(self._admin, group, topic, highs) for group in self._factories()}
         return lags | {reader.consumer: reader.lag() for reader in self._readers}
+
+    def consumer_state(self) -> dict[str, dict[str, Any]]:
+        """Diagnóstico de cada consumidor de Kafka (E9). Uno que se atiende en los turnos: particiones asignadas con su
+        posición (un error de Kafka queda en `error`). Uno con hilo propio: solo si el hilo sigue vivo; consultar su
+        asignación desde este hilo mientras el suyo está en `poll` se bloquea sin límite (lo vio el CI de E9)."""
+        alive = {t.name: t.is_alive() for t in self._threads}
+        state: dict[str, dict[str, Any]] = {}
+        for delivery, _ in self._deliveries:
+            consumer = delivery.consumer
+            entry: dict[str, Any] = {}
+            if consumer.name in self._threaded:  # también tras `_stop_threads`, que vacía `_threads`
+                entry["thread_alive"] = alive.get(f"harness-{consumer.name}", False)
+            else:
+                try:
+                    entry["positions"] = consumer.positions()
+                except Exception as exc:  # noqa: BLE001 — diagnóstico: no debe tumbar el experimento
+                    entry["error"] = repr(exc)
+            state[consumer.name] = entry
+        return state
 
     # -- mensajes veneno (E18) -----------------------------------------------------------------
     def dead_letter_consumers(self) -> list[tuple[str, str, Callable[[str | None], bool]]]:

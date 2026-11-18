@@ -112,6 +112,21 @@ def _invariants(report: dict[str, Any], prefix: str = "metrics") -> list[Check]:
     return [_check(report, f"{prefix}.invariants.{name}.violations", "0", lambda v: v == 0) for name in ("I1", "I2")]
 
 
+E9_VARIANTS = ("baseline", "stopped", "paused")
+
+
+def _e9(report: dict[str, Any]) -> list[Check]:
+    """H9 y, por variante, su cumplimiento, sin filas de outbox pendientes ni eventos perdidos, e I1 e I2."""
+    checks = [_check(report, "hypothesis.H9", "true", lambda v: v is True)]
+    for variant in E9_VARIANTS:
+        prefix = f"metrics.variants.{variant}"
+        checks += [_check(report, f"{prefix}.h9", "true", lambda v: v is True),
+                   _check(report, f"{prefix}.missing_in_log", "0", lambda v: v == 0),
+                   _check(report, f"{prefix}.open", "0", lambda v: v == 0),
+                   *_invariants(report, prefix)]
+    return checks
+
+
 def _e11(report: dict[str, Any]) -> list[Check]:
     inv = lookup(report, "metrics.invariants")
     broken = (MISSING if not isinstance(inv, dict)
@@ -334,6 +349,12 @@ CATALOG: dict[str, Entry] = {
         "el log y la traza.",
         "H7: para el 100 % de las seleccionadas se puede indicar qué agente propuso cada paso, con qué "
         "versión del plan y por qué.", _e7),
+    "e9": Entry(
+        "E9", "Mide la caída de Kafka, en proceso: 50 incidencias; con la mitad planificadas, el broker se corta 30 s "
+        "(parado con `docker stop` o congelado con `docker pause`) mientras llegan 20 avisos más, y después vuelve.",
+        "H9: en las tres variantes no queda ninguna fila de outbox pendiente, cada evento del outbox está en "
+        "`event_log`, se cierran todas las incidencias (también las de los avisos del corte), I1 a I5 sin violaciones "
+        "y cada variante con corte provoca algún error de entrega del relay y alguna fila pendiente.", _e9),
     "e11": Entry(
         "E11", "Mide los resultados que llegan tarde: un 50 % de fallos en `reserve_stock`, resultados retrasados "
         "en `reserve_stock`, `reissue_shipment` y `file_claim` y un plazo de `ExecuteStep` corto, para que haya "

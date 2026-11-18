@@ -228,6 +228,10 @@ class EventConsumer:
         [tp] = self._kafka.committed([TopicPartition(msg.topic(), msg.partition())], timeout=10)
         return tp.offset
 
+    def positions(self) -> dict[int, int]:
+        """Partición asignada → siguiente offset que leerá el consumidor (negativo si aún no tiene posición)."""
+        return {tp.partition: tp.offset for tp in self._kafka.position(self._kafka.assignment())}
+
     def run_once(self, timeout: float = 1.0) -> Outcome | None:
         msg = self.poll(timeout)
         if msg is None:
