@@ -26,6 +26,7 @@ from eda_retail.experiments.e11_late_results import run_e11
 from eda_retail.experiments.e12_executor_down_hung import run_e12
 from eda_retail.experiments.e13_compensation_failure import run_e13
 from eda_retail.experiments.e14_burst_backpressure import run_e14
+from eda_retail.experiments.e15_llm_degradation import run_e15
 from eda_retail.experiments.e16_zombie_consumer import run_e16
 from eda_retail.experiments.e17_parked import run_e17
 from eda_retail.experiments.e18_poison import run_e18
@@ -39,11 +40,11 @@ from eda_retail.llm.ollama_client import OllamaClient
 
 EXPERIMENTS: dict[str, Callable[..., Report]] = {
     "e1": run_e1, "e2": run_e2, "e3": run_e3, "e4": run_e4, "e5": run_e5, "e6": run_e6, "e7": run_e7,
-    "e11": run_e11, "e12": run_e12, "e13": run_e13, "e14": run_e14, "e16": run_e16, "e17": run_e17, "e18": run_e18, "e21": run_e21,
+    "e11": run_e11, "e12": run_e12, "e13": run_e13, "e14": run_e14, "e15": run_e15, "e16": run_e16, "e17": run_e17, "e18": run_e18, "e21": run_e21,
     "e22": run_e22, "e23": run_e23,
 }
 # Tamaño del escenario de cada experimento en la spec (E7 elige 10 de ellas al azar).
-DEFAULT_INCIDENTS = {"e1": 50, "e2": 50, "e3": 30, "e4": 200, "e5": 40, "e6": 50, "e7": 50, "e11": 50, "e12": 50, "e13": 50, "e14": 200, "e16": 50, "e17": 50, "e18": 100, "e21": 50,
+DEFAULT_INCIDENTS = {"e1": 50, "e2": 50, "e3": 30, "e4": 200, "e5": 40, "e6": 50, "e7": 50, "e11": 50, "e12": 50, "e13": 50, "e14": 200, "e15": 50, "e16": 50, "e17": 50, "e18": 100, "e21": 50,
                     "e22": 50, "e23": 50}
 LLM_EXPERIMENTS = {"e5", "e6"}  # con LLM real y repeticiones (spec «Repetición para el componente no determinista»)
 LLMS = {"oracle": lambda data, repetition: Oracle(data).client()}

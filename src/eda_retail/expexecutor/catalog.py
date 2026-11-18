@@ -215,6 +215,21 @@ def _e14(report: dict[str, Any]) -> list[Check]:
     return checks
 
 
+E15_VARIANTS = ("baseline", "invalid", "slow", "error")
+
+
+def _e15(report: dict[str, Any]) -> list[Check]:
+    """H15 y, por variante, su cumplimiento, sin planes de salidas inválidas ni pasos tras el escalado, e I1 e I2."""
+    checks = [_check(report, "hypothesis.H15", "true", lambda v: v is True)]
+    for variant in E15_VARIANTS:
+        prefix = f"metrics.variants.{variant}"
+        checks += [_check(report, f"{prefix}.h15", "true", lambda v: v is True),
+                   _check(report, f"{prefix}.plans_from_invalid_output", "[]", lambda v: v == []),
+                   _check(report, f"{prefix}.steps_after_escalation", "[]", lambda v: v == []),
+                   *_invariants(report, prefix)]
+    return checks
+
+
 E22_VARIANTS = ("execute_step_2", "execute_step_4", "execute_step_8", "other_commands", "same_key",
                 "effect_record_crash")
 E22_SERVICE_ACTIONS = ("notify_customer", "file_claim", "reserve_stock", "reissue_shipment", "issue_refund")
@@ -312,6 +327,13 @@ CATALOG: dict[str, Entry] = {
         "H14: en `backpressure` hay al menos un 503, ningún ejecutor supera su capacidad, las colas terminan "
         "vacías, ningún paso tiene `ExecuteStep` con `command_id` distinto, todas las incidencias se cierran e I1 a "
         "I5 no tienen violaciones.", _e14),
+    "e15": Entry(
+        "E15", "Mide la degradación del LLM del planner y del replanner, en proceso: 50 incidencias con un 30 % de "
+        "fallos en `reissue_shipment` y cuatro variantes del oráculo: sin degradación, un 60 % de salidas inválidas, "
+        "0,5 s por llamada y un 30 % de llamadas que fallan, estas dos con un plazo de plan de 4 s.",
+        "H15: en todas las variantes se cierran todas las incidencias, ningún `PlanCreated` ni `PlanRevised` viene de "
+        "una llamada que no pasó la validación, no se pide ningún paso tras el escalado (salvo compensaciones), I1 a "
+        "I5 sin violaciones y cada variante con degradación provoca su efecto.", _e15),
     "e16": Entry(
         "E16", "Mide un consumidor zombie en modo multiproceso: dos instancias del orquestador en el mismo grupo, "
         "50 incidencias en curso y un `SIGSTOP` a la que posee más particiones durante más tiempo que "
