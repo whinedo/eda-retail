@@ -330,7 +330,7 @@ CATALOG: dict[str, Entry] = {
     "e15": Entry(
         "E15", "Mide la degradación del LLM del planner y del replanner, en proceso: 50 incidencias con un 30 % de "
         "fallos en `reissue_shipment` y cuatro variantes del oráculo: sin degradación, un 60 % de salidas inválidas, "
-        "0,5 s por llamada con un plazo de plan de 4 s y un 30 % de llamadas que fallan.",
+        "0,5 s por llamada y un 30 % de llamadas que fallan, estas dos con un plazo de plan de 4 s.",
         "H15: en todas las variantes se cierran todas las incidencias, ningún `PlanCreated` ni `PlanRevised` viene de "
         "una llamada que no pasó la validación, no se pide ningún paso tras el escalado (salvo compensaciones), I1 a "
         "I5 sin violaciones y cada variante con degradación provoca su efecto.", _e15),

@@ -9,7 +9,9 @@ variantes del cliente oráculo del planner y del replanner (`DegradedLlm`):
   `LLM_MAX_GENERATIONS` y, si las agota, el planner escala con `llm_output_invalid`.
 - `slow`: 0,5 s por llamada y un plazo de `CreatePlan` y `RevisePlan` de 4 s; la cola del planner supera el plazo, la
   saga escala con `plan_timeout` y los planes que llegan después no deben pedir pasos.
-- `error`: un 30 % de las llamadas lanzan una excepción; el worker reintenta el trabajo con backoff.
+- `error`: un 30 % de las llamadas lanzan una excepción; el worker reintenta el trabajo con backoff. Un trabajo que
+  agota `JOB_MAX_ATTEMPTS` queda `failed` sin eventos y solo el plazo del plan cierra la incidencia, así que `error`
+  usa el mismo plazo corto que `slow`.
 
 Las métricas salen del log (`event_log.events`, en orden de `seq`) y de los `command_jobs` del planner y del replanner.
 H15: en todas las variantes, ninguna incidencia abierta, ningún evento de plan cuya última llamada al LLM (misma
@@ -35,7 +37,8 @@ from eda_retail.synthetic.generator import generate
 from eda_retail.synthetic.llm_faults import DegradedLlm
 
 FAIL_PROBABILITY = {"reissue_shipment": 0.3}
-PLAN_TIMEOUT_S = 4.0  # plazo de CreatePlan y RevisePlan en `slow`
+PLAN_TIMEOUT_S = 4.0  # plazo de CreatePlan y RevisePlan en `slow` y `error`
+SHORT_PLAN_DEADLINE = ("slow", "error")
 VARIANTS: dict[str, dict[str, Any] | None] = {
     "baseline": None,
     "invalid": {"mode": "invalid", "probability": 0.6},
@@ -111,6 +114,12 @@ def job_attempts(h: Harness) -> dict[str, dict[str, int]]:
     return out
 
 
+def plan_timeout_for(variant: str, seconds: float) -> float | None:
+    """Plazo de plan de la variante: corto en `slow` (la cola supera el plazo) y en `error` (un trabajo que agota sus
+    intentos no publica nada); None (el de la configuración) en las demás."""
+    return seconds if variant in SHORT_PLAN_DEADLINE else None
+
+
 def run_variant(base: Settings, variant: str, *, seed: int, incidents: int,
                 plan_timeout_s: float = PLAN_TIMEOUT_S) -> dict[str, Any]:
     data = generate(seed, incidents)
@@ -119,7 +128,7 @@ def run_variant(base: Settings, variant: str, *, seed: int, incidents: int,
     if degradation is not None:
         llm = DegradedLlm(llm, seed=seed, **degradation)
     config = RunConfig(seed=seed, incidents=incidents, faults=FaultPlan(seed=seed, fail_probability=FAIL_PROBABILITY),
-                       plan_timeout_seconds=plan_timeout_s if variant == "slow" else None)
+                       plan_timeout_seconds=plan_timeout_for(variant, plan_timeout_s))
     with Harness(base, config, data=data, llm=llm) as h:
         h.send_notices()
         result = h.result(h.run_until_closed())
