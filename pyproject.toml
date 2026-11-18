@@ -35,6 +35,7 @@ eda-notice = "eda_retail.synthetic.cli:main"
 eda-web = "eda_retail.web.cli:main"
 eda-mail-server = "eda_retail.mail_server.cli:main"
 eda-carrier-agent = "eda_retail.carrier_agent.cli:main"
+eda-support = "eda_retail.support.cli:main"
 
 [dependency-groups]
 dev = [

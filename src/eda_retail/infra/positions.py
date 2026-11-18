@@ -16,6 +16,7 @@ import logging
 import time
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
+from typing import Any
 
 import psycopg
 from confluent_kafka import OFFSET_BEGINNING, Consumer, KafkaError, KafkaException, Message, TopicPartition
@@ -88,6 +89,17 @@ def caught_up(applied: Mapping[int, int], highs: Mapping[int, int]) -> bool:
 def pending_messages(consumed: Mapping[int, int], highs: Mapping[int, int]) -> int:
     """Mensajes que faltan por leer hasta la marca de agua alta de cada partición (el lag)."""
     return sum(max(0, high - 1 - consumed.get(p, -1)) for p, high in highs.items())
+
+
+def positioned_lags(rows: Iterable[Mapping[str, Any]], highs: Mapping[int, int],
+                    consumers: Iterable[str]) -> dict[str, int]:
+    """Lag de cada consumidor posicionado (`event_log`, cada proyector) desde sus filas de `*.offsets` (consumidor,
+    partición y último offset aplicado) frente a las marcas de agua altas; sin fila, la partición está sin leer."""
+    consumed: dict[str, dict[int, int]] = {c: {} for c in consumers}
+    for r in rows:
+        if r["consumer"] in consumed:
+            consumed[r["consumer"]][r["kafka_partition"]] = r["kafka_offset"]
+    return {c: pending_messages(offsets, highs) for c, offsets in consumed.items()}
 
 
 class PositionedConsumer:

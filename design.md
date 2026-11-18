@@ -224,7 +224,7 @@ loop:
 
 - **Al menos una vez:** si el relay cae tras producir y antes del `COMMIT`, republica; los duplicados los absorbe el inbox de cada consumidor.
 - **Orden:** cada componente publica su outbox en orden y Kafka conserva el orden por partición (`incident_id`). Entre componentes el orden es causal: un evento se produce después de consumir el que lo causa.
-- **Republicación:** si se pierde el topic, con el sistema parado se republica el outbox de todos los componentes a la vez, mezclado por la posición que cada fila tenía en el topic perdido (`outbox.republish_in_order`), para que cada partición conserve el orden causal entre componentes; republicar outbox a outbox lo rompería. La vista del log de `event_log` conserva el histórico para consultarlo. Aún no hay una CLI para lanzarlo fuera del harness de experimentos (E19).
+- **Republicación:** si se pierde el topic, con el sistema parado se republica el outbox de todos los componentes a la vez, mezclado por la posición que cada fila tenía en el topic perdido (`outbox.republish_in_order`), para que cada partición conserve el orden causal entre componentes; republicar outbox a outbox lo rompería. La vista del log de `event_log` conserva el histórico para consultarlo. Fuera del harness de experimentos (E19) se lanza con `eda-support republish --mode truncated|recreated` (spec support), que comprueba que el sistema está parado y que el topic está vacío antes de republicar.
 
 ## 6. Consumidores: inbox y confirmación del offset
 
@@ -357,7 +357,7 @@ Trazas distribuidas con OpenTelemetry (OpenTracing está archivado y se fusionó
 | Síncrono | Cada sentencia SQL y las operaciones en proceso | Instrumentación de psycopg en `infra/db.connect` y decorador `@traced` |
 
 - En los comandos, el dispatcher pone `traceparent` en la cabecera HTTP y el handler abre `<command_type> handle` como hijo.
-- El contexto va en el outbox de cada componente y en las cabeceras del mensaje; `event_log` lo guarda junto al evento, y la republicación (`--replay-from`) conserva la traza original.
+- El contexto va en el outbox de cada componente y en las cabeceras del mensaje; `event_log` lo guarda junto al evento, y la republicación (`eda-support republish` y `eda-support replay-from`) conserva la traza original.
 - Atributos de cada span: `eda.incident_id` (= `correlation_id`), `eda.event_id`, `eda.causation_id`, `eda.event_type`, `eda.producer`; los de consumo añaden `eda.outcome` (`processed`, `duplicate`) y los datos de Kafka. En Jaeger se busca una incidencia con el tag `eda.incident_id`.
 - Las sentencias SQL sin operación en curso (el polling del relay) no se trazan: el sampler descarta los spans CLIENT sin padre.
 - Configuración: `TRACING_ENABLED` (por defecto `true`) y `OTEL_EXPORTER_OTLP_ENDPOINT` (por defecto `http://localhost:4318`). Sin Jaeger el sistema funciona; solo se pierden las trazas.

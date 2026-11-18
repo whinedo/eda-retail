@@ -126,7 +126,7 @@ from eda_retail.infra.jobs import JobWorker, run_job_once
 from eda_retail.infra.kafka import make_consumer, make_producer
 from eda_retail.infra.migrations import upgrade
 from eda_retail.infra.outbox import ComponentRelay, RelayDeliveryError
-from eda_retail.infra.positions import caught_up, high_watermark, pending_messages
+from eda_retail.infra.positions import caught_up, high_watermark, positioned_lags
 from eda_retail.infra.schemas import qualified
 from eda_retail.intake import handler as intake
 from eda_retail.interpreter import consumer as interpreter
@@ -188,15 +188,6 @@ PROCESS_POLL_S = 0.2  # pausa de un turno sin avance con todos los componentes e
 RECONNECT_TIMEOUT_S = 60.0  # espera máxima a que la base vuelva para la conexión del harness (E10)
 RECONNECT_RETRY_S = 1.0
 
-
-def positioned_lags(rows: Iterable[Any], highs: dict[int, int], consumers: Iterable[str]) -> dict[str, int]:
-    """Lag de cada consumidor posicionado (`event_log`, cada proyector) desde sus filas de `*.offsets` (consumidor,
-    partición y último offset aplicado) frente a las marcas de agua altas; sin fila, la partición está sin leer."""
-    consumed: dict[str, dict[int, int]] = {c: {} for c in consumers}
-    for r in rows:
-        if r["consumer"] in consumed:
-            consumed[r["consumer"]][r["kafka_partition"]] = r["kafka_offset"]
-    return {c: pending_messages(offsets, highs) for c, offsets in consumed.items()}
 
 @contextlib.contextmanager
 def isolated_database(base: Settings, name: str) -> Iterator[str]:
