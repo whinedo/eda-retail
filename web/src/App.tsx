@@ -10,6 +10,7 @@ import { PanelResizer } from "./components/PanelResizer";
 import { ProfitView } from "./components/ProfitView";
 import { ParkedNoticesBanner } from "./components/ParkedNoticesBanner";
 import type { Highlight } from "./components/SystemMap";
+import { SupportView } from "./components/SupportView";
 import { SystemMapPanel } from "./components/SystemMapPanel";
 import { type OpenStream, openEventSource } from "./useCommandRun";
 import { useConfig } from "./useConfig";
@@ -20,23 +21,26 @@ import { useOrderAnalytics } from "./useOrderAnalytics";
 import { usePanelHeight } from "./usePanelHeight";
 import { useParkedNotices } from "./useParkedNotices";
 import { useProfit } from "./useProfit";
+import { useSupport } from "./useSupport";
 
-export type Route = "main" | "orders" | "operations" | "profit";
+export type Route = "main" | "orders" | "operations" | "profit" | "support";
 const HASHES: Record<Route, string> = {
   main: "#/",
   orders: "#/analytics",
   operations: "#/analytics/operations",
   profit: "#/analytics/operations/profit",
+  support: "#/support",
 };
 
 function routeOf(hash: string): Route {
+  if (hash === HASHES.support) return "support";
   if (hash === HASHES.profit) return "profit";
   if (hash === HASHES.operations) return "operations";
   return hash === HASHES.orders ? "orders" : "main";
 }
 
-// Vista abierta según el hash de la URL: la principal (auditoría), la de analítica de pedidos, la de operaciones o la
-// de beneficio.
+// Vista abierta según el hash de la URL: la principal (auditoría), la de analítica de pedidos, la de operaciones, la
+// de beneficio o la de soporte técnico.
 function useRoute(): [Route, (next: Route) => void] {
   const [route, setRoute] = useState(() => routeOf(window.location.hash));
   useEffect(() => {
@@ -55,16 +59,17 @@ function useRoute(): [Route, (next: Route) => void] {
 export default function App({ client, openStream = openEventSource }: { client?: ApiClient; openStream?: OpenStream }) {
   const api = useMemo(() => client ?? createApiClient(), [client]);
   const health = useHealth(api);
-  const { jaegerUrl, freeText, interactive, pocVersion } = useConfig(api);
+  const { jaegerUrl, freeText, interactive, pocVersion, support, supportComponents, supportViews } = useConfig(api);
   const events = useLiveEvents(api, openStream);
   const [selectedNode, setSelectedNode] = useState<string | null>(null);
   const [commandRunning, setCommandRunning] = useState(false);
   const panel = usePanelHeight();
   const [route, navigate] = useRoute();
-  const analyticsOpen = route !== "main";
+  const analyticsOpen = route !== "main" && route !== "support";
   const analytics = useOrderAnalytics(api, route === "orders");
   const operations = useOperations(api, route === "operations");
   const profit = useProfit(api, route === "profit");
+  const supportRun = useSupport(api, support && route === "support", openStream);
   const parkedNotices = useParkedNotices(api);
   const [resetKey, setResetKey] = useState(0);
   const { reset: resetEvents } = events;
@@ -91,6 +96,8 @@ export default function App({ client, openStream = openEventSource }: { client?:
         resetDisabled={commandRunning}
         analyticsOpen={analyticsOpen}
         onAnalytics={() => navigate("orders")}
+        supportOpen={route === "support"}
+        onSupport={support ? () => navigate("support") : undefined}
       />
       {/* Visible en las dos vistas mientras el intérprete tenga avisos aparcados. */}
       <ParkedNoticesBanner notices={parkedNotices} />
@@ -113,6 +120,20 @@ export default function App({ client, openStream = openEventSource }: { client?:
           }}
           onOrders={() => navigate("orders")}
           onProfit={() => navigate("profit")}
+          onBack={() => navigate("main")}
+        />
+      )}
+      {route === "support" && (
+        <SupportView
+          enabled={support}
+          components={supportComponents}
+          views={supportViews}
+          status={supportRun.status}
+          cards={supportRun.cards}
+          busy={supportRun.busy}
+          onRefresh={() => void supportRun.refresh()}
+          onSimulate={(args) => void supportRun.simulate(args)}
+          onExecute={(args) => void supportRun.execute(args)}
           onBack={() => navigate("main")}
         />
       )}
@@ -139,7 +160,7 @@ export default function App({ client, openStream = openEventSource }: { client?:
         />
       )}
       {/* La vista principal sigue montada al abrir la analítica: conserva filtros, altura y la salida del comando. */}
-      <div className="app__view" hidden={analyticsOpen}>
+      <div className="app__view" hidden={route !== "main"}>
         <CommandPanel client={api} openStream={openStream} freeText={freeText} interactive={interactive} resetKey={resetKey} onRunningChange={setCommandRunning} />
         <main className="main" style={{ "--events-height": `${panel.height}px` } as CSSProperties}>
           <SystemMapPanel

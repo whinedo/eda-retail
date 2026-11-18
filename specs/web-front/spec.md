@@ -361,6 +361,49 @@ Con `WEB_SUPPORT=true`, el backend SHALL ejecutar `eda-support` (spec `support`)
 - **WHEN** llega `POST /api/support/runs`
 - **THEN** se rechaza con 409
 
+### Requirement: Vista de soporte técnico
+
+Con `WEB_SUPPORT=true`, la cabecera de la vista principal SHALL mostrar el enlace «Soporte», junto a «Analítica», que abre la vista de soporte técnico (`#/support`); sin `WEB_SUPPORT=true` no hay enlace y la vista dice que está deshabilitada. Al abrirse, la vista SHALL pedir el diagnóstico (`status`) y mostrar sus alertas y cada sección: procesos vivos, marcas de agua del topic, grupos de Kafka, lag del lado de lectura, outbox sin publicar, dead letters, trabajos fallidos y avisos aparcados. El diagnóstico se vuelve a pedir solo con el botón «Actualizar», porque cada ejecución ocupa la ejecución única del backend. Cada acción que escribe (republicar tras perder el topic, republicar desde una fila y reconstruir una vista) SHALL tener su tarjeta con sus argumentos, un botón «Simular» que muestra lo que haría o por qué se niega, y un botón «Ejecutar» que solo se habilita tras una simulación sin negativa de esos mismos argumentos y envía su token; el resultado de la ejecución se muestra en la tarjeta. Los componentes con outbox y las vistas los da `/api/config` (`support_components`, `support_views`). Mientras haya una ejecución en curso, los botones SHALL estar deshabilitados.
+
+#### Scenario: Enlace desde la vista principal
+
+- **GIVEN** el backend con `WEB_SUPPORT=true`
+- **WHEN** el usuario mira la cabecera de la vista principal
+- **THEN** ve el enlace «Soporte» junto a «Analítica»
+- **AND** al pulsarlo se abre la vista de soporte técnico en `#/support`
+
+#### Scenario: Sin enlace con el soporte deshabilitado
+
+- **GIVEN** el backend sin `WEB_SUPPORT=true`
+- **WHEN** el usuario mira la cabecera o abre `#/support`
+- **THEN** no hay enlace «Soporte» y la vista dice que el soporte técnico está deshabilitado
+
+#### Scenario: Diagnóstico al abrir la vista
+
+- **GIVEN** la vista de soporte técnico habilitada
+- **WHEN** se abre
+- **THEN** el front pide `status` y muestra sus alertas y sus secciones
+- **AND** no lo vuelve a pedir hasta que el usuario pulsa «Actualizar»
+
+#### Scenario: Simular y ejecutar una acción
+
+- **GIVEN** la tarjeta «Republicar desde una fila» con un componente y un `outbox_id`
+- **WHEN** el usuario pulsa «Simular» y, después, «Ejecutar»
+- **THEN** la simulación muestra lo que haría y la ejecución envía el token de esa simulación
+- **AND** la tarjeta muestra el resultado de la ejecución
+
+#### Scenario: Acción negada
+
+- **GIVEN** una simulación que se niega (por ejemplo, el sistema no está parado)
+- **WHEN** el front la recibe
+- **THEN** la tarjeta muestra el motivo y «Ejecutar» sigue deshabilitado
+
+#### Scenario: Argumentos cambiados tras simular
+
+- **GIVEN** una simulación sin negativa
+- **WHEN** el usuario cambia un argumento de la tarjeta
+- **THEN** «Ejecutar» se deshabilita hasta una nueva simulación
+
 ### Requirement: Comando interactivo
 
 Con `WEB_INTERACTIVE=true`, `interactive --timeout N` SHALL ejecutarse con una pseudoterminal y el front SHALL ofrecer una entrada de texto para enviar líneas a su entrada estándar mientras dure la sesión. N MUST estar entre 1 y 600. Cada línea MUST tener como mucho 200 caracteres y ningún salto de línea; enviar una línea a una ejecución que no es interactiva o que ya terminó se rechaza con 409. Enviar una línea MUST NOT bloquear la salida del proceso: si su entrada está llena porque no la lee, la línea se rechaza con 409 y la salida sigue llegando. Si el seguimiento de la salida falla, la ejecución MUST terminar con un código de salida para no dejar el menú ocupado.
@@ -439,7 +482,7 @@ La cabecera SHALL ofrecer un enlace a la interfaz web de Jaeger, que se abre en 
 | `GET /api/analytics/orders?status=&incident_id=` | Contadores por estado y pedidos de `order_status`, con `applied` |
 | `GET /api/parked-notices` | Avisos aparcados de `parked_notices`, por plazo, con `applied` |
 | `GET /api/operations/summary`, `/incidents`, `/llm`, `/carriers`, `/freshness` | Vista de operaciones (spec `operations-view`, «API prevista») |
-| `GET /api/config` | Configuración para el front (`jaeger_ui_url`, `free_text_enabled`, `interactive_enabled`, `support_enabled`, `poc_version`) |
+| `GET /api/config` | Configuración para el front (`jaeger_ui_url`, `free_text_enabled`, `interactive_enabled`, `support_enabled`, `support_components`, `support_views`, `poc_version`) |
 | `POST /api/commands` | Ejecuta un comando de la lista blanca; devuelve `run_id` |
 | `GET /api/commands/{run_id}/stream` | SSE con la salida y, al final, el código de salida |
 | `POST /api/commands/{run_id}/input` | Línea para `interactive` |

@@ -18,6 +18,8 @@ from eda_retail.support.actions import MODES, PUBLISHERS
 SUPPORT_SCRIPT = Path(__file__).resolve().parents[3] / "scripts" / "support.sh"
 SUPPORT_LABEL = "scripts/support.sh"
 TOKEN_PATTERN = r"^[0-9a-f]{16}$"
+SUPPORT_COMPONENTS = PUBLISHERS  # componentes con outbox (`replay-from`)
+SUPPORT_VIEWS = tuple(sorted(PROJECTORS))  # vistas (`rebuild`)
 
 # Argumentos de cada acción: los demás campos deben venir vacíos.
 _FIELDS = {"status": set(), "republish": {"mode"}, "replay-from": {"component", "outbox_id"}, "rebuild": {"view"}}
@@ -41,10 +43,10 @@ class SupportRequest(BaseModel):
             raise ValueError(f"{self.action} lleva exactamente {sorted(wanted) or 'ningún argumento'}")
         if self.action == "status" and self.confirm is not None:
             raise ValueError("status no escribe: no lleva confirm")
-        if self.component is not None and self.component not in PUBLISHERS:
-            raise ValueError(f"componente sin outbox; los admitidos son {list(PUBLISHERS)}")
-        if self.view is not None and self.view not in PROJECTORS:
-            raise ValueError(f"vista desconocida; las admitidas son {sorted(PROJECTORS)}")
+        if self.component is not None and self.component not in SUPPORT_COMPONENTS:
+            raise ValueError(f"componente sin outbox; los admitidos son {list(SUPPORT_COMPONENTS)}")
+        if self.view is not None and self.view not in SUPPORT_VIEWS:
+            raise ValueError(f"vista desconocida; las admitidas son {list(SUPPORT_VIEWS)}")
         return self
 
     def args(self) -> list[str]:

@@ -182,3 +182,13 @@ def test_support_endpoints_are_read_only_for_the_backend(tmp_path: Path):
     finally:
         web_app.read_only_connect = original
     assert not opened.is_set()
+
+
+def test_config_lists_the_components_and_views_of_the_whitelist(tmp_path: Path):
+    """/api/config da los componentes con outbox y las vistas que admite la lista blanca (la vista de soporte las usa)"""
+    from eda_retail.projectors.registry import PROJECTORS
+    from eda_retail.support.actions import PUBLISHERS
+
+    config = _client(tmp_path).get("/api/config").json()
+    assert config["support_components"] == list(PUBLISHERS)
+    assert config["support_views"] == sorted(PROJECTORS)
