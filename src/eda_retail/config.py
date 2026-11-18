@@ -14,6 +14,9 @@ from pathlib import Path
 
 ENV_FILE = ".env"
 POC_VERSIONS = (1, 2)  # 1: la primera versión; 2: añade el servidor de correo MCP y el agente A2A (design.md §15)
+# La de start-all.sh, run-agents.sh y run-web.sh sin --version ni POC_VERSION. Settings y los experimentos siguen
+# con la 1 por defecto (E5 y E6 comparables).
+SCRIPTS_POC_VERSION = 2
 
 
 def _env_optional_int(name: str) -> int | None:
@@ -46,10 +49,10 @@ def _database_url() -> str:
     return f"postgresql://{user}:{password}@{host}:{port}/{db}"
 
 
-def poc_version_from_env(environ: Mapping[str, str] = os.environ) -> int:
-    """`POC_VERSION` (1 si no está definida): la versión de la PoC, 1 o 2; cualquier otro valor, también uno
-    vacío, es un error de configuración."""
-    raw = environ.get("POC_VERSION", "1").strip()
+def poc_version_from_env(environ: Mapping[str, str] = os.environ, *, default: int = 1) -> int:
+    """`POC_VERSION` (`default` si no está definida; 1 salvo en los scripts): la versión de la PoC, 1 o 2;
+    cualquier otro valor, también uno vacío, es un error de configuración."""
+    raw = environ.get("POC_VERSION", str(default)).strip()
     if raw not in {str(v) for v in POC_VERSIONS}:
         raise ValueError(f"POC_VERSION debe ser 1 o 2, no {raw!r}")
     return int(raw)

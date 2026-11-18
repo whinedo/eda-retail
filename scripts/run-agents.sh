@@ -5,7 +5,8 @@
 #
 # Uso: scripts/run-agents.sh [--version 1|2] [--logs DIR] [--no-migrate]
 #
-#   --version 1|2  versión de la PoC; gana a POC_VERSION de .env (por defecto, la de .env o 1)
+#   --version 1|2  versión de la PoC; gana a POC_VERSION de .env (por defecto,
+#                  POC_VERSION de .env o 2)
 #
 # Requiere `docker compose up -d` (kafka y postgres) y, para los agentes con LLM, Ollama en
 # OLLAMA_HOST con el modelo LLM_MODEL. Si existe .env, todos los procesos lo cargan. Cada proceso
@@ -15,7 +16,7 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-usage() { sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'; }
 
 LOGS_DIR="logs"
 MIGRATE=1
@@ -63,19 +64,21 @@ if [[ -f .env ]]; then
 fi
 uvrun() { uv run ${UV_ARGS[@]+"${UV_ARGS[@]}"} "$@"; }
 
-# OLLAMA_HOST, LLM_MODEL, POC_VERSION (validada con poc_version_from_env: 1 por defecto) y si hay
+# OLLAMA_HOST, LLM_MODEL, POC_VERSION (validada con poc_version_from_env: la 2 por defecto) y si hay
 # A2A_CARRIER_TOKEN, tal como los verán los procesos (entorno + .env). Una versión no válida aborta aquí.
 CONFIG=$(uvrun python -c '
 import os, sys
-from eda_retail.config import poc_version_from_env
+from eda_retail.config import SCRIPTS_POC_VERSION, poc_version_from_env
 e = os.environ.get
 try:
-    version = poc_version_from_env()
+    version = poc_version_from_env(default=SCRIPTS_POC_VERSION)
 except ValueError as error:
     sys.exit(f"error: {error}")
 print(e("OLLAMA_HOST", "http://localhost:11434"), e("LLM_MODEL", "llama3.1"), version,
       "yes" if e("A2A_CARRIER_TOKEN") else "no")') || exit 1
 read -r OLLAMA MODEL POC_VERSION A2A_TOKEN_SET <<<"$CONFIG"
+# Exportada: sin --version ni POC_VERSION en .env, los procesos también arrancan con la 2.
+export POC_VERSION
 # La versión 2 arranca además el servidor de correo MCP y el agente del transportista (A2A).
 case "$POC_VERSION" in
   1) ;;

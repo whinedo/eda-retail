@@ -62,3 +62,15 @@ def test_poc_version_from_env(monkeypatch):
     monkeypatch.setenv("POC_VERSION", "7")
     with pytest.raises(ValueError, match="POC_VERSION debe ser 1 o 2"):
         poc_version_from_env()
+
+
+def test_scripts_default_to_version_2():
+    """Los scripts de arranque usan la versión 2 sin --version ni POC_VERSION; Settings sigue con la 1"""
+    from eda_retail.config import SCRIPTS_POC_VERSION
+
+    assert SCRIPTS_POC_VERSION == 2
+    assert poc_version_from_env({}, default=SCRIPTS_POC_VERSION) == 2
+    assert poc_version_from_env({"POC_VERSION": "1"}, default=SCRIPTS_POC_VERSION) == 1
+    assert poc_version_from_env({}) == 1
+    with pytest.raises(ValueError, match="POC_VERSION debe ser 1 o 2"):
+        poc_version_from_env({"POC_VERSION": ""}, default=SCRIPTS_POC_VERSION)

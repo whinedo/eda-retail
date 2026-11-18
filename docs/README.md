@@ -14,8 +14,8 @@ Requisitos: Docker, Ollama con un modelo descargado (`ollama pull qwen2.5:7b-ins
 
 ```bash
 scripts/init-env.sh                # 1. una sola vez: crea .env y genera A2A_CARRIER_TOKEN
-scripts/start-all.sh               # 2. arranca todo (versión 1); el front queda en http://localhost:5173
-scripts/start-all.sh --version 2   #    o la versión 2, con MCP y A2A
+scripts/start-all.sh               # 2. arranca todo (versión 2, con MCP y A2A); el front queda en http://localhost:5173
+scripts/start-all.sh --version 1   #    o la versión 1, la primera
 scripts/stop-all.sh                # 3. al terminar: para los procesos, el front y los contenedores
 ```
 
@@ -23,7 +23,7 @@ En el front, pulsa **seed** para cargar los pedidos de ejemplo y después cualqu
 
 ## Versión 1
 
-La arquitectura de la primera versión (`POC_VERSION=1`, por defecto): un agregado por sistema, solo eventos por Kafka, comandos REST desde la saga y el lado de lectura consumiendo Kafka. La versión 2 la amplía (ver «Versión 2»).
+La arquitectura de la primera versión (`POC_VERSION=1`; los scripts de arranque usan la 2 por defecto): un agregado por sistema, solo eventos por Kafka, comandos REST desde la saga y el lado de lectura consumiendo Kafka. La versión 2 la amplía (ver «Versión 2»).
 
 ### Diagrama de agentes
 
@@ -275,7 +275,7 @@ scripts/stop-all.sh            # al terminar: para los procesos, el front y los 
 
 `scripts/start-all.sh` equivale a `docker compose up -d` más `scripts/run-agents.sh` y `scripts/run-web.sh`, que también se pueden lanzar por separado. El front queda en `http://localhost:5173`.
 
-La versión de la PoC se elige al arrancar con `--version 1|2` (en `start-all.sh`, `run-agents.sh` y `run-web.sh`): la opción gana a `POC_VERSION` de `.env`, y sin ella se usa la de `.env` o, si no está, la 1. `start-all.sh` pasa la versión a `run-agents.sh` y a `run-web.sh`, así que los procesos y el backend del front corren la misma; si se lanzan por separado, hay que darles la misma versión. La cabecera del front muestra la versión activa: «Versión 1» o «Versión 2 (MCP + A2A)».
+La versión de la PoC se elige al arrancar con `--version 1|2` (en `start-all.sh`, `run-agents.sh` y `run-web.sh`): la opción gana a `POC_VERSION` de `.env`, y sin ella se usa la de `.env` o, si no está, la 2. `start-all.sh` pasa la versión a `run-agents.sh` y a `run-web.sh`, así que los procesos y el backend del front corren la misma; si se lanzan por separado, hay que darles la misma versión. La cabecera del front muestra la versión activa: «Versión 1» o «Versión 2 (MCP + A2A)».
 
 En el CLI interactivo, `s` carga los datos de ejemplo (pedidos `P-1001`…`P-1005` y su stock) y `1`…`4` envían un aviso de ejemplo; después se muestra cómo avanza la incidencia hasta que se resuelve o se escala. Las trazas completas están en Jaeger: `http://localhost:16686`.
 
@@ -321,7 +321,7 @@ Cada proceso escribe en stdout una línea por evento recibido, por comando (acep
 
 Los ejecutores reintentan los errores transitorios hasta `STEP_MAX_ATTEMPTS` (por defecto 3) con espera exponencial y jitter (`STEP_BACKOFF_BASE_SECONDS`, por defecto 0,5; `STEP_BACKOFF_MAX_SECONDS`, por defecto 10) y atienden como mucho `EXECUTOR_MAX_CONCURRENCY` comandos `ExecuteStep` a la vez (por defecto 5; también `eda-inventory`): por encima responden 503 y la saga reintenta el comando con el mismo `command_id`. Un evento con esquema inválido o que agota sus reintentos va a la tabla `dead_letters` de cada consumidor que atiende su tipo, y el relay lo publica en `eda.dlq` (`DLQ_TOPIC`). El lado de lectura también: `eda-event-log` y `eda-projector` guardan los inválidos en `event_log.dead_letters` y `views.dead_letters` y los publican con un relay que solo lleva dead letters. Un `event_type` fuera del catálogo con la estructura común válida se ignora sin dead letter y queda en el log.
 
-La versión de la PoC se elige con `POC_VERSION` (en `.env` o en el entorno): `1` por defecto, o `2`; cualquier otro valor detiene el proceso con un error. Con `1` el sistema se comporta exactamente como la primera versión. Con `2` se activa la segunda versión: el ejecutor de `notify_customer` envía el correo por el servidor de correo MCP y el planificador consulta al agente del transportista por A2A. Las variables propias de MCP son `MAIL_SERVER_URL` (URL del servidor para el cliente, por defecto `http://127.0.0.1:8120/mcp`), `MAIL_SERVER_PORT` (puerto en el que escucha `eda-mail-server`, por defecto 8120) y `MCP_MAX_EMAILS_PER_INCIDENT` (correos como mucho por incidencia, por defecto 3; superarlo termina el paso en `StepFailed` `mail_limit_exceeded`). El front muestra el servidor de correo y el agente del transportista como procesos vigilados solo con la versión 2.
+La versión de la PoC se elige con `POC_VERSION` (en `.env` o en el entorno): `1` o `2`; cualquier otro valor detiene el proceso con un error. Sin ella, los scripts de arranque (`start-all.sh`, `run-agents.sh` y `run-web.sh`) usan la `2` y se la pasan a los procesos; un proceso lanzado a mano, o el harness de los experimentos, usa la `1`. Con `1` el sistema se comporta exactamente como la primera versión. Con `2` se activa la segunda versión: el ejecutor de `notify_customer` envía el correo por el servidor de correo MCP y el planificador consulta al agente del transportista por A2A. Las variables propias de MCP son `MAIL_SERVER_URL` (URL del servidor para el cliente, por defecto `http://127.0.0.1:8120/mcp`), `MAIL_SERVER_PORT` (puerto en el que escucha `eda-mail-server`, por defecto 8120) y `MCP_MAX_EMAILS_PER_INCIDENT` (correos como mucho por incidencia, por defecto 3; superarlo termina el paso en `StepFailed` `mail_limit_exceeded`). El front muestra el servidor de correo y el agente del transportista como procesos vigilados solo con la versión 2.
 
 Con `POC_VERSION=2`, el planificador consulta al agente del transportista en `CARRIER_AGENT_URL` (por defecto `http://127.0.0.1:8130`, la URL que publica su Agent Card) con el bearer token `A2A_CARRIER_TOKEN` (obligatorio; el agente no arranca sin él), un plazo total de `A2A_TIMEOUT_S` (por defecto 5 s) y como mucho `A2A_MAX_ROUNDS` rondas `input-required` (por defecto 2). El agente escucha en `127.0.0.1:CARRIER_AGENT_PORT` (por defecto 8130) y sus reglas usan la semilla `CARRIER_AGENT_SEED` (por defecto 42). Los experimentos (`eda-experiment`) no consultan al agente aunque `POC_VERSION=2`, para que E5 y E6 sigan siendo comparables con la primera versión.
 
@@ -392,12 +392,12 @@ E6 escala los plazos de la saga (`SAGA_PLAN_TIMEOUT_S`, `SAGA_STEP_TIMEOUT_S`) c
 
 ## Versión 2
 
-La versión 2 añade a la PoC los dos modos de comunicación que faltaban: **MCP**, con un servidor de correo simulado, y **A2A**, con un agente del transportista simulado. Se elige al arrancar: con `POC_VERSION=1` (por defecto) la PoC se comporta como la primera versión; con `POC_VERSION=2` arrancan `eda-mail-server` y `eda-carrier-agent`, el ejecutor de `notify_customer` envía el correo por MCP y el planificador consulta al transportista por A2A. Los requisitos están en `specs/mcp-mail/spec.md` y `specs/a2a-carrier/spec.md`.
+La versión 2 añade a la PoC los dos modos de comunicación que faltaban: **MCP**, con un servidor de correo simulado, y **A2A**, con un agente del transportista simulado. Se elige al arrancar: con `POC_VERSION=1` la PoC se comporta como la primera versión; con `POC_VERSION=2` (la de los scripts de arranque por defecto) arrancan `eda-mail-server` y `eda-carrier-agent`, el ejecutor de `notify_customer` envía el correo por MCP y el planificador consulta al transportista por A2A. Los requisitos están en `specs/mcp-mail/spec.md` y `specs/a2a-carrier/spec.md`.
 
-Para activarla:
+Es la que arrancan los scripts sin `--version` ni `POC_VERSION`; para volver a la primera:
 
 ```bash
-scripts/start-all.sh --version 2   # o POC_VERSION=2 en .env y scripts/start-all.sh
+scripts/start-all.sh --version 1   # o POC_VERSION=1 en .env y scripts/start-all.sh
 ```
 
 Con la versión 2, `.env` debe tener `A2A_CARRIER_TOKEN` (un valor propio, nunca en el repositorio; `scripts/init-env.sh` lo genera); sin él, `run-agents.sh` termina con error antes de arrancar nada. `--version` también existe en `scripts/run-agents.sh` y `scripts/run-web.sh` si se lanzan por separado (con la misma versión en los dos). La cabecera del front muestra «Versión 2 (MCP + A2A)» y el mapa, el servidor de correo MCP y el agente del transportista como procesos vigilados. `scripts/stop-all.sh` también para `eda-mail-server` y `eda-carrier-agent`.
