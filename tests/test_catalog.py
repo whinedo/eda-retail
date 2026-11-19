@@ -18,7 +18,7 @@ EXPECTED_TYPES = {
     "StockReleased", "ShipmentReissued", "RefundIssued", "IncidentResolved", "IncidentEscalated",
     "LlmCallRecorded", "StepCancelled", "OrderRegistered", "NoticeParked", "CarrierConsulted",
 }
-VERSION_2 = {"StepCompleted", "StepFailed"}
+VERSION_2 = {"StepCompleted", "StepFailed", "LlmCallRecorded"}
 
 
 def _step_requested(params: dict) -> dict:

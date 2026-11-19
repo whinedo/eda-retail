@@ -29,6 +29,7 @@ from eda_retail.infra.commands import Accepted, CommandEnvelope, Rejected
 from eda_retail.llm.generation import Budget, LlmCall, LlmClient
 from eda_retail.llm.harness import AgentHarness
 from eda_retail.llm.prompts.interpreter import NoticeInterpretation, ground_interpretation, notice_request
+from eda_retail.llm.recording import record_llm_calls
 from eda_retail.rules import BusinessRules
 
 SCHEMA = "interpreter"
@@ -113,20 +114,7 @@ def shipment_delayed(incident_id: str, order_ids: list[str], row: dict[str, Any]
 
 
 def _record_calls(conn: psycopg.Connection, command: CommandEnvelope, calls: list[LlmCall]) -> list[EventEnvelope]:
-    events = []
-    for call in calls:
-        conn.execute(
-            "INSERT INTO interpreter.llm_calls (incident_id, command_id, model, tokens_in, tokens_out, latency_ms,"
-            " validation_passed, attempt) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
-            (command.correlation_id, command.command_id, call.model, call.tokens_in, call.tokens_out,
-             call.latency_ms, call.validation_passed, call.attempt),
-        )
-        events.append(event(command, "LlmCallRecorded", {
-            "incident_id": command.correlation_id, "agent": call.agent, "model": call.model,
-            "tokens_in": call.tokens_in, "tokens_out": call.tokens_out, "latency_ms": call.latency_ms,
-            "validation_passed": call.validation_passed, "attempt": call.attempt,
-        }))
-    return events
+    return record_llm_calls(conn, "interpreter", command, calls, lambda event_type, payload: event(command, event_type, payload))
 
 
 def open_incident(settings: Settings):

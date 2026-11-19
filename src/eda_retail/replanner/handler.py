@@ -43,6 +43,7 @@ from eda_retail.llm.generation import Budget, LlmCall, LlmClient
 from eda_retail.llm.harness import AgentHarness
 from eda_retail.llm.prompts.planner import ground_plan
 from eda_retail.llm.prompts.replanner import MAX_REVISIONS, REPLACEABLE, check_step_ids, revise_request
+from eda_retail.llm.recording import record_llm_calls
 from eda_retail.llm.schemas import PlanProposal
 from eda_retail.plan_validation import PlanRejected, refund_over_reissue, validate_plan
 from eda_retail.queries.cost_per_incident import Prices, budget_from_cost, get_incident_cost
@@ -173,20 +174,7 @@ def _event(command: CommandEnvelope, event_type: str, payload: dict[str, Any]) -
 
 
 def _record_calls(conn: psycopg.Connection, command: CommandEnvelope, calls: list[LlmCall]) -> list[EventEnvelope]:
-    events = []
-    for call in calls:
-        conn.execute(
-            "INSERT INTO replanner.llm_calls (incident_id, command_id, model, tokens_in, tokens_out, latency_ms,"
-            " validation_passed, attempt) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
-            (command.correlation_id, command.command_id, call.model, call.tokens_in, call.tokens_out,
-             call.latency_ms, call.validation_passed, call.attempt),
-        )
-        events.append(_event(command, "LlmCallRecorded", {
-            "incident_id": command.correlation_id, "agent": call.agent, "model": call.model,
-            "tokens_in": call.tokens_in, "tokens_out": call.tokens_out, "latency_ms": call.latency_ms,
-            "validation_passed": call.validation_passed, "attempt": call.attempt,
-        }))
-    return events
+    return record_llm_calls(conn, "replanner", command, calls, lambda event_type, payload: _event(command, event_type, payload))
 
 
 def revise_plan(rules: BusinessRules):

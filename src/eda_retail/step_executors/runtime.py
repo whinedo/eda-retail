@@ -36,6 +36,7 @@ from eda_retail.infra import effect_keys
 from eda_retail.infra.backoff import Backoff
 from eda_retail.infra.commands import Accepted, CommandEnvelope, Rejected
 from eda_retail.llm.generation import LlmCall
+from eda_retail.llm.recording import llm_call_payload
 from eda_retail.step_executors.errors import EffectError
 
 ACTION_NOT_HANDLED = "action_not_handled"
@@ -182,11 +183,7 @@ def execute_step(action: RecordingAction, settings: Settings):
         events = []
         if prepared.calls:
             action.record_calls(conn, command, prepared.calls)
-            events += [event("LlmCallRecorded", {
-                "incident_id": step.incident_id, "agent": call.agent, "model": call.model,
-                "tokens_in": call.tokens_in, "tokens_out": call.tokens_out, "latency_ms": call.latency_ms,
-                "validation_passed": call.validation_passed, "attempt": call.attempt,
-            }) for call in prepared.calls]
+            events += [event("LlmCallRecorded", llm_call_payload(step.incident_id, call)) for call in prepared.calls]
         if prepared.error is not None:
             if prepared.error.escalate:  # la saga escala antes de recibir el fallo
                 events.append(event("IncidentEscalated", {"incident_id": step.incident_id,

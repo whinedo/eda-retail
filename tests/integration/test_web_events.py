@@ -204,6 +204,8 @@ def _llm_call(incident_id: str, agent: str, tokens_in: int, tokens_out: int, lat
         "latency_ms": latency_ms,
         "validation_passed": passed,
         "attempt": 1,
+        "prompt_version": "1",
+        "prompt_hash": None,
     }
 
 

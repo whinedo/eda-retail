@@ -17,9 +17,9 @@ Test runners: unit `uv run pytest -q --ignore=tests/integration -m "not integrat
 
 | ID | Specs | Route | Status | Commit |
 | --- | --- | --- | --- | --- |
-| T1 | S1, S2 | inline | done: `llm/harness.py`, `llm/agents.py` (pinned fingerprints), prompts on `AgentSpec` (rendered prompts byte-identical to base); 7 unit tests GREEN (RED: missing modules) | C1 |
-| T2 | S3, S4 | inline | done: `delimit`, `max_untrusted_input_chars`, grounding in interpreter, planner, replanner; 9 unit tests GREEN; 6 interpreter integration notices now cite their order (CI) | C1 |
-| T3 | S5 | inline | pending | |
+| T1 | S1, S2 | inline | done (c9c9e9b): `llm/harness.py`, `llm/agents.py` (pinned fingerprints), prompts on `AgentSpec` (rendered prompts byte-identical to base); 7 unit tests GREEN (RED: missing modules) | C1 |
+| T2 | S3, S4 | inline | done (c9c9e9b): `delimit`, `max_untrusted_input_chars`, grounding in interpreter, planner, replanner; 9 unit tests GREEN; 6 interpreter integration notices now cite their order (CI) | C1 |
+| T3 | S5 | inline | done: `llm/recording.py` (one recorder for the four agents), `LlmCallRecorded` v2 with upcaster, migration 0029 (`prompt_version`, `prompt_hash` on the five `llm_calls`); 3 unit tests GREEN, planner and migration integration tests (CI); 4 hand-built v1 test payloads moved to v2 | C2 |
 | T4 | S6, S7 | inline | pending | |
 
 ## Log
@@ -27,3 +27,4 @@ Test runners: unit `uv run pytest -q --ignore=tests/integration -m "not integrat
 - L1 (2026-11-19) User request, verbatim: «implementa la spec del harness de agentes».
 - L2 (2026-11-19) Route: inline for every task (no writer trigger: the units share `llm/` and the agent handlers, so they are not disjoint). T3 changes a consumed event contract (high-risk item 3) and gets its own commit.
 - L3 (2026-11-19) T1 and T2 written inline. `LlmCall` gains `prompt_version`, `prompt_hash` and `rejection` (not in the event). The writer and baseline_sync replanner requests go through `AgentSpec.request`. Unit suite: 1114 passed; `test_answer_the_interactive_menu` and `test_topology_endpoint` fail locally with and without the change (environmental, green in CI).
+- L4 (2026-11-19) T3 written inline. Risk: item 3 (consumed event contract `LlmCallRecorded` v2) and item 1 (migration 0029 adds columns). Own commit; independent verifier at the feature's end. `web/nodes.py` reads the raw event JSON without upcasting, but only fields present in v1 and v2.

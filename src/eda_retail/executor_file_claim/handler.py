@@ -8,6 +8,7 @@ import psycopg
 
 from eda_retail.infra.commands import CommandEnvelope
 from eda_retail.llm.generation import LlmCall
+from eda_retail.llm.recording import insert_llm_calls
 from eda_retail.step_executors.drafted import Drafted
 from eda_retail.step_executors.runtime import ExecuteStep, Prepared
 
@@ -48,10 +49,4 @@ def existing_claim(conn: psycopg.Connection, step: ExecuteStep) -> dict[str, Any
 
 
 def record_llm_calls(conn: psycopg.Connection, command: CommandEnvelope, calls: list[LlmCall]) -> None:
-    for call in calls:
-        conn.execute(
-            "INSERT INTO executor_file_claim.llm_calls (incident_id, command_id, model, tokens_in, tokens_out,"
-            " latency_ms, validation_passed, attempt) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
-            (command.correlation_id, command.command_id, call.model, call.tokens_in, call.tokens_out,
-             call.latency_ms, call.validation_passed, call.attempt),
-        )
+    insert_llm_calls(conn, "executor_file_claim", command, calls)

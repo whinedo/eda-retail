@@ -230,7 +230,7 @@ Lado de comandos (escritura) y lado de consultas (lectura). Los pasos (1) a (4) 
 | `RefundIssued` | Ejecutor | `order_id`, `amount`, `refund_id` |
 | `IncidentResolved` | Saga (orquestador) | `incident_id`, `outcome` |
 | `IncidentEscalated` | Saga y agentes | `incident_id`, `reason` |
-| `LlmCallRecorded` | Agentes con LLM | `incident_id`, `agent`, `model`, `tokens_in`, `tokens_out`, `latency_ms`, `validation_passed`, `attempt` |
+| `LlmCallRecorded` | Agentes con LLM | `incident_id`, `agent`, `model`, `tokens_in`, `tokens_out`, `latency_ms`, `validation_passed`, `attempt`, `prompt_version`, `prompt_hash` (v2; un v1 se lee con `prompt_version` `unknown` y `prompt_hash` nulo) |
 | `CarrierConsulted` | Agente planificador (solo con `POC_VERSION=2`) | `incident_id`, `outcome` (`answered`, `timeout`, `failed` o `rejected_by_guardrail`), `rounds`, `latency_ms`; sin `notes` ni datos personales (spec `a2a-carrier`) |
 
 ## Catálogo de comandos

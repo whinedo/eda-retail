@@ -10,6 +10,7 @@ import uuid
 from dataclasses import replace
 
 from eda_retail.config import Settings
+from eda_retail.llm.agents import AGENTS
 from eda_retail.llm.fake import FakeLlmClient
 from eda_retail.planner.handler import specs
 from eda_retail.rules import BusinessRules
@@ -200,6 +201,14 @@ def test_planner_call_records_tokens_latency_and_validation(database_url, conn):
         p = e["payload"]
         assert (p["agent"], p["model"]) == ("planner", "fake-model")
         assert p["tokens_in"] > 0 and p["tokens_out"] > 0 and p["latency_ms"] >= 0
+        # Llamada rechazada registrada con su prompt (spec agent-harness)
+        assert (p["prompt_version"], p["prompt_hash"]) == (AGENTS["planner"].prompt_version,
+                                                           AGENTS["planner"].prompt_hash)
+    with conn.transaction():
+        prompts = conn.execute("SELECT prompt_version, prompt_hash FROM planner.llm_calls WHERE incident_id = %s",
+                               (incident,)).fetchall()
+    assert prompts == [{"prompt_version": AGENTS["planner"].prompt_version,
+                        "prompt_hash": AGENTS["planner"].prompt_hash}] * 2
     with conn.transaction():
         rows = conn.execute("SELECT tokens_in, tokens_out, latency_ms, validation_passed, attempt"
                             " FROM planner.llm_calls WHERE incident_id = %s ORDER BY attempt", (incident,)).fetchall()

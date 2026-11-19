@@ -43,6 +43,7 @@ def _refund_instead_of_reissue(incident: str) -> list[EventEnvelope]:
         _event(incident, "LlmCallRecorded", {
             "incident_id": incident, "agent": "replanner", "model": "fake", "tokens_in": 1, "tokens_out": 1,
             "latency_ms": 1, "validation_passed": False, "attempt": 1,
+            "prompt_version": "1", "prompt_hash": None,
         }, "replanner"),
         _event(incident, "PlanRevised", {
             "incident_id": incident, "plan_version": 2, "steps": [refund], "reason": "sin stock para reenviar",
