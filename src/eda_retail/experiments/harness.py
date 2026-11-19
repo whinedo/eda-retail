@@ -337,6 +337,8 @@ class ThenPrepare:
         return prepared
 
     def __getattr__(self, name: str) -> Any:
+        if name == "_prepare":  # sin esto, `copy` y `pickle` recursan antes de que exista `_prepare`
+            raise AttributeError(name)
         return getattr(self._prepare, name)
 
 

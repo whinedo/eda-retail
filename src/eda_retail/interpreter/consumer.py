@@ -62,7 +62,7 @@ def _interpreted(conn: psycopg.Connection, carrier_notice_id: str) -> bool:
 class InterpretNotice:
     """Unidad de trabajo de un `CarrierNoticeReceived`: el LLM va antes de la transacción.
 
-    `after_prepare` (el arnés, E8: caída `before_tx`) se llama tras `prepare` y antes de abrir la transacción."""
+    `after_prepare` (el harness, E8: caída `before_tx`) se llama tras `prepare` y antes de abrir la transacción."""
 
     def __init__(self, settings: Settings, llm: LlmClient, rules: BusinessRules, *,
                  after_prepare: Callable[[], None] | None = None) -> None:

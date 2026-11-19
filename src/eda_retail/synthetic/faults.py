@@ -34,7 +34,7 @@
   `EXECUTOR_MAX_CONCURRENCY`. Trabajo lento (`prepare_delay_seconds`, E14): el `prepare` de los trabajos de ese
   componente tarda esos segundos más (el LLM, el servicio externo). Los dos los aplica el arnés.
 - Caída en un punto de la transacción (`crash_at`, E8): el componente cae una sola vez al atender su unidad K en uno
-  de los puntos de `CRASH_POINTS` y el arnés lo reinicia. `CrashPoints` cuenta las unidades de cada (componente,
+  de los puntos de `CRASH_POINTS` y el harness lo reinicia. `CrashPoints` cuenta las unidades de cada (componente,
   punto), aunque no tenga caída, decide la caída y la registra (`CrashRecord`). Los ganchos: `before_tx` en el
   `prepare` del intérprete y de los trabajos del planificador y del replanificador (`WorkerCrashed`),
   `after_commit_before_offset` en `FaultyDelivery`, `after_commit_before_response` en `InProcessCommands` y
@@ -246,13 +246,13 @@ class ConsumerCrashed(RuntimeError):
 
 class CrashPointReached(ConsumerCrashed):
     """Un componente cae a propósito en un punto de su transacción (`crash_at`): lo que no confirmó queda pendiente
-    (el offset, la respuesta, las filas del outbox) y el arnés lo reinicia."""
+    (el offset, la respuesta, las filas del outbox) y el harness lo reinicia."""
 
 
 class WorkerCrashed(BaseException):
     """El worker de trabajos cae a propósito antes de la transacción (`before_tx`). No deriva de `Exception`, así que
-    `run_job_once` no devuelve el trabajo a `pending`: el arnés termina el hilo del worker (`Harness._tracked_job`), el
-    trabajo sigue `running` hasta que vence su lease y lo retoma el worker que arranca el arnés en su lugar."""
+    `run_job_once` no devuelve el trabajo a `pending`: el harness termina el hilo del worker (`Harness._tracked_job`), el
+    trabajo sigue `running` hasta que vence su lease y lo retoma el worker que arranca el harness en su lugar."""
 
 
 @dataclass
@@ -271,7 +271,7 @@ class CrashPoints:
     """Decide y registra las caídas de `crash_at` (spec synthetic-data, «Caída en un punto de la transacción»).
 
     `units` cuenta las unidades que atiende cada (componente, punto), también sin caída (E8 elige K con las de una
-    ejecución sin fallos). La caída es en la unidad K y una sola vez: `crashed` (el conjunto compartido del arnés) guarda
+    ejecución sin fallos). La caída es en la unidad K y una sola vez: `crashed` (el conjunto compartido del harness) guarda
     `<componente>@<punto>`, así que el componente reiniciado no vuelve a caer. Seguro entre hilos."""
 
     def __init__(self, plan: FaultPlan, *, crashed: set[str] | None = None,

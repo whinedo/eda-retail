@@ -612,3 +612,15 @@ def test_the_harness_counts_llm_calls_in_the_client():
     h.llm.complete(LlmRequest(agent="planner", incident_id="I-1", system="s", prompt="p", schema={}))
     assert h.llm_client_calls == {"planner": 1}
 
+
+
+def test_the_wrappers_can_be_copied():
+    """`ThenPrepare` y `CountingLlmClient` se copian sin recursión y siguen delegando sus atributos"""
+    def prepare(command, conn):
+        return "ok"
+
+    prepare._carrier = "carrier"
+    wrapped = copy.copy(harness.ThenPrepare(prepare, lambda: None))
+    assert wrapped._carrier == "carrier"
+    counting = copy.copy(CountingLlmClient(FakeLlmClient()))
+    assert counting.requests == []

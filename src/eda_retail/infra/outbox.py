@@ -186,7 +186,7 @@ class ComponentRelay:
         after_publish: Callable[[int], None] | None = None,
     ) -> None:
         self._conn = conn
-        # El arnés (E8, `relay_after_publish_before_mark`): se llama con las filas del lote ya publicado y confirmado,
+        # El harness (E8, `relay_after_publish_before_mark`): se llama con las filas del lote ya publicado y confirmado,
         # antes de marcarlas. Si lanza, la transacción se deshace y las filas siguen pendientes.
         self._after_publish = after_publish
         self._reconnect = reconnect  # None: conserva su conexión (harness en proceso); si no, abre otra al perderla

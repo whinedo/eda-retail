@@ -68,6 +68,8 @@ class CountingLlmClient:
         return self._inner.complete(request)
 
     def __getattr__(self, name: str) -> Any:
+        if name == "_inner":  # sin esto, `copy` y `pickle` recursan antes de que exista `_inner`
+            raise AttributeError(name)
         return getattr(self._inner, name)
 
 
