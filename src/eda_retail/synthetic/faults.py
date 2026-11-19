@@ -33,6 +33,12 @@
   capacidad, el ejecutor responde 503 a un `ExecuteStep` nuevo (`CommandUnavailable`), como uvicorn con
   `EXECUTOR_MAX_CONCURRENCY`. Trabajo lento (`prepare_delay_seconds`, E14): el `prepare` de los trabajos de ese
   componente tarda esos segundos más (el LLM, el servicio externo). Los dos los aplica el arnés.
+- Caída en un punto de la transacción (`crash_at`, E8): el componente cae una sola vez al atender su unidad K en uno
+  de los puntos de `CRASH_POINTS` y el arnés lo reinicia. `CrashPoints` cuenta las unidades de cada (componente,
+  punto), aunque no tenga caída, decide la caída y la registra (`CrashRecord`). Los ganchos: `before_tx` en el
+  `prepare` del intérprete y de los trabajos del planificador y del replanificador (`WorkerCrashed`),
+  `after_commit_before_offset` en `FaultyDelivery`, `after_commit_before_response` en `InProcessCommands` y
+  `relay_after_publish_before_mark` en `ComponentRelay.run_once`.
 """
 
 from __future__ import annotations
@@ -40,6 +46,7 @@ from __future__ import annotations
 import hashlib
 import threading
 import time
+from collections import Counter
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import Any, Protocol
@@ -62,6 +69,35 @@ class ExecutorFault:
     mode: str
     action: str | None = None
     duration_s: float | None = None
+# Puntos de caída de `crash_at` y los componentes (nombres de esquema) a los que aplica cada uno (spec synthetic-data,
+# «Caída en un punto de la transacción»). `event_log` y los proyectores no tienen ninguno: guardan su posición en la
+# misma transacción que su vista y no tienen outbox.
+BEFORE_TX = "before_tx"
+AFTER_COMMIT_BEFORE_OFFSET = "after_commit_before_offset"
+AFTER_COMMIT_BEFORE_RESPONSE = "after_commit_before_response"
+RELAY_AFTER_PUBLISH_BEFORE_MARK = "relay_after_publish_before_mark"
+_EXECUTORS = ("executor_notify_customer", "executor_file_claim", "executor_reissue_shipment", "executor_issue_refund")
+CRASH_POINTS: Mapping[str, frozenset[str]] = {
+    BEFORE_TX: frozenset({"interpreter", "planner", "replanner"}),
+    AFTER_COMMIT_BEFORE_OFFSET: frozenset({"interpreter", "orchestrator"}),
+    AFTER_COMMIT_BEFORE_RESPONSE: frozenset({"intake", "inventory", "planner", "replanner", *_EXECUTORS}),
+    RELAY_AFTER_PUBLISH_BEFORE_MARK: frozenset({"intake", "interpreter", "planner", "replanner", "orchestrator",
+                                                "inventory", *_EXECUTORS}),
+}
+_COMPONENT_NAMES = {"interpreter": "al intérprete", "planner": "al planificador", "replanner": "al replanificador",
+                    "orchestrator": "al orquestador"}
+
+
+def _check_crash_at(crash_at: Mapping[tuple[str, str], int]) -> None:
+    for (component, point), unit in crash_at.items():
+        if point not in CRASH_POINTS:
+            raise ValueError(f"punto de caída desconocido: {point}")
+        if component not in CRASH_POINTS[point]:
+            raise ValueError(f"`{point}` no aplica {_COMPONENT_NAMES.get(component, f'a {component}')}")
+        if unit < 1:
+            raise ValueError(f"crash_at debe ser al menos 1 para ({component}, {point}): {unit}")
+
+
 # Comandos que admiten entrega concurrente (spec synthetic-data, «Entrega concurrente de comandos»)
 CONCURRENT_COMMANDS = frozenset({"ExecuteStep", "CreatePlan", "RevisePlan", "RegisterCarrierNotice", "SeedSampleData"})
 
@@ -81,6 +117,7 @@ class FaultPlan:
     executor_faults: tuple[ExecutorFault, ...] = ()  # sistemas destino caídos o colgados
     executor_capacity: Mapping[str, int] = field(default_factory=dict)  # ejecutor -> trabajos abiertos como máximo
     prepare_delay_seconds: Mapping[str, float] = field(default_factory=dict)  # componente -> retraso del prepare
+    crash_at: Mapping[tuple[str, str], int] = field(default_factory=dict)  # (componente, punto) -> cae en la unidad K
 
     def __post_init__(self) -> None:
         if self.duplicates < 1:
@@ -123,6 +160,7 @@ class FaultPlan:
         for component, seconds in self.prepare_delay_seconds.items():
             if seconds < 0:
                 raise ValueError(f"prepare_delay_seconds no puede ser negativo para {component}: {seconds}")
+        _check_crash_at(self.crash_at)
 
 
 class ExecutorOutage:
@@ -206,6 +244,69 @@ class ConsumerCrashed(RuntimeError):
     """El consumidor cae a propósito: el último mensaje queda sin confirmar."""
 
 
+class CrashPointReached(ConsumerCrashed):
+    """Un componente cae a propósito en un punto de su transacción (`crash_at`): lo que no confirmó queda pendiente
+    (el offset, la respuesta, las filas del outbox) y el arnés lo reinicia."""
+
+
+class WorkerCrashed(BaseException):
+    """El worker de trabajos cae a propósito antes de la transacción (`before_tx`). No deriva de `Exception`, así que
+    `run_job_once` no devuelve el trabajo a `pending`: el arnés termina el hilo del worker (`Harness._tracked_job`), el
+    trabajo sigue `running` hasta que vence su lease y lo retoma el worker que arranca el arnés en su lugar."""
+
+
+@dataclass
+class CrashRecord:
+    """Una caída de `crash_at`: componente, punto, unidad y hora (`time.time()`), y la hora a la que el componente
+    reiniciado atiende su unidad siguiente en ese punto (None mientras no la atiende)."""
+
+    component: str
+    point: str
+    unit: int
+    at: float
+    resumed_at: float | None = None
+
+
+class CrashPoints:
+    """Decide y registra las caídas de `crash_at` (spec synthetic-data, «Caída en un punto de la transacción»).
+
+    `units` cuenta las unidades que atiende cada (componente, punto), también sin caída (E8 elige K con las de una
+    ejecución sin fallos). La caída es en la unidad K y una sola vez: `crashed` (el conjunto compartido del arnés) guarda
+    `<componente>@<punto>`, así que el componente reiniciado no vuelve a caer. Seguro entre hilos."""
+
+    def __init__(self, plan: FaultPlan, *, crashed: set[str] | None = None,
+                 clock: Callable[[], float] = time.time) -> None:
+        self._at = dict(plan.crash_at)
+        self._crashed = crashed if crashed is not None else set()
+        self._clock = clock
+        self._lock = threading.Lock()
+        self.units: Counter[tuple[str, str]] = Counter()
+        self.records: list[CrashRecord] = []
+
+    def decide(self, component: str, point: str, units: int = 1) -> int | None:
+        """Cuenta `units` unidades (un lote del relay tiene varias). Devuelve K si toca caer ahora; si no, None."""
+        key = (component, point)
+        with self._lock:
+            before = self.units[key]
+            self.units[key] = before + units
+            now = self._clock()
+            for record in self.records:
+                if (record.component, record.point) == key and record.resumed_at is None:
+                    record.resumed_at = now
+            limit, name = self._at.get(key), f"{component}@{point}"
+            if limit is None or name in self._crashed or not before < limit <= before + units:
+                return None
+            self._crashed.add(name)
+            self.records.append(CrashRecord(component, point, limit, now))
+            return limit
+
+    def hit(self, component: str, point: str, units: int = 1) -> None:
+        """Como `decide`, pero cae con `CrashPointReached` si toca."""
+        unit = self.decide(component, point, units)
+        if unit is not None:
+            raise CrashPointReached(f"{component} cae en {point} (unidad {unit})")
+
+
 class _Consumer(Protocol):
     name: str
 
@@ -218,16 +319,19 @@ class FaultyDelivery:
     """Bucle de entrega de un consumidor con duplicados, retraso y caída.
 
     `crashed` guarda qué consumidores ya cayeron: al reiniciar con el mismo plan (proceso
-    nuevo), se pasa para que no vuelvan a caer.
+    nuevo), se pasa para que no vuelvan a caer. Con `crash_points` (E8), cae también en
+    `after_commit_before_offset`: tras atender (y confirmar en PostgreSQL) su mensaje K, sin confirmar el offset.
+    Un mensaje que el consumidor ignora no abre transacción y no cuenta como unidad.
     """
 
     def __init__(
         self, consumer: _Consumer, plan: FaultPlan, *, sleep: Callable[[float], None] = time.sleep,
-        crashed: set[str] | None = None,
+        crashed: set[str] | None = None, crash_points: CrashPoints | None = None,
     ) -> None:
         self.consumer = consumer
         self.plan = plan
         self.crashed = crashed if crashed is not None else set()
+        self.crash_points = crash_points
         self._sleep = sleep
         self._handled = 0
         self.current: Any = None  # último mensaje recibido (el arnés lo salta si es veneno)
@@ -248,6 +352,8 @@ class FaultyDelivery:
         if limit is not None and name not in self.crashed and self._handled >= limit:
             self.crashed.add(name)
             raise ConsumerCrashed(f"{name} cae tras {self._handled} mensajes")
+        if self.crash_points is not None and getattr(outcome, "value", outcome) != "ignored":
+            self.crash_points.hit(name, AFTER_COMMIT_BEFORE_OFFSET)
         self.consumer.commit(msg)
         return outcome
 

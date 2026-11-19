@@ -52,6 +52,14 @@ Fallos (spec experiments; L55):
   sus particiones. Un fallo de commit de offset (`KafkaException`, también si no se confirma en su plazo)
   reinicia el consumidor como cualquier caída, pero cuenta en `commit_failures` y no como veneno: el mensaje ya se
   procesó y el inbox descarta la reentrega. Al parar, un consumidor cuyo hilo no termina no se cierra.
+- E8 (spec synthetic-data, «Caída en un punto de la transacción»): `crash_at` hace caer un componente una vez en su
+  unidad K y lo reinicia. `before_tx`: el intérprete cae tras el LLM (`_interpreter_before_tx`; Kafka le vuelve a
+  entregar el aviso) y el worker de trabajos del planificador o del replanificador muere (`_crashing_before_tx`,
+  `WorkerCrashed`) y el turno arranca otro (`_revive_workers`), que retoma el trabajo al vencer su lease
+  (`RunConfig.job_lease_seconds`). `after_commit_before_offset`: `FaultyDelivery`. `after_commit_before_response`:
+  `InProcessCommands.crash_before_response` (la saga reintenta; en `RegisterCarrierNotice` reenvía el harness).
+  `relay_after_publish_before_mark`: el relay cae entre publicar y marcar, y el turno crea otro (`_restart_relay`).
+  `crash_points` registra cada caída y su reinicio, y `llm_client_calls` cuenta las llamadas al LLM en el cliente.
 
 Modos de idempotencia (E1, supuesto A3):
 - `full`: inbox en los consumidores y en los comandos, `effect_keys` y servicios con clave.
@@ -132,6 +140,7 @@ from eda_retail.infra.schemas import qualified
 from eda_retail.intake import handler as intake
 from eda_retail.interpreter import consumer as interpreter
 from eda_retail.inventory import handler as inventory
+from eda_retail.llm.fake import CountingLlmClient
 from eda_retail.llm.generation import LlmClient
 from eda_retail.mail_server.directory import synthetic_directory
 from eda_retail.mail_server.server import build_server as build_mail_server
@@ -150,13 +159,19 @@ from eda_retail.step_executors.actions import ACTIONS as EXECUTOR_ACTIONS
 from eda_retail.step_executors.executions import read_executions
 from eda_retail.step_executors.services import SERVICE_OF, Services
 from eda_retail.synthetic.faults import (
+    AFTER_COMMIT_BEFORE_RESPONSE,
+    BEFORE_TX,
     INJECTED_FAILURE,
+    RELAY_AFTER_PUBLISH_BEFORE_MARK,
     ConsumerCrashed,
+    CrashPointReached,
+    CrashPoints,
     EffectRecordCrash,
     EffectRecordCrashes,
     ExecutorOutage,
     FaultPlan,
     FaultyDelivery,
+    WorkerCrashed,
     group_lag,
     reset_group_offsets,
     should_fail,
@@ -184,6 +199,8 @@ IDLE_SLEEP_S = 0.01  # pausa de un turno sin avance mientras los hilos trabajan
 THREADED_CONSUMERS = frozenset({interpreter.SCHEMA})  # consumidores con su propio hilo
 PUBLISHERS = ("intake", "interpreter", "planner", "replanner", "orchestrator", "inventory",
               *(f"executor_{a}" for a in EXECUTOR_ACTIONS))
+# Comandos de la saga tras los que un command handler puede caer sin responder (`after_commit_before_response`).
+RESPONSE_CRASH_COMMANDS = frozenset({"CreatePlan", "RevisePlan", "ExecuteStep"})
 READ_SIDE = ("event_log", "views")  # sin outbox; sus dead letters, migración 0024
 PROCESS_POLL_S = 0.2  # pausa de un turno sin avance con todos los componentes en procesos propios
 RECONNECT_TIMEOUT_S = 60.0  # espera máxima a que la base vuelva para la conexión del harness (E10)
@@ -304,6 +321,23 @@ def crashing(spec: CommandSpec, crashes: EffectRecordCrashes) -> CommandSpec:
         return prepared
 
     return replace(spec, prepare=prepare)
+
+
+class ThenPrepare:
+    """`prepare` que llama a `then` tras el original (E8: la caída `before_tx`). Delega sus atributos en el original,
+    así lo que se inspecciona del `prepare` de un comando (p. ej. `_carrier`) sigue igual."""
+
+    def __init__(self, prepare: Callable[[CommandEnvelope, Any], Any] | None, then: Callable[[], None]) -> None:
+        self._prepare = prepare
+        self._then = then
+
+    def __call__(self, command: CommandEnvelope, payload: Any) -> Any:
+        prepared = self._prepare(command, payload) if self._prepare is not None else None
+        self._then()
+        return prepared
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._prepare, name)
 
 
 def slowed(spec: CommandSpec, seconds: float) -> CommandSpec:
@@ -455,13 +489,16 @@ class InProcessCommands:
     acepta sin responder: se espera `timeout` con `sleep` y la petición queda en `backlog` hasta que se recupera.
     `hang_wait_s` suma lo que el que invoca esperó a cada sistema colgado. Con `executor_capacity` (E14), un ejecutor
     lleno responde 503 a un `ExecuteStep` nuevo; `unavailable_503` los cuenta por ejecutor. `jobs` dice si el comando
-    ya tiene trabajo y cuántos hay abiertos (por defecto, `open_jobs` con la conexión de las entregas)."""
+    ya tiene trabajo y cuántos hay abiertos (por defecto, `open_jobs` con la conexión de las entregas). Con
+    `crash_points` (E8), el sistema cae en `after_commit_before_response` (`crash_before_response`)."""
 
     def __init__(self, conn: psycopg.Connection, targets: dict[str, Target], plan: FaultPlan,
                  crashed: set[str], *, connect: Callable[[], Any] | None = None,
                  clock: Callable[[], float] = time.monotonic, sleep: Callable[[float], Any] = time.sleep,
-                 jobs: Callable[[str, uuid.UUID], tuple[bool, int]] | None = None) -> None:
+                 jobs: Callable[[str, uuid.UUID], tuple[bool, int]] | None = None,
+                 crash_points: CrashPoints | None = None) -> None:
         self._conn = conn
+        self._crash_points = crash_points
         self._jobs = jobs or (lambda schema, command_id: open_jobs(self._conn, schema, command_id))
         self._targets = targets
         self._plan = plan
@@ -521,6 +558,8 @@ class InProcessCommands:
         response = self.deliver(target, command)
         if command_type == "ExecuteStep" and response.status_code == 202:
             self._crash_after_commit(f"executor-{payload['action']}")
+        if command_type in RESPONSE_CRASH_COMMANDS and response.status_code == 202:
+            self.crash_before_response(target.schema)
         return CommandReply(response.status_code, response.body, response.replayed)
 
     def _suffer_outage(self, target: Target, command: CommandEnvelope, timeout: float) -> None:
@@ -590,6 +629,18 @@ class InProcessCommands:
             self.crashes += 1
             raise CommandUnavailable(f"{name} cae tras {self._handled[name]} pasos")
 
+    def crash_before_response(self, schema: str) -> None:
+        """E8: el command handler de `schema` confirmó la transacción de su comando K y cae sin responder; quien lo
+        envió lo reintenta con el mismo `command_id` y el inbox le devuelve la respuesta guardada."""
+        if self._crash_points is None:
+            return
+        unit = self._crash_points.decide(schema, AFTER_COMMIT_BEFORE_RESPONSE)
+        if unit is None:
+            return
+        with self._lock:
+            self.crashes += 1
+        raise CommandUnavailable(f"{schema} cae tras confirmar su comando {unit}, sin responder")
+
 
 @dataclass(frozen=True)
 class RunConfig:
@@ -608,6 +659,7 @@ class RunConfig:
     job_workers: int = 1  # workers de trabajos por componente (E22: dos trabajos con la misma clave a la vez)
     command_timeout_seconds: float | None = None  # COMMAND_HTTP_TIMEOUT_S; None: el de la configuración (E12)
     dispatcher_thread: bool = False  # el dispatcher en su propio hilo, como en el orquestador (E12)
+    job_lease_seconds: float | None = None  # lease de los trabajos (E8: corto); None: JOB_LEASE_SECONDS
     # Modo multiproceso (E16): instancias de `eda-orchestrator` en procesos propios en lugar del orquestador en
     # proceso; los demás componentes siguen aquí y les atienden los comandos por REST (`processes.CommandGateway`).
     orchestrator_processes: int = 0
@@ -712,7 +764,7 @@ class Harness:
         self._custom = llm is not None or data is not None or carrier is not None
         self.data = data or generate(config.seed, config.incidents)
         self._base = base
-        self._llm = llm
+        self._llm = CountingLlmClient(llm) if llm is not None else None
         self.rules = BusinessRules()
         self.name = f"exp_{uuid.uuid4().hex[:10]}"
         self.settings: Settings | None = None
@@ -730,6 +782,8 @@ class Harness:
         self.outcomes: Counter[tuple[str, str]] = Counter()  # (consumidor, resultado) de cada mensaje
         self._inbox_off: frozenset[str] = frozenset()  # consumidores sin inbox (control de E21)
         self.effect_crashes = EffectRecordCrashes(config.faults)  # caídas entre efecto y registro (E22)
+        self.crash_points = CrashPoints(config.faults, crashed=self._crashed)  # caídas de `crash_at` (E8)
+        self.component_crashes = 0  # caídas de un relay o de un worker de trabajos por `crash_at` (E8)
         self.busy_claims = 0  # trabajos que encontraron su clave `in_progress` (E22)
         self.processes: list[OrchestratorProcess] = []  # modo multiproceso (E16)
         self._gateway: CommandGateway | None = None
@@ -753,6 +807,8 @@ class Harness:
         self._stuck: set[str] = set()  # hilos que siguen vivos tras la espera de `_stop_threads`
         self.stall: dict[str, Any] | None = None  # diagnóstico de la ejecución que llegó a `timeout_seconds`
         self._workers: list[JobWorker] = []
+        self._worker_targets: dict[str, Target] = {}  # sistema de cada worker, por nombre del hilo
+        self._dead_workers: list[str] = []  # workers que cayeron en `before_tx` y esperan a que el turno los reinicie
         self._threaded = set(THREADED_CONSUMERS)
         self._kafka_logs: dict[str, KafkaLogRing] = {}  # log de librdkafka por grupo (`consumer_kafka_debug`, E9)
         self._seen_done = 0
@@ -966,8 +1022,13 @@ class Harness:
     @property
     def llm(self) -> LlmClient:
         if self._llm is None:
-            self._llm = Oracle(self.data).client()
+            self._llm = CountingLlmClient(Oracle(self.data).client())
         return self._llm
+
+    @property
+    def llm_client_calls(self) -> dict[str, int]:
+        """Llamadas al LLM por agente contadas en el cliente, también las de una transacción que no se abrió (E8)."""
+        return dict(self.llm.calls)
 
     def _connect(self) -> psycopg.Connection:
         conn = connect(self.settings.database_url)
@@ -979,10 +1040,10 @@ class Harness:
         effects = replace(s, effect_keys_enabled=mode == "full")  # ejecutores e inventory
         targets = {
             "intake": Target(intake.SCHEMA, intake.specs(), mode != "none"),
-            "planner": Target(planner.SCHEMA, self._slowed(planner.SCHEMA, planner.specs(
-                s, self.llm, self.rules, carrier=self._carrier)), mode != "none"),
-            "replanner": Target(replanner.SCHEMA, self._slowed(replanner.SCHEMA,
-                                                               replanner.specs(s, self.llm, self.rules)), mode != "none"),
+            "planner": Target(planner.SCHEMA, self._crashing_before_tx(planner.SCHEMA, self._slowed(
+                planner.SCHEMA, planner.specs(s, self.llm, self.rules, carrier=self._carrier))), mode != "none"),
+            "replanner": Target(replanner.SCHEMA, self._crashing_before_tx(replanner.SCHEMA, self._slowed(
+                replanner.SCHEMA, replanner.specs(s, self.llm, self.rules))), mode != "none"),
             "inventory": Target(inventory.SCHEMA, dict(inventory.specs(effects), ExecuteStep=delaying(failing(
                 counting_busy(inventory.specs(effects)["ExecuteStep"], self._count_busy), inventory.SCHEMA, plan),
                 inventory.SCHEMA, plan, self._defer_result)), mode == "full"),
@@ -1000,6 +1061,22 @@ class Harness:
                                                                             self._defer_result)},
                                                    mode == "full")
         return targets
+
+    def _crashing_before_tx(self, schema: str, specs: dict[str, CommandSpec]) -> dict[str, CommandSpec]:
+        """E8: los trabajos de `schema` cuentan una unidad `before_tx` tras su `prepare` (el LLM) y, en la K, el worker
+        cae con `WorkerCrashed` antes de la transacción."""
+
+        def crash() -> None:
+            unit = self.crash_points.decide(schema, BEFORE_TX)
+            if unit is not None:
+                raise WorkerCrashed(f"worker de {schema} cae antes de la transacción (unidad {unit})")
+
+        return {name: replace(spec, prepare=ThenPrepare(spec.prepare, crash)) if spec.deferred else spec
+                for name, spec in specs.items()}
+
+    def _interpreter_before_tx(self) -> None:
+        """E8: el intérprete cuenta una unidad `before_tx` tras el LLM y, en la K, cae sin abrir la transacción."""
+        self.crash_points.hit(interpreter.SCHEMA, BEFORE_TX)
 
     def _slowed(self, schema: str, specs: dict[str, CommandSpec]) -> dict[str, CommandSpec]:
         seconds = self.config.faults.prepare_delay_seconds.get(schema, 0.0)
@@ -1061,13 +1138,14 @@ class Harness:
         self.commands = InProcessCommands(self._connect(), {target_url(s, t): v for t, v in self.targets.items()},
                                           self.config.faults, self._crashed,
                                           connect=lambda: connect(s.database_url),
-                                          sleep=lambda seconds: self._stop.wait(seconds))
+                                          sleep=lambda seconds: self._stop.wait(seconds),
+                                          crash_points=self.crash_points)
         self._seed_conn = self._connect()
         self._dispatcher_conn = self._connect()
         self._timer_conn = self._connect()
         self._dispatch_backoff = Backoff(0.01, 0.05, seed=self.config.seed)
         # En modo multiproceso, cada instancia del orquestador publica su outbox con su relay, como en producción.
-        self._relays = [ComponentRelay.from_settings(s, schema) for schema in PUBLISHERS
+        self._relays = [self._relay(schema) for schema in PUBLISHERS
                         if not (schema == orchestrator.SCHEMA and self.config.external_orchestrator)]
         # El lado de lectura no tiene outbox: su relay solo publica sus dead letters en la DLQ.
         self._relays += [ComponentRelay.from_settings(s, schema, outbox=False) for schema in READ_SIDE]
@@ -1075,6 +1153,12 @@ class Harness:
         self._readers = [event_log.build(s), *(consumer_for(p, s, self._connect()) for p in self._projectors)]
         self._closables += [*self._relays, *self._readers]
         self._build_deliveries()
+
+    def _relay(self, schema: str) -> ComponentRelay:
+        """El relay del outbox de `schema`; cuenta las filas que publica como unidades `relay_after_publish_before_mark`
+        (E8) y cae en la K."""
+        return ComponentRelay.from_settings(self.settings, schema, after_publish=lambda rows: self.crash_points.hit(
+            schema, RELAY_AFTER_PUBLISH_BEFORE_MARK, rows))
 
     def _factories(self) -> dict[str, Callable[[], EventConsumer]]:
         """Consumidores de Kafka por `group.id`; los de `_inbox_off`, sin inbox."""
@@ -1095,7 +1179,7 @@ class Harness:
                                                session_timeout_ms=self.config.consumer_session_timeout_ms,
                                                max_poll_interval_ms=self.config.consumer_max_poll_interval_ms,
                                                **kafka_log(interpreter.SCHEMA)),
-                settings_for(interpreter.SCHEMA), self.llm, self.rules),
+                settings_for(interpreter.SCHEMA), self.llm, self.rules, after_prepare=lambda: self._interpreter_before_tx()),
         }
         if not self.config.external_orchestrator:  # en modo multiproceso, el grupo es de las instancias
             factories[orchestrator.SCHEMA] = lambda: orchestrator.build_consumer(
@@ -1111,7 +1195,8 @@ class Harness:
         for name, factory in self._factories().items():
             if name in self._threaded:
                 factory = self._tracked_factory(factory)
-            delivery = FaultyDelivery(factory(), self.config.faults, crashed=self._crashed)
+            delivery = FaultyDelivery(factory(), self.config.faults, crashed=self._crashed,
+                                      crash_points=self.crash_points)
             self._deliveries.append((delivery, factory))
 
     def _close_deliveries(self) -> None:
@@ -1131,25 +1216,29 @@ class Harness:
         return lambda: self._tracked(make())
 
     def _tracked_job(self, *args: Any, **kwargs: Any) -> bool:
-        with self._activity.working():
-            did = run_job_once(*args, **kwargs)
+        try:
+            with self._activity.working():
+                did = run_job_once(*args, **kwargs)
+        except WorkerCrashed as exc:  # E8: el hilo del worker termina y el turno arranca otro (`_revive_workers`)
+            log.warning("%s; el harness lo reinicia", exc)
+            worker = threading.current_thread()
+            with self._crash_lock:
+                self.component_crashes += 1
+                self._dead_workers.append(worker.name)
+            if isinstance(worker, JobWorker):
+                worker.request_stop()  # sale de su bucle sin tocar el trabajo, que sigue `running`
+            return False
         if did:
             self._activity.progressed()
         return did
 
     def _start_threads(self) -> None:
         """Un worker de trabajos por componente con comandos largos y un hilo por consumidor de `_threaded`."""
-        s = self.settings
         for target in self.targets.values():
             if not any(spec.deferred for spec in target.specs.values()):
                 continue
             for k in range(self.config.job_workers):
-                worker = JobWorker(lambda: connect(s.database_url), target.schema, target.specs,
-                                   lease_seconds=s.job_lease_seconds, poll_interval=JOB_POLL_S,
-                                   max_attempts=s.job_max_attempts, backoff=Backoff(0.01, 0.05, seed=self.config.seed),
-                                   run_once=self._tracked_job, name=f"harness-jobs-{target.schema}-{k}")
-                worker.start()
-                self._workers.append(worker)
+                self._workers.append(self._start_worker(target, f"harness-jobs-{target.schema}-{k}"))
         if self.config.dispatcher_thread and not self.config.external_orchestrator:
             thread = threading.Thread(target=self._dispatch, daemon=True, name="harness-dispatcher")
             thread.start()
@@ -1160,6 +1249,32 @@ class Harness:
                                           name=f"harness-{delivery.consumer.name}")
                 thread.start()
                 self._threads.append(thread)
+
+    def _lease_seconds(self) -> float:
+        lease = self.config.job_lease_seconds
+        return lease if lease is not None else self.settings.job_lease_seconds
+
+    def _start_worker(self, target: Target, name: str) -> JobWorker:
+        s = self.settings
+        worker = JobWorker(lambda: connect(s.database_url), target.schema, target.specs,
+                           lease_seconds=self._lease_seconds(), poll_interval=JOB_POLL_S,
+                           max_attempts=s.job_max_attempts, backoff=Backoff(0.01, 0.05, seed=self.config.seed),
+                           run_once=self._tracked_job, name=name)
+        worker.start()
+        self._worker_targets[name] = target
+        return worker
+
+    def _revive_workers(self) -> None:
+        """Arranca otro worker, con el mismo nombre y sistema, por cada uno que cayó en `before_tx` (E8), como un proceso
+        que se reinicia. El trabajo que tenía sigue `running` hasta que vence su lease."""
+        with self._crash_lock:
+            dead, self._dead_workers = self._dead_workers, []
+        for name in dead:
+            if self._stop.is_set():
+                return
+            old = next(w for w in self._workers if w.name == name)
+            old.join(JOIN_TIMEOUT_S)
+            self._workers[self._workers.index(old)] = self._start_worker(self._worker_targets[name], name)
 
     def _consume(self, i: int) -> None:
         """Bucle de un consumidor en su hilo, con las mismas caídas y mensajes veneno que en los turnos."""
@@ -1193,10 +1308,25 @@ class Harness:
                               correlation_id=correlation_id, causation_id=None, payload=payload,
                               timeout=self.settings.command_http_timeout_s)
         else:
-            response = self.commands.deliver(self.targets[target], command, conn=self._seed_conn, entry=True)
+            response = self._deliver_entry(self.targets[target], command)
         if check and response.status_code != 202:
             raise RuntimeError(f"{command_type} rechazado: {response.body}")
         return response
+
+    def _deliver_entry(self, target: Target, command: CommandEnvelope) -> Any:
+        """Entrega un comando de entrada. Si intake cae tras confirmar un aviso y sin responder (E8,
+        `after_commit_before_response`), el harness, que lo envía en lugar del transportista, lo reenvía con el mismo
+        `command_id`: el inbox le devuelve la respuesta guardada."""
+        while True:
+            response = self.commands.deliver(target, command, conn=self._seed_conn, entry=True)
+            if command.command_type != "RegisterCarrierNotice" or response.status_code != 202:
+                return response
+            try:
+                self.commands.crash_before_response(target.schema)
+            except CommandUnavailable as exc:
+                log.info("%s; el harness reenvía el aviso con el mismo command_id", exc)
+                continue
+            return response
 
     def seed_orders(self, *, wait: bool = True) -> None:
         """Siembra pedidos y existencias. Con `wait`, espera a que `view_orders` los tenga (como un despliegue ya
@@ -1258,6 +1388,7 @@ class Harness:
         componentes en procesos propios, solo mide lo que avanzaron."""
         if self.config.component_processes:
             return self._observe_components()
+        self._revive_workers()
         progressed = sum(self._publish(r) for r in self._relays)
         progressed += sum(r.run_once(timeout=0) for r in self._active_readers())
         for i, (delivery, factory) in enumerate(self._deliveries):
@@ -1292,24 +1423,41 @@ class Harness:
         return progressed
 
     def _publish(self, relay: ComponentRelay) -> int:
-        """Outbox y dead letters de un relay. Con `tolerate_relay_errors`, un lote que el broker no confirma (o un
-        productor que no puede encolar) se cuenta y el turno sigue, como `ComponentRelay.run_until`."""
+        """Outbox y dead letters de un relay. Un relay que cae a propósito entre publicar y marcar (E8) se cambia por
+        otro y el turno sigue; cuenta como avance."""
         timeout = self.config.relay_flush_timeout_seconds
-        if not self.config.tolerate_relay_errors:
-            return relay.run_once(flush_timeout=timeout) + relay.publish_dead_letters(flush_timeout=timeout)
-        started = time.monotonic()
         try:
-            return relay.run_once(flush_timeout=timeout) + relay.publish_dead_letters(flush_timeout=timeout)
-        except (RelayDeliveryError, KafkaException, BufferError) as exc:
-            self.relay_errors[relay._schema] += 1
-            error = exc.args[0] if isinstance(exc, KafkaException) and exc.args else None
-            if error is not None and getattr(error, "fatal", lambda: False)():  # el productor ya no se recupera
-                log.error("relay de %s: error fatal del productor: %s", relay._schema, error)
-            else:
-                log.info("relay de %s sin confirmar: %s", relay._schema, type(exc).__name__)
-            return 0
-        finally:
-            self.relay_max_seconds = max(self.relay_max_seconds, time.monotonic() - started)
+            if not self.config.tolerate_relay_errors:
+                return relay.run_once(flush_timeout=timeout) + relay.publish_dead_letters(flush_timeout=timeout)
+            # Con `tolerate_relay_errors`, un lote que el broker no confirma (o un productor que no puede encolar) se
+            # cuenta y el turno sigue, como `ComponentRelay.run_until`.
+            started = time.monotonic()
+            try:
+                return relay.run_once(flush_timeout=timeout) + relay.publish_dead_letters(flush_timeout=timeout)
+            except (RelayDeliveryError, KafkaException, BufferError) as exc:
+                self.relay_errors[relay._schema] += 1
+                error = exc.args[0] if isinstance(exc, KafkaException) and exc.args else None
+                if error is not None and getattr(error, "fatal", lambda: False)():  # el productor ya no se recupera
+                    log.error("relay de %s: error fatal del productor: %s", relay._schema, error)
+                else:
+                    log.info("relay de %s sin confirmar: %s", relay._schema, type(exc).__name__)
+                return 0
+            finally:
+                self.relay_max_seconds = max(self.relay_max_seconds, time.monotonic() - started)
+        except CrashPointReached as exc:
+            self._restart_relay(relay, exc)
+            return 1
+
+    def _restart_relay(self, relay: ComponentRelay, exc: Exception) -> None:
+        """Las filas del lote siguen pendientes (la transacción se deshizo): el relay nuevo las vuelve a publicar."""
+        log.warning("%s; el harness reinicia el relay", exc)
+        with self._crash_lock:
+            self.component_crashes += 1
+        with contextlib.suppress(Exception):
+            relay.close()
+        restarted = self._relay(relay._schema)
+        self._relays[self._relays.index(relay)] = restarted
+        self._closables.append(restarted)
 
     def _result_freshness(self, command: CommandEnvelope) -> str:
         """E12: el resultado del comando llegará `stale` si su plazo ya se resolvió (venció o llegó otro resultado),
@@ -1623,7 +1771,7 @@ class Harness:
             with contextlib.suppress(Exception):
                 closable.close()
         s = self.settings
-        self._relays = [ComponentRelay.from_settings(s, schema) for schema in PUBLISHERS
+        self._relays = [self._relay(schema) for schema in PUBLISHERS
                         if not (schema == orchestrator.SCHEMA and self.config.external_orchestrator)]
         self._relays += [ComponentRelay.from_settings(s, schema, outbox=False) for schema in READ_SIDE]
         with self.conn.transaction():
@@ -1687,7 +1835,8 @@ class Harness:
             self.commands = InProcessCommands(self._connect(), {target_url(self.settings, t): v for t, v in
                                                                 self.targets.items()}, self.config.faults, self._crashed,
                                               connect=lambda: connect(self.settings.database_url),
-                                              sleep=lambda seconds: self._stop.wait(seconds))
+                                              sleep=lambda seconds: self._stop.wait(seconds),
+                                              crash_points=self.crash_points)
             self._init_threads()
             self._start_threads()
         rows = self.conn.execute(
@@ -1706,7 +1855,7 @@ class Harness:
     @property
     def crashes(self) -> int:
         commands = getattr(self, "commands", None)  # con los componentes en procesos no hay comandos en proceso
-        return self.consumer_crashes + (commands.crashes if commands is not None else 0)
+        return self.consumer_crashes + self.component_crashes + (commands.crashes if commands is not None else 0)
 
     def duplicates(self) -> dict[str, int]:
         self.conn.commit()  # cierra la transacción implícita de las lecturas anteriores
