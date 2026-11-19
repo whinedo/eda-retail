@@ -15,10 +15,14 @@
 # shows which test was running. The pytest step has its own timeout, below the job's, so the service logs are
 # printed even then. The shard commands mirror the local pytest hook of .pre-commit-config.yaml (`uv run pytest -q`):
 # keep the selection in sync.
+# A pull request that only changes documentation (docs/, specs/, odd/ or any .md file) runs hygiene and fast but skips
+# the slow shards, which read none of those files; they still report success, so `checks` passes. push runs only on
+# main: a PR's branch is already tested by its pull_request run.
 name: checks
 
 on:
   push:
+    branches: [main]  # a PR already runs on pull_request: pushing to its branch would run everything twice
   pull_request:
     branches: [main]
   workflow_dispatch:
@@ -87,20 +91,45 @@ jobs:
         shard: [fast, slow-a, slow-b, slow-c, slow-d]
     steps:
       - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0  # the docs-only check below diffs against the PR base
+
+      - name: Alcance del cambio
+        id: scope
+        # A PR that only touches documentation (docs/, specs/, odd/ or any .md) skips the slow shards: no slow test
+        # reads those files. fast always runs (it checks docs/README.md). push and workflow_dispatch run everything.
+        run: |
+          code=true
+          if [ "${{ github.event_name }}" = pull_request ]; then
+            changed=$(git diff --name-only "${{ github.event.pull_request.base.sha }}" HEAD)
+            echo "$changed"
+            if [ -n "$changed" ] && ! echo "$changed" | grep -qvE '^(docs|specs|odd)/|\.md$'; then
+              code=false
+            fi
+          fi
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+
+      - name: Shard saltado (solo documentación)
+        if: matrix.shard != 'fast' && steps.scope.outputs.code == 'false'
+        run: echo "El PR solo cambia documentación; ${{ matrix.shard }} no se ejecuta."
 
       - uses: astral-sh/setup-uv@v6
+        if: matrix.shard == 'fast' || steps.scope.outputs.code == 'true'
         with:
           enable-cache: true
 
       - name: Instalar Python y dependencias
+        if: matrix.shard == 'fast' || steps.scope.outputs.code == 'true'
         run: |
           uv python install 3.12
           uv sync --locked
 
       - name: Levantar PostgreSQL y Kafka
+        if: matrix.shard == 'fast' || steps.scope.outputs.code == 'true'
         run: docker compose up -d --wait postgres kafka
 
       - name: pytest (${{ matrix.shard }})
+        if: matrix.shard == 'fast' || steps.scope.outputs.code == 'true'
         timeout-minutes: 18  # below the job's 20, so the service logs below are still printed
         run: |
           case "${{ matrix.shard }}" in
