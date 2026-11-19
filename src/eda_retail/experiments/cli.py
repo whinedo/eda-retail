@@ -22,6 +22,7 @@ from eda_retail.experiments.e4_rebuild import run_e4
 from eda_retail.experiments.e5_plan_quality import run_e5
 from eda_retail.experiments.e6_compare import run_e6
 from eda_retail.experiments.e7_audit import run_e7
+from eda_retail.experiments.e8_crash_matrix import parse_cells, run_e8
 from eda_retail.experiments.e10_postgres_down import run_e10
 from eda_retail.experiments.e11_late_results import run_e11
 from eda_retail.experiments.e12_executor_down_hung import run_e12
@@ -43,12 +44,12 @@ from eda_retail.llm.ollama_client import OllamaClient
 
 # E9 (caída de Kafka) está retirado (spec experiments, «E9 Caída de Kafka: retirado»).
 EXPERIMENTS: dict[str, Callable[..., Report]] = {
-    "e1": run_e1, "e2": run_e2, "e3": run_e3, "e4": run_e4, "e5": run_e5, "e6": run_e6, "e7": run_e7,
+    "e1": run_e1, "e2": run_e2, "e3": run_e3, "e4": run_e4, "e5": run_e5, "e6": run_e6, "e7": run_e7, "e8": run_e8,
     "e10": run_e10, "e11": run_e11, "e12": run_e12, "e13": run_e13, "e14": run_e14, "e15": run_e15, "e16": run_e16, "e17": run_e17, "e18": run_e18, "e19": run_e19, "e20": run_e20, "e21": run_e21,
     "e22": run_e22, "e23": run_e23,
 }
 # Tamaño del escenario de cada experimento en la spec (E7 elige 10 de ellas al azar).
-DEFAULT_INCIDENTS = {"e1": 50, "e2": 50, "e3": 30, "e4": 200, "e5": 40, "e6": 50, "e7": 50, "e10": 50, "e11": 50, "e12": 50, "e13": 50, "e14": 200, "e15": 50, "e16": 50, "e17": 50, "e18": 100, "e19": 200, "e20": 50, "e21": 50,
+DEFAULT_INCIDENTS = {"e1": 50, "e2": 50, "e3": 30, "e4": 200, "e5": 40, "e6": 50, "e7": 50, "e8": 20, "e10": 50, "e11": 50, "e12": 50, "e13": 50, "e14": 200, "e15": 50, "e16": 50, "e17": 50, "e18": 100, "e19": 200, "e20": 50, "e21": 50,
                     "e22": 50, "e23": 50}
 LLM_EXPERIMENTS = {"e5", "e6"}  # con LLM real y repeticiones (spec «Repetición para el componente no determinista»)
 LLMS = {"oracle": lambda data, repetition: Oracle(data).client()}
@@ -62,7 +63,7 @@ def ollama_factory(seed: int, temperature: float) -> Callable[..., Any]:
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Experimentos de la PoC (E1 a E7, E10, E11, E12, E13, E16, E17, E18, E21, E22 y E23)")
+    parser = argparse.ArgumentParser(description="Experimentos de la PoC (E1 a E8 y E10 a E23)")
     parser.add_argument("experiment", choices=sorted(EXPERIMENTS))
     parser.add_argument("--seed", type=int, default=42, help="semilla del generador y de los fallos (42)")
     parser.add_argument("--incidents", type=int, help="número de incidencias (por defecto, el de la spec)")
@@ -72,7 +73,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--threshold", type=float, help="umbral de acierto de H5 (0.8 por defecto)")
     parser.add_argument("--temperature", type=float,
                         help=f"temperatura de Ollama en E5 y E6 ({DEFAULT_TEMPERATURE} por defecto)")
+    parser.add_argument("--cells", type=lambda text: [c for c in text.split(",") if c],
+                        help="celdas de E8 separadas por comas, `<componente>@<punto>` (por defecto, las 23)")
     args = parser.parse_args(argv)
+    if args.cells is not None:
+        if args.experiment != "e8":
+            parser.error("--cells solo se usa en e8")
+        try:
+            parse_cells(args.cells)
+        except ValueError as exc:
+            parser.error(str(exc))
     if args.experiment not in LLM_EXPERIMENTS and any(
             v is not None for v in (args.llm, args.repetitions, args.threshold, args.temperature)):
         parser.error("--llm, --repetitions, --threshold y --temperature solo se usan en "
@@ -88,6 +98,8 @@ def incidents_for(args: argparse.Namespace) -> int:
 
 def experiment_kwargs(args: argparse.Namespace) -> dict[str, Any]:
     kwargs: dict[str, Any] = {"seed": args.seed, "incidents": incidents_for(args)}
+    if args.cells is not None:
+        kwargs["cells"] = args.cells
     if args.experiment in LLM_EXPERIMENTS:
         temperature = args.temperature if args.temperature is not None else DEFAULT_TEMPERATURE
         kwargs["llm"] = LLMS["oracle"] if args.llm == "oracle" else ollama_factory(args.seed, temperature)

@@ -436,13 +436,15 @@ class Target:
 
 @dataclass
 class CommandDelivery:
-    """Las entregas de un comando y la respuesta de cada una, `(status_code, body)` (E22)."""
+    """Las entregas de un comando y la respuesta de cada una, `(status_code, body)` (E22). `replayed`: cuántas de esas
+    respuestas devolvió el inbox, guardadas de una entrega anterior del mismo `command_id` (E8)."""
 
     command_type: str
     command_id: uuid.UUID
     action: str | None
     idempotency_key: str | None
     responses: list[tuple[int, Any]]
+    replayed: int = 0
 
 
 def distinct_responses(deliveries: Iterable[CommandDelivery]) -> int:
@@ -546,7 +548,8 @@ class InProcessCommands:
             for c in commands:
                 self.deliveries.append(CommandDelivery(
                     c.command_type, c.command_id, payload.get("action"), payload.get("idempotency_key"),
-                    [(r.status_code, r.body) for s, r in zip(sent, responses, strict=True) if s is c]))
+                    [(r.status_code, r.body) for s, r in zip(sent, responses, strict=True) if s is c],
+                    sum(bool(r.replayed) for s, r in zip(sent, responses, strict=True) if s is c)))
         # Como antes de E22, la respuesta de la última entrega de `command` (sin inbox puede ser un rechazo).
         return responses[len(sent) - 1 - sent[::-1].index(command)]
 
