@@ -36,6 +36,7 @@ eda-web = "eda_retail.web.cli:main"
 eda-mail-server = "eda_retail.mail_server.cli:main"
 eda-carrier-agent = "eda_retail.carrier_agent.cli:main"
 eda-support = "eda_retail.support.cli:main"
+eda-agent-eval = "eda_retail.agent_eval.cli:main"
 
 [dependency-groups]
 dev = [

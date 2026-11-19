@@ -141,7 +141,7 @@ Con `LLM_RECORD_DIR` definido, el cliente real SHALL guardar cada petición y su
 
 ### Requirement: Evaluación por agente
 
-`eda-agent-eval <directorio>` SHALL reproducir un directorio grabado con el harness y dar, por agente y `prompt_version`: la tasa de salidas aceptadas al primer intento, la media de intentos, los rechazos por motivo (`ungrounded_reference`, esquema y cada regla de negocio), los escalados por motivo y los tokens de entrada y salida. No escribe en la base ni en Kafka.
+`eda-agent-eval <directorio>` SHALL leer las ejecuciones del harness grabadas en un directorio (cada una con sus intentos, el motivo de cada rechazo y el de su escalado, sin prompt ni salida) y dar, por agente y `prompt_version`: la tasa de salidas aceptadas al primer intento, la media de intentos, los rechazos por motivo (`ungrounded_reference`, esquema y cada regla de negocio), los escalados por motivo y los tokens de entrada y salida. No escribe en la base ni en Kafka.
 
 #### Scenario: Informe de un directorio grabado
 

@@ -19,6 +19,7 @@ from typing import Any
 from pydantic import BaseModel
 
 from eda_retail.llm.generation import UNGROUNDED_REFERENCE, Budget, Generation, LlmClient, LlmRequest, generate
+from eda_retail.llm.replay import outcome_log_from_env
 from eda_retail.llm.schemas import strict_schema
 
 INPUT_TOO_LONG = "input_too_long"
@@ -102,7 +103,8 @@ class AgentHarness:
         self._llm = llm
         self._max_generations = max_generations
         self._max_input_chars = max_input_chars
-        self._on_outcome = on_outcome
+        # Sin un hook explícito, el de `LLM_RECORD_DIR` (spec agent-harness, «Grabación y reproducción de llamadas»).
+        self._on_outcome = on_outcome if on_outcome is not None else outcome_log_from_env()
 
     def run(self, request: LlmRequest, *, budget: Budget, check: Check | None = None,
             ground: Check | None = None, untrusted: str | None = None) -> AgentOutcome[Any]:
