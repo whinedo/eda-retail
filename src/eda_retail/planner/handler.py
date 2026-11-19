@@ -45,8 +45,9 @@ from eda_retail.events.catalog import Cause, PlanStep, Severity, build_event
 from eda_retail.events.envelope import EventEnvelope
 from eda_retail.infra.commands import Accepted, CommandEnvelope, CommandSpec, Rejected
 from eda_retail.infra.db import connect
-from eda_retail.llm.generation import Budget, LlmCall, LlmClient, generate
-from eda_retail.llm.prompts.planner import low_severity_plan, plan_request
+from eda_retail.llm.generation import Budget, LlmCall, LlmClient
+from eda_retail.llm.harness import AgentHarness
+from eda_retail.llm.prompts.planner import ground_plan, low_severity_plan, plan_request
 from eda_retail.llm.schemas import PlanProposal
 from eda_retail.plan_validation import PlanRejected, refund_over_reissue, validate_plan
 from eda_retail.planner.carrier import CarrierConsultant, CarrierConsultation, render_options
@@ -117,7 +118,7 @@ class PlanPreparer:
 
     def __init__(self, llm: LlmClient, rules: BusinessRules, *,
                  context: Callable[[str, list[str]], PlanContext], carrier: CarrierConsultant | None = None) -> None:
-        self._llm = llm
+        self._harness = AgentHarness(llm, max_generations=rules.max_generations)
         self._rules = rules
         self._context = context
         self._carrier = carrier  # None: versión 1, no se consulta al transportista
@@ -142,8 +143,7 @@ class PlanPreparer:
         options = render_options(consultation.options) if consultation and consultation.options else None
         request = plan_request(incident_id, payload.cause.value, payload.severity.value,
                                payload.estimated_delay_hours, order_lines(ctx.amounts), carrier_options=options)
-        gen = generate(self._llm, request, PlanProposal, max_generations=self._rules.max_generations,
-                       budget=ctx.budget, check=check)
+        gen = self._harness.run(request, budget=ctx.budget, check=check, ground=ground_plan(payload.order_ids))
         steps = gen.value.command_steps() if gen.value is not None else None
         return Prepared(False, steps, gen.reason, gen.calls, ctx.amounts, consultation)
 

@@ -6,11 +6,14 @@ campos del esquema (`extra="forbid"`). Lo usan el componente `interpreter` y el 
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from pydantic import Field
 
 from eda_retail.events.catalog import Cause, Severity
 from eda_retail.llm.generation import LlmRequest
-from eda_retail.llm.schemas import LlmOutput, strict_schema
+from eda_retail.llm.harness import AgentSpec, delimit, ground_in_text
+from eda_retail.llm.schemas import LlmOutput
 
 SYSTEM = """Eres el intérprete de avisos de transportistas de una tienda online.
 Extrae del aviso los pedidos afectados, la causa, el retraso estimado en horas y la gravedad.
@@ -34,16 +37,25 @@ class NoticeInterpretation(LlmOutput):
     severity: Severity
 
 
-def notice_request(incident_id: str, carrier: str, raw_text: str) -> LlmRequest:
-    """Petición al LLM: el texto del aviso va delimitado como datos (contenido no confiable)."""
-    return LlmRequest(
-        agent="interpreter", incident_id=incident_id, system=SYSTEM,
-        prompt=f"Transportista: {carrier}\n<aviso>\n{raw_text}\n</aviso>",
-        schema=strict_schema(NoticeInterpretation), max_tokens=2_000,
-    )
+TEMPLATE = "Transportista: {carrier}\n{notice}"
+NOTICE_TAG = "aviso"
 
 
 def check_interpretation(value: NoticeInterpretation) -> str | None:
     if value.cause == Cause.UNKNOWN and value.severity.rank < Severity.MEDIUM.rank:
         return "una causa unknown exige severity medium o superior"
     return None
+
+
+SPEC = AgentSpec(agent="interpreter", prompt_version="1", system=SYSTEM, templates=(TEMPLATE, NOTICE_TAG),
+                 output=NoticeInterpretation, max_tokens=2_000, check=check_interpretation)
+
+
+def notice_request(incident_id: str, carrier: str, raw_text: str) -> LlmRequest:
+    """Petición al LLM: el texto del aviso va delimitado como datos (contenido no confiable)."""
+    return SPEC.request(incident_id, TEMPLATE.format(carrier=carrier, notice=delimit(NOTICE_TAG, raw_text)))
+
+
+def ground_interpretation(raw_text: str) -> Callable[[NoticeInterpretation], str | None]:
+    """Grounding: cada `order_id` de la salida aparece literalmente en el aviso."""
+    return lambda value: ground_in_text(value.order_ids, raw_text)

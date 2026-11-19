@@ -9,6 +9,7 @@ agente registra después cada llamada (`RecordLlmCall`) en su transacción.
 from __future__ import annotations
 
 import json
+import re
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
@@ -31,6 +32,9 @@ class LlmRequest:
     prompt: str
     schema: dict[str, Any]
     max_tokens: int = 16_000
+    # Versión y huella del prompt del agente (spec agent-harness); las pone su `AgentSpec`.
+    prompt_version: str = "unknown"
+    prompt_hash: str | None = None
 
 
 @dataclass(frozen=True)
@@ -60,6 +64,11 @@ class LlmCall:
     latency_ms: int
     validation_passed: bool
     attempt: int
+    prompt_version: str = "unknown"
+    prompt_hash: str | None = None
+    # Por qué se rechazó la salida (no va al evento): `schema`, `llm_refused`, `ungrounded_reference`, el código
+    # de una regla de negocio o `business_rule`. None si se aceptó.
+    rejection: str | None = None
 
 
 @dataclass(frozen=True)
@@ -123,10 +132,12 @@ def generate[T: BaseModel](
         value, error = parse_output(response, output)
         if value is not None and check is not None:
             error = check(value)
+        rejection = None if error is None else rejection_code(error, parsed=value is not None)
         call = LlmCall(
             agent=request.agent, model=response.model, tokens_in=response.tokens_in,
             tokens_out=response.tokens_out, latency_ms=response.latency_ms,
             validation_passed=error is None, attempt=attempt,
+            prompt_version=request.prompt_version, prompt_hash=request.prompt_hash, rejection=rejection,
         )
         calls.append(call)
         budget = budget.charge(call)
@@ -135,6 +146,20 @@ def generate[T: BaseModel](
         errors.append(error)
         prompt = f"{request.prompt}\n\nLa propuesta anterior se rechazó: {error}. Genera una nueva."
     return Generation(None, LLM_OUTPUT_INVALID, calls, errors)
+
+
+UNGROUNDED_REFERENCE = "ungrounded_reference"
+_CODE = re.compile(r"([a-z][a-z0-9]*(?:_[a-z0-9]+)+)(?=$|[\s:(])")
+
+
+def rejection_code(error: str, *, parsed: bool) -> str:
+    """El motivo de un rechazo para contarlo: el esquema, el rechazo del modelo, el grounding o la regla."""
+    if error == LLM_REFUSED:
+        return LLM_REFUSED
+    if not parsed:
+        return "schema"
+    match = _CODE.match(error)  # un código como `refund_limit (detalle)` o `ungrounded_reference: detalle`
+    return match.group(1) if match else "business_rule"
 
 
 def _call(client: LlmClient, request: LlmRequest, attempt: int) -> LlmResponse:

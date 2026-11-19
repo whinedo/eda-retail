@@ -26,8 +26,9 @@ from eda_retail.config import Settings
 from eda_retail.events.catalog import build_event
 from eda_retail.events.envelope import EventEnvelope
 from eda_retail.infra.commands import Accepted, CommandEnvelope, Rejected
-from eda_retail.llm.generation import Budget, LlmCall, LlmClient, generate
-from eda_retail.llm.prompts.interpreter import NoticeInterpretation, check_interpretation, notice_request
+from eda_retail.llm.generation import Budget, LlmCall, LlmClient
+from eda_retail.llm.harness import AgentHarness
+from eda_retail.llm.prompts.interpreter import NoticeInterpretation, ground_interpretation, notice_request
 from eda_retail.rules import BusinessRules
 
 SCHEMA = "interpreter"
@@ -82,7 +83,8 @@ class NoticePreparer:
         budget: Callable[[str], Budget],
         known_orders: Callable[[list[str]], list[str]],
     ) -> None:
-        self._llm = llm
+        self._harness = AgentHarness(llm, max_generations=rules.max_generations,
+                                     max_input_chars=rules.max_untrusted_input_chars)
         self._rules = rules
         self._interpreted = interpreted
         self._budget = budget
@@ -92,10 +94,9 @@ class NoticePreparer:
         if self._interpreted(payload.carrier_notice_id):
             return Prepared(duplicate=True)  # no se paga otra vez el LLM
         incident_id = command.correlation_id
-        gen = generate(
-            self._llm, notice_request(incident_id, payload.carrier, payload.raw_text), NoticeInterpretation,
-            max_generations=self._rules.max_generations, budget=self._budget(incident_id),
-            check=check_interpretation,
+        gen = self._harness.run(
+            notice_request(incident_id, payload.carrier, payload.raw_text), budget=self._budget(incident_id),
+            ground=ground_interpretation(payload.raw_text), untrusted=payload.raw_text,
         )
         known = self._known_orders(gen.value.order_ids) if gen.value is not None else []
         return Prepared(False, gen.value, gen.reason, gen.calls, known)
