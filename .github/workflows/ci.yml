@@ -7,7 +7,7 @@
 #   fast    -m "not slow"                          (unit and integration tests that are not whole experiments)
 #   slow-a  -m slow on SLOW_A                      (the experiment files listed below)
 #   slow-c  -m slow on SLOW_C                      (the experiment files listed below)
-#   slow-d  -m slow on SLOW_D                      (E10, which stops and pauses its shard's PostgreSQL)
+#   slow-d  -m slow on SLOW_D                      (E8, and E10, which stops and pauses its shard's PostgreSQL)
 #   slow-b  -m slow, ignoring SLOW_A, SLOW_C and SLOW_D (every other slow test, wherever it lives)
 # A file is listed in only one of SLOW_A, SLOW_C and SLOW_D. Every shard prints its slowest tests (--durations) to
 # rebalance them when needed. slow-d dumps every thread's stack if a test (fixture setup included) runs past
@@ -45,6 +45,7 @@ env:
     tests/integration/test_e20_v2_dependencies.py
     tests/integration/test_multiprocess_components.py
   SLOW_D: >-
+    tests/integration/test_e8_crash_matrix.py
     tests/integration/test_e10_postgres_down.py
 
 jobs:
