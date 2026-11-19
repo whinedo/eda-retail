@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import uuid
+from collections.abc import Callable
 from typing import Any
 
 import psycopg
@@ -59,13 +60,17 @@ def _interpreted(conn: psycopg.Connection, carrier_notice_id: str) -> bool:
 
 
 class InterpretNotice:
-    """Unidad de trabajo de un `CarrierNoticeReceived`: el LLM va antes de la transacción."""
+    """Unidad de trabajo de un `CarrierNoticeReceived`: el LLM va antes de la transacción.
 
-    def __init__(self, settings: Settings, llm: LlmClient, rules: BusinessRules) -> None:
+    `after_prepare` (el harness, E8: caída `before_tx`) se llama tras `prepare` y antes de abrir la transacción."""
+
+    def __init__(self, settings: Settings, llm: LlmClient, rules: BusinessRules, *,
+                 after_prepare: Callable[[], None] | None = None) -> None:
         self._settings = settings
         self._llm = llm
         self._rules = rules
         self._prices = Prices.from_settings(settings)
+        self._after_prepare = after_prepare
 
     def process(self, conn: psycopg.Connection, event: EventEnvelope) -> Outcome:
         incident_id = incident_id_for_notice(event.payload["carrier_notice_id"])
@@ -77,9 +82,20 @@ class InterpretNotice:
             budget=lambda incident: budget_from_cost(get_incident_cost(conn, incident, self._prices), self._rules),
             known_orders=lambda order_ids: _known_orders(conn, order_ids),
         )
+        if self._after_prepare is not None:
+            prepare = _then(prepare, self._after_prepare)
         spec = CommandSpec(OpenIncident, open_incident(self._settings), prepare=prepare)
         response = execute_command(conn, SCHEMA, command, spec)
         return Outcome.DUPLICATE if response.replayed else Outcome.PROCESSED
+
+
+def _then(prepare: Callable[[CommandEnvelope, Any], Any], after: Callable[[], None]) -> Callable[..., Any]:
+    def prepared(command: CommandEnvelope, payload: Any) -> Any:
+        result = prepare(command, payload)
+        after()
+        return result
+
+    return prepared
 
 
 def _resolve(conn: psycopg.Connection, incident_id: str, status: str, order_ids: list[str],
@@ -146,9 +162,10 @@ def escalate_dead_letter(conn: psycopg.Connection, correlation_id: str, event_id
 
 
 def build_consumer(conn: psycopg.Connection, kafka: Consumer, settings: Settings, llm: LlmClient,
-                   rules: BusinessRules) -> EventConsumer:
+                   rules: BusinessRules, *, after_prepare: Callable[[], None] | None = None) -> EventConsumer:
+    notice = InterpretNotice(settings, llm, rules, after_prepare=after_prepare)
     return EventConsumer(
         SCHEMA, conn, kafka, settings.events_topic,
-        dict(zip(EVENT_TYPES, (InterpretNotice(settings, llm, rules), resume_on_order), strict=True)),
+        dict(zip(EVENT_TYPES, (notice, resume_on_order), strict=True)),
         inbox_enabled=settings.inbox_enabled, on_dead_letter=escalate_dead_letter, schema=SCHEMA,
     )

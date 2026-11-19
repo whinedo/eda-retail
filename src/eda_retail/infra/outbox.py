@@ -19,7 +19,7 @@ from __future__ import annotations
 import json
 import logging
 import threading
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from typing import Any
 
 import psycopg
@@ -183,8 +183,12 @@ class ComponentRelay:
         dlq_topic: str | None = None,
         outbox: bool = True,
         reconnect: Reconnect | None = None,
+        after_publish: Callable[[int], None] | None = None,
     ) -> None:
         self._conn = conn
+        # El harness (E8, `relay_after_publish_before_mark`): se llama con las filas del lote ya publicado y confirmado,
+        # antes de marcarlas. Si lanza, la transacción se deshace y las filas siguen pendientes.
+        self._after_publish = after_publish
         self._reconnect = reconnect  # None: conserva su conexión (harness en proceso); si no, abre otra al perderla
         self._has_outbox = outbox  # False: solo publica dead letters (lado de lectura, sin outbox)
         self._producer = producer
@@ -195,7 +199,8 @@ class ComponentRelay:
         self._dlq_topic = dlq_topic
 
     @classmethod
-    def from_settings(cls, settings: Settings, schema: str, *, outbox: bool = True) -> ComponentRelay:
+    def from_settings(cls, settings: Settings, schema: str, *, outbox: bool = True,
+                      after_publish: Callable[[int], None] | None = None) -> ComponentRelay:
         return cls(
             connect(settings.database_url),
             make_producer(settings.kafka_bootstrap_servers),
@@ -204,6 +209,7 @@ class ComponentRelay:
             dlq_topic=settings.dlq_topic,
             outbox=outbox,
             reconnect=lambda: connect(settings.database_url),
+            after_publish=after_publish,
         )
 
     def run_once(self, batch_size: int = 100, flush_timeout: float = 30.0) -> int:
@@ -240,6 +246,8 @@ class ComponentRelay:
             if pending or errors:
                 # Rollback: las filas siguen pendientes y el lote se republica.
                 raise RelayDeliveryError(f"entrega no confirmada: pendientes={pending}, errores={errors}")
+            if self._after_publish is not None:
+                self._after_publish(len(rows))
             ids = [row["id"] for row in rows]
             self._conn.execute(
                 f"""

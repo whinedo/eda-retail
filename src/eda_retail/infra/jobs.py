@@ -210,8 +210,12 @@ class JobWorker(threading.Thread):
             if conn is not None:
                 conn.close()
 
-    def stop(self, timeout: float | None = None) -> None:
+    def request_stop(self) -> None:
+        """Pide que el worker pare tras el trabajo en curso, sin esperarlo (se puede llamar desde su propio hilo)."""
         self._stop_requested.set()
+
+    def stop(self, timeout: float | None = None) -> None:
+        self.request_stop()
         self.join(timeout)
 
 
