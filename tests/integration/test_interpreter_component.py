@@ -145,6 +145,21 @@ def test_invalid_output_escalates_with_the_generation_reason(base_settings, data
     assert events[-1]["payload"] == {"incident_id": incident, "reason": "llm_output_invalid"}
 
 
+def test_a_notice_too_long_escalates_with_input_too_long(base_settings, database_url, conn):
+    """Aviso demasiado largo: no se llama al LLM y se publica IncidentEscalated con input_too_long"""
+    rules = BusinessRules()
+    event, incident = _notice("P-1 " + "x" * (rules.max_untrusted_input_chars - 3))
+    llm = FakeLlmClient([])
+
+    assert build_consumer(conn, _NoKafka(), _settings(base_settings, database_url), llm, rules).process(
+        event) is Outcome.PROCESSED
+
+    assert llm.requests == []
+    events = outbox(conn, "interpreter", incident)
+    assert [e["event_type"] for e in events] == ["IncidentEscalated"]
+    assert events[0]["payload"] == {"incident_id": incident, "reason": "input_too_long"}
+
+
 def test_lagging_projection_parks_the_notice_and_order_registered_resumes_it(base_settings, database_url, conn):
     """Proyección atrasada: se aparca con NoticeParked y el OrderRegistered de P-1007 lo reanuda con sus datos"""
     order = f"P-{uuid.uuid4().hex[:8]}"

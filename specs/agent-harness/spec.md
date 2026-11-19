@@ -10,7 +10,7 @@ Aplica a los cuatro agentes con LLM: el intérprete (`interpreter`), el planific
 
 ### Requirement: Contrato declarado por agente
 
-Cada agente con LLM SHALL declarar un `AgentSpec` con su nombre, la versión de su prompt (`prompt_version`), el modelo pydantic de su salida, su comprobación de negocio, su límite de generaciones y el `max_tokens` de cada llamada. El harness MUST NOT llamar al LLM para un agente sin `AgentSpec` registrado. Cambiar el texto del prompt de sistema o de la plantilla MUST cambiar su `prompt_version`.
+Cada agente con LLM SHALL declarar un `AgentSpec` con su nombre, la versión de su prompt (`prompt_version`), el modelo pydantic de su salida, su comprobación de negocio fija (si la tiene) y el `max_tokens` de cada llamada. Las comprobaciones que necesitan el contexto de la incidencia (importes, plan vigente) se pasan al harness en cada ejecución, y el límite de generaciones es el de `LLM_MAX_GENERATIONS`, común a todos los agentes (spec llm-boundaries, «Reintentos de generación acotados»). El harness MUST NOT llamar al LLM para un agente sin `AgentSpec` registrado. Cambiar el texto del prompt de sistema o de la plantilla MUST cambiar su `prompt_version`.
 
 #### Scenario: Los cuatro agentes declaran su contrato
 
