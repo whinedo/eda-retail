@@ -112,6 +112,25 @@ def _invariants(report: dict[str, Any], prefix: str = "metrics") -> list[Check]:
     return [_check(report, f"{prefix}.invariants.{name}.violations", "0", lambda v: v == 0) for name in ("I1", "I2")]
 
 
+def _e8(report: dict[str, Any]) -> list[Check]:
+    """H8 y, por celda ejecutada, la caída producida, su mecanismo visible, ninguna incidencia abierta, ninguna clave
+    ejecutada dos veces, una fila de `event_log` por evento, ningún outbox pendiente, e I1 e I2."""
+    cells = lookup(report, "metrics.cells")
+    checks = [_check(report, "hypothesis.H8", "true", lambda v: v is True)]
+    for name in sorted(cells) if isinstance(cells, dict) else []:
+        prefix = f"metrics.cells.{name}"
+        checks += [_check(report, f"{prefix}.crash.provoked", "true", lambda v: v is True),
+                   _check(report, f"{prefix}.mechanism", "true", lambda v: v is True),
+                   _check(report, f"{prefix}.open", "0", lambda v: v == 0),
+                   _check(report, f"{prefix}.executions_per_key_max", "<= 1",
+                          lambda v: isinstance(v, int) and v <= 1),
+                   _check(report, f"{prefix}.log_rows_per_event_id_max", "<= 1",
+                          lambda v: isinstance(v, int) and v <= 1),
+                   _check(report, f"{prefix}.pending_outbox_total", "0", lambda v: v == 0),
+                   *_invariants(report, prefix)]
+    return checks
+
+
 E10_VARIANTS = ("baseline", "stopped", "paused")
 
 
@@ -351,6 +370,15 @@ CATALOG: dict[str, Entry] = {
         "el log y la traza.",
         "H7: para el 100 % de las seleccionadas se puede indicar qué agente propuso cada paso, con qué "
         "versión del plan y por qué.", _e7),
+    "e8": Entry(
+        "E8", "Mide la matriz de puntos de caída, en proceso: 20 incidencias por celda con un 30 % de fallos en "
+        "`reserve_stock`; primero `baseline`, sin caídas, y después cada componente cae una sola vez en la unidad del "
+        "medio (según `baseline`) de cada punto de su transacción que le aplica (`before_tx`, "
+        "`after_commit_before_offset`, `after_commit_before_response` y `relay_after_publish_before_mark`, 23 celdas) "
+        "y se reinicia.",
+        "H8: en todas las celdas la caída se produce y se ve su mecanismo, todas las incidencias se cierran, ninguna "
+        "`idempotency_key` se ejecuta más de una vez, no queda outbox pendiente, cada evento tiene una sola fila en "
+        "`event_log` e I1 a I5 no tienen violaciones.", _e8),
     "e10": Entry(
         "E10", "Mide la caída de PostgreSQL con todos los componentes en procesos propios: 50 incidencias; con la mitad "
         "planificadas, la base se corta 30 s (parada con `docker stop` o congelada con `docker pause`) mientras llegan "
