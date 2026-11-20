@@ -33,7 +33,7 @@ def test_oracle_client_answers_like_the_harness_oracle():
 
 
 @pytest.mark.parametrize(("environ", "message"), [
-    ({"LLM_CLIENT": "openai"}, "LLM_CLIENT debe ser ollama u oracle, no 'openai'"),
+    ({"LLM_CLIENT": "openai"}, "LLM_CLIENT debe ser ollama, oracle o replay, no 'openai'"),
     ({"LLM_CLIENT": "oracle", "ORACLE_INCIDENTS": "4"}, "LLM_CLIENT=oracle necesita ORACLE_SEED"),
     ({"LLM_CLIENT": "oracle", "ORACLE_SEED": "7", "ORACLE_INCIDENTS": "x"}, "ORACLE_INCIDENTS debe ser un entero"),
 ])

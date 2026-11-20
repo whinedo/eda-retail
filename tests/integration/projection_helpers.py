@@ -146,7 +146,8 @@ class History:
                  passed: bool = True) -> EventEnvelope:
         return self._add("LlmCallRecorded", {"incident_id": self.incident, "agent": agent, "model": "fake",
                                              "tokens_in": tokens_in, "tokens_out": tokens_out,
-                                             "latency_ms": latency_ms, "validation_passed": passed, "attempt": 1},
+                                             "latency_ms": latency_ms, "validation_passed": passed, "attempt": 1,
+                                             "prompt_version": "1", "prompt_hash": None},
                          agent)
 
     def carrier_consulted(self, outcome: str = "answered", rounds: int = 1, latency_ms: int = 100) -> EventEnvelope:

@@ -156,6 +156,19 @@ def test_support_runs_migration_reverts(scratch_db):
     assert "outcome" in _columns(scratch_db, "runs", "support")
 
 
+def test_llm_calls_prompt_migration_reverts(scratch_db):
+    """0029 añade prompt_version y prompt_hash a cada llm_calls (spec agent-harness) y su downgrade los quita"""
+    schemas = ("interpreter", "planner", "replanner", "executor_notify_customer", "executor_file_claim")
+    upgrade(scratch_db)
+    for schema in schemas:
+        assert {"prompt_version", "prompt_hash"} <= _columns(scratch_db, "llm_calls", schema), schema
+    downgrade(scratch_db, "0028")
+    for schema in schemas:
+        assert not {"prompt_version", "prompt_hash"} & _columns(scratch_db, "llm_calls", schema), schema
+    upgrade(scratch_db)
+    assert "prompt_hash" in _columns(scratch_db, "llm_calls", "planner")
+
+
 def test_mail_server_migration_reverts(scratch_db):
     """0021 crea el esquema mail_server con su directorio y su buzón, y su downgrade lo borra"""
     upgrade(scratch_db)

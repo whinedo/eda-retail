@@ -10,7 +10,7 @@ Aplica a los cuatro agentes con LLM: el intérprete (`interpreter`), el planific
 
 ### Requirement: Contrato declarado por agente
 
-Cada agente con LLM SHALL declarar un `AgentSpec` con su nombre, la versión de su prompt (`prompt_version`), el modelo pydantic de su salida, su comprobación de negocio, su límite de generaciones y el `max_tokens` de cada llamada. El harness MUST NOT llamar al LLM para un agente sin `AgentSpec` registrado. Cambiar el texto del prompt de sistema o de la plantilla MUST cambiar su `prompt_version`.
+Cada agente con LLM SHALL declarar un `AgentSpec` con su nombre, la versión de su prompt (`prompt_version`), el modelo pydantic de su salida, su comprobación de negocio fija (si la tiene) y el `max_tokens` de cada llamada. Las comprobaciones que necesitan el contexto de la incidencia (importes, plan vigente) se pasan al harness en cada ejecución, y el límite de generaciones es el de `LLM_MAX_GENERATIONS`, común a todos los agentes (spec llm-boundaries, «Reintentos de generación acotados»). El harness MUST NOT llamar al LLM para un agente sin `AgentSpec` registrado. Cambiar el texto del prompt de sistema o de la plantilla MUST cambiar su `prompt_version`.
 
 #### Scenario: Los cuatro agentes declaran su contrato
 
@@ -141,7 +141,7 @@ Con `LLM_RECORD_DIR` definido, el cliente real SHALL guardar cada petición y su
 
 ### Requirement: Evaluación por agente
 
-`eda-agent-eval <directorio>` SHALL reproducir un directorio grabado con el harness y dar, por agente y `prompt_version`: la tasa de salidas aceptadas al primer intento, la media de intentos, los rechazos por motivo (`ungrounded_reference`, esquema y cada regla de negocio), los escalados por motivo y los tokens de entrada y salida. No escribe en la base ni en Kafka.
+`eda-agent-eval <directorio>` SHALL leer las ejecuciones del harness grabadas en un directorio (cada una con sus intentos, el motivo de cada rechazo y el de su escalado, sin prompt ni salida) y dar, por agente y `prompt_version`: la tasa de salidas aceptadas al primer intento, la media de intentos, los rechazos por motivo (`ungrounded_reference`, esquema y cada regla de negocio), los escalados por motivo y los tokens de entrada y salida. No escribe en la base ni en Kafka.
 
 #### Scenario: Informe de un directorio grabado
 

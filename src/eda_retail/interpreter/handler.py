@@ -26,8 +26,10 @@ from eda_retail.config import Settings
 from eda_retail.events.catalog import build_event
 from eda_retail.events.envelope import EventEnvelope
 from eda_retail.infra.commands import Accepted, CommandEnvelope, Rejected
-from eda_retail.llm.generation import Budget, LlmCall, LlmClient, generate
-from eda_retail.llm.prompts.interpreter import NoticeInterpretation, check_interpretation, notice_request
+from eda_retail.llm.generation import Budget, LlmCall, LlmClient
+from eda_retail.llm.harness import AgentHarness
+from eda_retail.llm.prompts.interpreter import NoticeInterpretation, ground_interpretation, notice_request
+from eda_retail.llm.recording import record_llm_calls
 from eda_retail.rules import BusinessRules
 
 SCHEMA = "interpreter"
@@ -82,7 +84,8 @@ class NoticePreparer:
         budget: Callable[[str], Budget],
         known_orders: Callable[[list[str]], list[str]],
     ) -> None:
-        self._llm = llm
+        self._harness = AgentHarness(llm, max_generations=rules.max_generations,
+                                     max_input_chars=rules.max_untrusted_input_chars)
         self._rules = rules
         self._interpreted = interpreted
         self._budget = budget
@@ -92,10 +95,9 @@ class NoticePreparer:
         if self._interpreted(payload.carrier_notice_id):
             return Prepared(duplicate=True)  # no se paga otra vez el LLM
         incident_id = command.correlation_id
-        gen = generate(
-            self._llm, notice_request(incident_id, payload.carrier, payload.raw_text), NoticeInterpretation,
-            max_generations=self._rules.max_generations, budget=self._budget(incident_id),
-            check=check_interpretation,
+        gen = self._harness.run(
+            notice_request(incident_id, payload.carrier, payload.raw_text), budget=self._budget(incident_id),
+            ground=ground_interpretation(payload.raw_text), untrusted=payload.raw_text,
         )
         known = self._known_orders(gen.value.order_ids) if gen.value is not None else []
         return Prepared(False, gen.value, gen.reason, gen.calls, known)
@@ -112,20 +114,7 @@ def shipment_delayed(incident_id: str, order_ids: list[str], row: dict[str, Any]
 
 
 def _record_calls(conn: psycopg.Connection, command: CommandEnvelope, calls: list[LlmCall]) -> list[EventEnvelope]:
-    events = []
-    for call in calls:
-        conn.execute(
-            "INSERT INTO interpreter.llm_calls (incident_id, command_id, model, tokens_in, tokens_out, latency_ms,"
-            " validation_passed, attempt) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
-            (command.correlation_id, command.command_id, call.model, call.tokens_in, call.tokens_out,
-             call.latency_ms, call.validation_passed, call.attempt),
-        )
-        events.append(event(command, "LlmCallRecorded", {
-            "incident_id": command.correlation_id, "agent": call.agent, "model": call.model,
-            "tokens_in": call.tokens_in, "tokens_out": call.tokens_out, "latency_ms": call.latency_ms,
-            "validation_passed": call.validation_passed, "attempt": call.attempt,
-        }))
-    return events
+    return record_llm_calls(conn, "interpreter", command, calls, lambda event_type, payload: event(command, event_type, payload))
 
 
 def open_incident(settings: Settings):

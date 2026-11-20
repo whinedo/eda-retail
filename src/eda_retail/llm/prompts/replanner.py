@@ -7,7 +7,10 @@ from __future__ import annotations
 
 from typing import Any
 
+from eda_retail.llm.generation import LlmRequest
+from eda_retail.llm.harness import AgentSpec
 from eda_retail.llm.prompts.planner import ACTIONS
+from eda_retail.llm.schemas import PlanProposal
 
 MAX_REVISIONS = "max_revisions"
 REPLACEABLE = ("pending", "requested", "failed", "cancelled")  # estados sin efecto
@@ -26,6 +29,14 @@ Reglas:
 - No incluyas release_stock ni pasos de compensación: los deriva el sistema.
 - Un reembolso no supera el importe del pedido.
 Responde solo con el JSON del esquema."""
+
+TEMPLATE = ("Plan vigente (versión {plan_version}):\n{plan}\n\n"
+            "Fallo: el paso {failed_step_id} terminó con el error {error} y no se puede reintentar.")
+STEP_TEMPLATE = "- {step_id}: {action} {params} depends_on {depends_on} -> {status}{error}"
+ERROR_TEMPLATE = ", error {error}"
+
+SPEC = AgentSpec(agent="replanner", prompt_version="1", system=SYSTEM,
+                 templates=(TEMPLATE, STEP_TEMPLATE, ERROR_TEMPLATE), output=PlanProposal)
 
 
 def check_step_ids(steps: list[dict[str, Any]], proposed: list[dict[str, Any]]) -> str | None:
@@ -47,13 +58,18 @@ def check_step_ids(steps: list[dict[str, Any]], proposed: list[dict[str, Any]]) 
 def render_plan(steps: list[dict[str, Any]]) -> str:
     lines = []
     for s in steps:
-        error = f", error {s['error']}" if s.get("error") else ""
-        lines.append(f"- {s['step_id']}: {s['action']} {s['params']} depends_on {s['depends_on']} "
-                     f"-> {s['status']}{error}")
+        error = ERROR_TEMPLATE.format(error=s["error"]) if s.get("error") else ""
+        lines.append(STEP_TEMPLATE.format(step_id=s["step_id"], action=s["action"], params=s["params"],
+                                          depends_on=s["depends_on"], status=s["status"], error=error))
     return "\n".join(lines)
 
 
 def revise_prompt(plan_version: int, steps: list[dict[str, Any]], failed_step_id: str, error: str) -> str:
     """El prompt del replanner: el plan vigente con el estado de cada paso y el fallo."""
-    return (f"Plan vigente (versión {plan_version}):\n{render_plan(steps)}\n\n"
-            f"Fallo: el paso {failed_step_id} terminó con el error {error} y no se puede reintentar.")
+    return TEMPLATE.format(plan_version=plan_version, plan=render_plan(steps), failed_step_id=failed_step_id,
+                           error=error)
+
+
+def revise_request(incident_id: str, plan_version: int, steps: list[dict[str, Any]], failed_step_id: str,
+                   error: str) -> LlmRequest:
+    return SPEC.request(incident_id, revise_prompt(plan_version, steps, failed_step_id, error))

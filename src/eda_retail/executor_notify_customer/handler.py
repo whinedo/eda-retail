@@ -15,6 +15,7 @@ from eda_retail.executor_notify_customer.mailer import Mailer
 from eda_retail.infra.commands import CommandEnvelope
 from eda_retail.llm.generation import Budget, LlmCall
 from eda_retail.llm.prompts.writer import Writer
+from eda_retail.llm.recording import insert_llm_calls
 from eda_retail.step_executors.drafted import Drafted
 from eda_retail.step_executors.runtime import ExecuteStep, Preparation, Prepared
 
@@ -75,10 +76,4 @@ def existing_message(conn: psycopg.Connection, step: ExecuteStep) -> dict[str, A
 
 
 def record_llm_calls(conn: psycopg.Connection, command: CommandEnvelope, calls: list[LlmCall]) -> None:
-    for call in calls:
-        conn.execute(
-            "INSERT INTO executor_notify_customer.llm_calls (incident_id, command_id, model, tokens_in, tokens_out,"
-            " latency_ms, validation_passed, attempt) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
-            (command.correlation_id, command.command_id, call.model, call.tokens_in, call.tokens_out,
-             call.latency_ms, call.validation_passed, call.attempt),
-        )
+    insert_llm_calls(conn, "executor_notify_customer", command, calls)

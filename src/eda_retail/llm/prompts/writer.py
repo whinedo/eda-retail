@@ -22,8 +22,9 @@ from typing import Literal
 
 from pydantic import Field
 
-from eda_retail.llm.generation import BUDGET_EXHAUSTED, Budget, LlmCall, LlmClient, LlmRequest, generate
-from eda_retail.llm.schemas import LlmOutput, strict_schema
+from eda_retail.llm.generation import BUDGET_EXHAUSTED, Budget, LlmCall, LlmClient
+from eda_retail.llm.harness import AgentHarness, AgentSpec
+from eda_retail.llm.schemas import LlmOutput
 
 INVALID_DRAFT = "invalid_draft"
 DraftKind = Literal["customer_notice", "claim"]
@@ -98,14 +99,25 @@ def validate_draft(text: str, request: DraftRequest) -> str | None:
     return None
 
 
+TEMPLATE = ("Redacta {what}.\nPedido: {order_id}{item}.\n"
+            "Causa: {cause}. Retraso estimado: {delay} h.\n"
+            "Importes que puedes mencionar: {amounts}.")
+WHAT = {"customer_notice": "un aviso al cliente sobre su pedido", "claim": "una reclamación al transportista"}
+ITEM_TEMPLATE = " ({quantity} x {sku})"
+AMOUNT_TEMPLATE = "{amount} EUR"
+NO_AMOUNTS = "ninguno"
+
+SPEC = AgentSpec(agent="writer", prompt_version="1", system=SYSTEM,
+                 templates=(TEMPLATE, WHAT["customer_notice"], WHAT["claim"], ITEM_TEMPLATE, AMOUNT_TEMPLATE,
+                            NO_AMOUNTS), output=Draft, max_tokens=2_000)
+
+
 def _prompt(r: DraftRequest) -> str:
-    what = ("un aviso al cliente sobre su pedido" if r.kind == "customer_notice"
-            else "una reclamación al transportista")
-    amounts = ", ".join(f"{a} EUR" for a in r.authorized_amounts) or "ninguno"
-    item = f" ({r.quantity} x {r.sku})" if r.sku is not None else ""
-    return (f"Redacta {what}.\nPedido: {r.order_id}{item}.\n"
-            f"Causa: {r.cause}. Retraso estimado: {r.estimated_delay_hours} h.\n"
-            f"Importes que puedes mencionar: {amounts}.")
+    what = WHAT["customer_notice"] if r.kind == "customer_notice" else WHAT["claim"]
+    amounts = ", ".join(AMOUNT_TEMPLATE.format(amount=a) for a in r.authorized_amounts) or NO_AMOUNTS
+    item = ITEM_TEMPLATE.format(quantity=r.quantity, sku=r.sku) if r.sku is not None else ""
+    return TEMPLATE.format(what=what, order_id=r.order_id, item=item, cause=r.cause,
+                           delay=r.estimated_delay_hours, amounts=amounts)
 
 
 class Writer:
@@ -113,14 +125,11 @@ class Writer:
     TOOLS: tuple = ()  # sin herramientas con efectos (spec llm-boundaries)
 
     def __init__(self, llm: LlmClient, *, max_generations: int) -> None:
-        self._llm = llm
-        self._max_generations = max_generations
+        self._harness = AgentHarness(llm, max_generations=max_generations)
 
     def draft(self, request: DraftRequest, budget: Budget) -> DraftResult:
-        llm_request = LlmRequest(agent=self.name, incident_id=request.incident_id, system=SYSTEM,
-                                 prompt=_prompt(request), schema=strict_schema(Draft), max_tokens=2_000)
-        gen = generate(self._llm, llm_request, Draft, max_generations=self._max_generations, budget=budget,
-                       check=lambda d: validate_draft(d.text, request))
+        gen = self._harness.run(SPEC.request(request.incident_id, _prompt(request)), budget=budget,
+                                check=lambda d: validate_draft(d.text, request))
         if gen.value is not None:
             return DraftResult(gen.value.text, None, gen.calls)
         return DraftResult(None, BUDGET_EXHAUSTED if gen.reason == BUDGET_EXHAUSTED else INVALID_DRAFT, gen.calls)

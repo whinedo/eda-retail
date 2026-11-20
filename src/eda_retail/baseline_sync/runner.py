@@ -39,7 +39,7 @@ from eda_retail.infra.effect_keys import compute_idempotency_key
 from eda_retail.llm.generation import BUDGET_EXHAUSTED, Budget, LlmCall, LlmClient, LlmRequest, generate
 from eda_retail.llm.prompts import interpreter, planner, replanner
 from eda_retail.llm.prompts.writer import INVALID_DRAFT, DraftRequest, Writer
-from eda_retail.llm.schemas import PlanProposal, strict_schema
+from eda_retail.llm.schemas import PlanProposal
 from eda_retail.planner.handler import check_plan, order_lines
 from eda_retail.replanner.handler import check_revision
 from eda_retail.rules import BusinessRules
@@ -304,10 +304,8 @@ class SyncSystem:
             result = check_revision(current, plan.command_steps(), self.rules, amounts)
             return result if isinstance(result, str) else None
 
-        proposal = self._ask(inc, LlmRequest(
-            agent="replanner", incident_id=inc.incident_id, system=replanner.SYSTEM,
-            schema=strict_schema(PlanProposal),
-            prompt=replanner.revise_prompt(inc.plan_version, current, failed.step_id, failed.error or ""),
+        proposal = self._ask(inc, replanner.revise_request(
+            inc.incident_id, inc.plan_version, current, failed.step_id, failed.error or "",
         ), PlanProposal, check)
         inc.plan_version += 1
         apply_revision(inc.steps, proposal.command_steps(), inc.plan_version)

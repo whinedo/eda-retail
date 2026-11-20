@@ -74,7 +74,7 @@ def test_simple_delay_opens_the_incident(base_settings, database_url, conn):
     """Aviso de retraso simple: ShipmentDelayed con el pedido, la causa delay y 24 horas"""
     order = f"P-{uuid.uuid4().hex[:8]}"
     _project_order(conn, order)
-    event, incident = _notice()
+    event, incident = _notice(f"Retraso de 24 horas en el pedido {order}")
     consumer = _consumer(conn, _settings(base_settings, database_url), FakeLlmClient([_interpretation([order])]))
 
     assert consumer.process(event) is Outcome.PROCESSED
@@ -110,7 +110,7 @@ def test_repeated_notice_is_discarded_without_paying_the_llm(base_settings, data
     """Aviso repetido: otro CarrierNoticeReceived de N1 no publica otro ShipmentDelayed (duplicate_notice)"""
     order = f"P-{uuid.uuid4().hex[:8]}"
     _project_order(conn, order)
-    event, incident = _notice()
+    event, incident = _notice(f"Retraso de 24 horas en el pedido {order}")
     llm = FakeLlmClient([_interpretation([order])])  # una sola salida: la repetición no llama al LLM
     consumer = _consumer(conn, _settings(base_settings, database_url), llm)
     consumer.process(event)
@@ -129,7 +129,7 @@ def test_repeated_notice_is_discarded_without_paying_the_llm(base_settings, data
 def test_redelivered_event_is_a_duplicate(base_settings, database_url, conn):
     order = f"P-{uuid.uuid4().hex[:8]}"
     _project_order(conn, order)
-    event, incident = _notice()
+    event, incident = _notice(f"Retraso de 24 horas en el pedido {order}")
     consumer = _consumer(conn, _settings(base_settings, database_url), FakeLlmClient([_interpretation([order])]))
     consumer.process(event)
     assert consumer.process(event) is Outcome.DUPLICATE
@@ -145,10 +145,25 @@ def test_invalid_output_escalates_with_the_generation_reason(base_settings, data
     assert events[-1]["payload"] == {"incident_id": incident, "reason": "llm_output_invalid"}
 
 
+def test_a_notice_too_long_escalates_with_input_too_long(base_settings, database_url, conn):
+    """Aviso demasiado largo: no se llama al LLM y se publica IncidentEscalated con input_too_long"""
+    rules = BusinessRules()
+    event, incident = _notice("P-1 " + "x" * (rules.max_untrusted_input_chars - 3))
+    llm = FakeLlmClient([])
+
+    assert build_consumer(conn, _NoKafka(), _settings(base_settings, database_url), llm, rules).process(
+        event) is Outcome.PROCESSED
+
+    assert llm.requests == []
+    events = outbox(conn, "interpreter", incident)
+    assert [e["event_type"] for e in events] == ["IncidentEscalated"]
+    assert events[0]["payload"] == {"incident_id": incident, "reason": "input_too_long"}
+
+
 def test_lagging_projection_parks_the_notice_and_order_registered_resumes_it(base_settings, database_url, conn):
     """Proyección atrasada: se aparca con NoticeParked y el OrderRegistered de P-1007 lo reanuda con sus datos"""
     order = f"P-{uuid.uuid4().hex[:8]}"
-    event, incident = _notice()
+    event, incident = _notice(f"Retraso de 24 horas en el pedido {order}")
     consumer = _consumer(conn, _settings(base_settings, database_url), FakeLlmClient([_interpretation([order])]))
 
     assert consumer.process(event) is Outcome.PROCESSED
@@ -170,7 +185,7 @@ def test_lagging_projection_parks_the_notice_and_order_registered_resumes_it(bas
 
 def test_expired_parked_notice_escalates_with_no_valid_orders(base_settings, database_url, conn):
     """Plazo vencido de un aviso aparcado / Pedido inexistente: IncidentEscalated con no_valid_orders"""
-    event, incident = _notice()
+    event, incident = _notice("Retraso de 24 horas en el pedido P9")
     settings = _settings(base_settings, database_url, pending_notice_timeout_s=0.0)
     _consumer(conn, settings, FakeLlmClient([_interpretation(["P9"])])).process(event)
 
@@ -185,7 +200,7 @@ def test_expired_parked_notice_escalates_with_no_valid_orders(base_settings, dat
 def test_order_projected_when_the_deadline_expires(base_settings, database_url, conn):
     """Pedido proyectado al vencer el plazo: ShipmentDelayed en lugar de escalar"""
     order = f"P-{uuid.uuid4().hex[:8]}"
-    event, incident = _notice()
+    event, incident = _notice(f"Retraso de 24 horas en el pedido {order}")
     settings = _settings(base_settings, database_url, pending_notice_timeout_s=0.0)
     _consumer(conn, settings, FakeLlmClient([_interpretation([order])])).process(event)
     _project_order(conn, order)

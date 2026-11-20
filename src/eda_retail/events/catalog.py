@@ -189,6 +189,9 @@ class LlmCallRecorded(_Payload):
     latency_ms: int = Field(ge=0)
     validation_passed: bool
     attempt: int = Field(ge=1)
+    # v2 (spec agent-harness): la versión y la huella del prompt del agente; nunca el prompt ni la salida.
+    prompt_version: str = Field(min_length=1)
+    prompt_hash: str | None
 
 
 class CarrierConsulted(_Payload):
@@ -209,7 +212,7 @@ class EventSpec:
     model: type[_Payload]
 
 
-_VERSIONS = {"StepCompleted": 2, "StepFailed": 2}
+_VERSIONS = {"StepCompleted": 2, "StepFailed": 2, "LlmCallRecorded": 2}
 
 CATALOG: dict[str, EventSpec] = {
     m.__name__: EventSpec(_VERSIONS.get(m.__name__, 1), m)

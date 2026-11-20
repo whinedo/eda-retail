@@ -27,6 +27,7 @@ def _llm(incident: str, agent: str, tokens_in: int, tokens_out: int, passed: boo
     return _event(incident, "LlmCallRecorded", {
         "incident_id": incident, "agent": agent, "model": "fake", "tokens_in": tokens_in,
         "tokens_out": tokens_out, "latency_ms": 10, "validation_passed": passed, "attempt": 1,
+        "prompt_version": "1", "prompt_hash": None,
     })
 
 
