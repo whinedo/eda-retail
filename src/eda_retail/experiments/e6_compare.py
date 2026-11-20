@@ -14,20 +14,27 @@ precios de la configuración), las incidencias resueltas, reembolsadas y escalad
 efectos duplicados, y las escaladas por motivo. H6 no fija umbral: el informe describe las diferencias.
 
 Los plazos de la saga crecen con las incidencias (`DEADLINE_PER_INCIDENT_S`) y el informe dice cuáles se usaron.
+
+Con `checkpoint`, cada ejecución terminada (repetición, escenario y versión) se guarda en ese directorio en cuanto
+acaba, y relanzar E6 con el mismo directorio la reanuda sin repetir las guardadas (`eda-experiment e6 --resume`).
+El directorio guarda la configuración y E6 se niega a reanudarlo con otra.
 """
 
 from __future__ import annotations
 
+import json
+import os
 from collections import Counter
 from collections.abc import Callable
 from decimal import Decimal
+from pathlib import Path
 from typing import Any
 
 from eda_retail.baseline_sync.runner import sync_started
 from eda_retail.config import Settings
 from eda_retail.experiments.harness import RunConfig, started
 from eda_retail.experiments.oracle import Oracle
-from eda_retail.experiments.report import Report, summary
+from eda_retail.experiments.report import Report, prompts_version, summary
 from eda_retail.llm.generation import LlmClient
 from eda_retail.synthetic.faults import FaultPlan
 from eda_retail.synthetic.generator import Dataset, generate
@@ -121,20 +128,84 @@ def _aggregate(rows: list[dict[str, Any]]) -> dict[str, Any]:
     return out
 
 
+RESUME_HEADER = "config.json"  # la configuración del directorio de reanudación
+RESUME_RUNS = "runs.jsonl"  # una línea por ejecución terminada
+
+
+class ResumeMismatch(ValueError):
+    """El directorio de reanudación es de otra configuración de E6."""
+
+
+class _Checkpoint:
+    """El directorio de reanudación de E6: su configuración y las ejecuciones ya terminadas."""
+
+    def __init__(self, path: Path, config: dict[str, Any]) -> None:
+        self.path = Path(path)
+        header = self.path / RESUME_HEADER
+        if header.exists():
+            saved = json.loads(header.read_text())
+            changed = sorted(k for k in config.keys() | saved.keys() if config.get(k) != saved.get(k))
+            if changed:
+                raise ResumeMismatch(f"{self.path} es de otra configuración de E6 (cambia: {', '.join(changed)}); "
+                                 "lanza E6 sin --resume o con la configuración del directorio")
+        else:
+            self.path.mkdir(parents=True, exist_ok=True)
+            header.write_text(json.dumps(config, indent=2, ensure_ascii=False) + "\n")
+        self.rows = self._read()
+
+    def _read(self) -> list[dict[str, Any]]:
+        runs = self.path / RESUME_RUNS
+        if not runs.exists():
+            return []
+        rows = []
+        for line in runs.read_text().splitlines():
+            try:
+                rows.append(json.loads(line))
+            except json.JSONDecodeError:  # la última línea, si el corte llegó mientras se escribía
+                break
+        runs.write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows))
+        return rows
+
+    def saved(self, repetition: int, scenario: str, version: str) -> dict[str, Any] | None:
+        return next((r for r in self.rows if (r["repetition"], r["scenario"], r["version"])
+                     == (repetition, scenario, version)), None)
+
+    def save(self, row: dict[str, Any]) -> None:
+        with (self.path / RESUME_RUNS).open("a") as f:
+            f.write(json.dumps(row, ensure_ascii=False) + "\n")
+            f.flush()
+            os.fsync(f.fileno())
+        self.rows.append(row)
+
+
 def run_e6(base: Settings, *, seed: int = 42, incidents: int = 50, repetitions: int = 3,
-           llm: Callable[[Dataset, int], LlmClient] | None = None, scenarios: tuple[str, ...] = SCENARIOS) -> Report:
+           llm: Callable[[Dataset, int], LlmClient] | None = None, scenarios: tuple[str, ...] = SCENARIOS,
+           checkpoint: Path | None = None) -> Report:
     data = generate(seed, incidents)
     factory = llm or (lambda d, n: Oracle(d).client())
-    runs, model = [], "unknown"
+    probe = factory(data, 1)
+    model = getattr(probe, "model", "unknown")
+    saved = None
+    if checkpoint is not None:
+        saved = _Checkpoint(checkpoint, {
+            "experiment": "E6", "seed": seed, "incidents": incidents, "scenarios": list(scenarios), "model": model,
+            "temperature": getattr(probe, "temperature", None), "prompts_version": prompts_version()})
+    runs = []
     for n in range(1, repetitions + 1):
         for scenario in scenarios:
             config = run_config(scenario, seed, incidents)
             for version, runner in (("events", _run_events), ("sync", _run_sync)):
+                done = saved.saved(n, scenario, version) if saved else None
+                if done is not None:
+                    runs.append(done)
+                    continue
                 client = factory(data, n)
-                model = getattr(client, "model", "unknown")
                 row = runner(base, config, data, client)
-                runs.append({"repetition": n, "scenario": scenario, "llm_seed": getattr(client, "seed", None),
-                             "temperature": getattr(client, "temperature", None), **row})
+                run = {"repetition": n, "scenario": scenario, "llm_seed": getattr(client, "seed", None),
+                       "temperature": getattr(client, "temperature", None), **row}
+                if saved:
+                    saved.save(run)
+                runs.append(run)
     metrics = {s: {v: _aggregate([r for r in runs if r["scenario"] == s and r["version"] == v])
                    for v in ("events", "sync")} for s in scenarios}
     return Report(

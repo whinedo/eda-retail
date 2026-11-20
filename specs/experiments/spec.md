@@ -123,6 +123,21 @@ El experimento E6 SHALL comparar las dos versiones en latencia total por inciden
 - **WHEN** se ejecutan en ambas versiones
 - **THEN** el informe incluye las incidencias resueltas y los efectos duplicados de cada versión
 
+E6 dura horas con el LLM real, así que SHALL guardar cada ejecución (repetición, escenario y versión) en cuanto termina, en un directorio de reanudación, y `eda-experiment e6 --resume <directorio>` SHALL reanudarlo sin repetir las ejecuciones guardadas. Cada ejecución es independiente (su propia base de datos, su topic y la semilla del LLM de su repetición), así que reanudar no cambia lo que se mide. Una ejecución cortada a medias no se guarda y se repite entera. El directorio guarda la configuración (semilla, incidencias, escenarios, modelo, temperatura y versión de los prompts) y E6 MUST negarse a reanudar con otra.
+
+#### Scenario: Reanudación tras un corte
+
+- **GIVEN** una ejecución de E6 que se cortó después de guardar algunas ejecuciones
+- **WHEN** se relanza con `--resume` y su directorio
+- **THEN** solo se ejecutan las ejecuciones que faltaban
+- **AND** el informe incluye todas, las guardadas y las nuevas
+
+#### Scenario: Reanudación con otra configuración
+
+- **GIVEN** un directorio de reanudación de E6 con una configuración
+- **WHEN** se reanuda con otra semilla, otras incidencias, otros escenarios, otro modelo, otra temperatura u otros prompts
+- **THEN** E6 se niega y no ejecuta nada
+
 ### Requirement: E7 Auditabilidad (hipótesis H7)
 
 El experimento E7 SHALL seleccionar incidencias al azar y reconstruir su explicación solo con el log y la traza. Hipótesis H7: para el 100 % de las seleccionadas se puede indicar qué agente propuso cada paso, con qué versión del plan y por qué.
