@@ -62,3 +62,16 @@ def test_three_repetitions_of_e5():
     assert seen == [1, 2, 3] and [r["repetition"] for r in report.runs] == [1, 2, 3]
     assert all("accuracy" in r for r in report.runs)
     assert report.metrics["accuracy_range"] == [1.0, 1.0] and report.config["repetitions"] == 3
+
+
+def test_e5_with_the_planner_harness():
+    """E5 con el harness del planificador"""
+    client = FakeLlmClient(responder=lambda request: {"steps": [
+        {"step_id": "S1", "action": "notify_customer", "params": {"order_id": "P-S9N9999"}, "depends_on": []}]})
+    report = run_e5(seed=4, incidents=6, repetitions=1, llm=lambda data, n: client)
+    run = report.runs[0]
+    assert run["llm_planned"] > 0 and run["accuracy"] == 0.0
+    assert {m["reason"] for m in run["mismatches"]} == {"llm_output_invalid"}
+    assert len(run["mismatches"]) == run["llm_planned"] and run["llm_calls"] == 3 * run["llm_planned"]
+    retries = [r.prompt for r in client.requests if "se rechazó" in r.prompt]
+    assert retries and all("ungrounded_reference" in p for p in retries)
