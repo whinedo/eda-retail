@@ -4,6 +4,9 @@
 Usa la configuración de siempre (el `.env` del directorio de trabajo, que se carga solo): PostgreSQL y Kafka de `docker compose`. Cada
 ejecución crea y borra su propia base de datos y su topic. Los experimentos con LLM real (E5 y E6)
 usan Ollama por defecto; `--llm oracle` los ejecuta con el oráculo, sin coste (decisión D2).
+
+E6 guarda cada ejecución terminada en un directorio de reanudación (`<out>/e6-runs-<fecha>`, que la CLI dice al
+empezar); `--resume <directorio>` reanuda un E6 cortado sin repetir lo guardado.
 """
 
 from __future__ import annotations
@@ -12,6 +15,8 @@ import argparse
 import logging
 import sys
 from collections.abc import Callable
+from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 from eda_retail.config import Settings, load_settings
@@ -20,7 +25,7 @@ from eda_retail.experiments.e2_crash import run_e2
 from eda_retail.experiments.e3_replan import run_e3
 from eda_retail.experiments.e4_rebuild import run_e4
 from eda_retail.experiments.e5_plan_quality import run_e5
-from eda_retail.experiments.e6_compare import run_e6
+from eda_retail.experiments.e6_compare import RESUME_HEADER, ResumeMismatch, run_e6
 from eda_retail.experiments.e7_audit import run_e7
 from eda_retail.experiments.e8_crash_matrix import parse_cells, run_e8
 from eda_retail.experiments.e10_postgres_down import run_e10
@@ -75,7 +80,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                         help=f"temperatura de Ollama en E5 y E6 ({DEFAULT_TEMPERATURE} por defecto)")
     parser.add_argument("--cells", type=lambda text: [c for c in text.split(",") if c],
                         help="celdas de E8 separadas por comas, `<componente>@<punto>` (por defecto, las 23)")
+    parser.add_argument("--resume", type=Path,
+                        help="directorio de reanudación de un E6 cortado: solo ejecuta lo que falta")
     args = parser.parse_args(argv)
+    if args.resume is not None:
+        if args.experiment != "e6":
+            parser.error("--resume solo se usa en e6")
+        if not (args.resume / RESUME_HEADER).is_file():
+            parser.error(f"{args.resume} no es un directorio de reanudación de E6 (le falta {RESUME_HEADER})")
     if args.cells is not None:
         if args.experiment != "e8":
             parser.error("--cells solo se usa en e8")
@@ -106,6 +118,9 @@ def experiment_kwargs(args: argparse.Namespace) -> dict[str, Any]:
         kwargs["repetitions"] = args.repetitions if args.repetitions is not None else 3
         if args.threshold is not None:
             kwargs["threshold"] = args.threshold
+    if args.experiment == "e6":
+        stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S")
+        kwargs["checkpoint"] = args.resume or Path(args.out) / f"e6-runs-{stamp}"
     return kwargs
 
 
@@ -115,7 +130,15 @@ def main(argv: list[str] | None = None, settings: Settings | None = None) -> int
     setup_logging("experiment")
     logging.getLogger("eda_retail").setLevel(logging.WARNING)  # el informe es la salida
     logging.getLogger("alembic").setLevel(logging.WARNING)  # las migraciones de cada base de datos aislada
-    report = EXPERIMENTS[args.experiment](settings, **experiment_kwargs(args))
+    kwargs = experiment_kwargs(args)
+    if "checkpoint" in kwargs:
+        print(f"ejecuciones guardadas en: {kwargs['checkpoint']} (si se corta: --resume {kwargs['checkpoint']})",
+              flush=True)
+    try:
+        report = EXPERIMENTS[args.experiment](settings, **kwargs)
+    except ResumeMismatch as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
     path = write_report(report, args.out)
     for name, ok in report.hypothesis.items():
         print(f"{name}: {'cumplida' if ok else 'no cumplida'}")

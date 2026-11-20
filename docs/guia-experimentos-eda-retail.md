@@ -21,7 +21,7 @@ La PoC de eda-retail gestiona incidencias logísticas con una arquitectura dirig
 uv run eda-experiment <exp> --seed N
 ```
 
-Opciones útiles: `--incidents` (tamaño del escenario), `--out` (carpeta de informes), y solo en E5 y E6 `--llm oracle|ollama`, `--repetitions`, `--temperature` y (solo E5) `--threshold`. Cada ejecución crea y borra su propia base de datos y su propio topic, y escribe `experiments/results/<exp>-<fecha>/report.json` y `report.md` con la semilla, la configuración, el modelo y la versión de los prompts. El código sale con 0 si todas las hipótesis se cumplen.
+Opciones útiles: `--incidents` (tamaño del escenario), `--out` (carpeta de informes), y solo en E5 y E6 `--llm oracle|ollama`, `--repetitions`, `--temperature` y (solo E5) `--threshold`. Cada ejecución crea y borra su propia base de datos y su propio topic, y escribe `experiments/results/<exp>-<fecha>/report.json` y `report.md` con la semilla, la configuración, el modelo y la versión de los prompts. El código sale con 0 si todas las hipótesis se cumplen. E6 dura horas con Ollama: guarda cada ejecución en cuanto termina en `experiments/results/e6-runs-<fecha>` (la CLI dice el directorio al empezar) y, si se corta (por ejemplo, el portátil entra en reposo sin batería), `--resume <directorio>` lo reanuda sin repetir las ejecuciones guardadas; con otra configuración se niega.
 
 **Con informe de resultados (`eda-expexecutor`).** El expexecutor (spec `expexecutor`) es un agente determinista, sin LLM, que ejecuta el experimento con `eda-experiment` y documenta la ejecución:
 
