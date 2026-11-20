@@ -7,7 +7,10 @@ import pytest
 from eda_retail.baseline_sync.runner import run_sync, sync_started
 from eda_retail.experiments.e3_replan import only_cause
 from eda_retail.experiments.harness import RunConfig, started
+from eda_retail.experiments.oracle import Oracle
+from eda_retail.llm.fake import FakeLlmClient
 from eda_retail.synthetic.faults import FaultPlan
+from eda_retail.synthetic.generator import generate
 
 pytestmark = pytest.mark.slow
 
@@ -61,3 +64,24 @@ def test_duplicated_notice_is_handled_once(base_settings):
     result = run_sync(base_settings, RunConfig(seed=6, incidents=4, faults=FaultPlan(seed=6, duplicates=3)))
     assert result.closed == 4 and len(result.received) == 12
     assert result.duplicates == {}
+
+
+def test_sync_baseline_with_the_agent_harness(base_settings, monkeypatch):
+    """Base síncrona con el harness de agentes"""
+    monkeypatch.setenv("MAX_UNTRUSTED_INPUT_CHARS", "10")
+    result = run_sync(base_settings, RunConfig(seed=7, incidents=3))
+    assert result.escalated == 3 and result.escalation_reasons == {"input_too_long": 3}
+    assert result.llm_calls == 0
+    monkeypatch.delenv("MAX_UNTRUSTED_INPUT_CHARS")
+
+    data = generate(7, 3)
+    oracle = Oracle(data)
+
+    def invents_an_order(request):
+        output = oracle(request)
+        if request.agent == "interpreter":
+            output = {**output, "order_ids": [*output["order_ids"], "P-S9N9999"]}
+        return output
+    result = run_sync(base_settings, RunConfig(seed=7, incidents=3), llm=FakeLlmClient(responder=invents_an_order),
+                      data=data)
+    assert result.escalated == 3 and result.escalation_reasons == {"llm_output_invalid": 3}

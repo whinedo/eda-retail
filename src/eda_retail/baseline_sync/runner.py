@@ -3,7 +3,8 @@
 La misma lógica de negocio que la versión de eventos, con llamadas directas: cada aviso se atiende de
 principio a fin en la misma llamada. Reutiliza lo mismo que los componentes: los prompts y las
 comprobaciones del intérprete, del planificador (`check_plan`) y del replanificador
-(`check_revision`), el redactor, los servicios simulados, la misma `idempotency_key` y las mismas
+(`check_revision`), el harness de agentes (límite de la entrada no confiable y grounding de los
+pedidos), el redactor, los servicios simulados, la misma `idempotency_key` y las mismas
 compensaciones derivadas en código. Los prompts son los mismos que en la versión de eventos (los
 pedidos, con su importe; el redactor, sin SKU ni cantidad), así E6 compara las dos con las mismas
 entradas al LLM. No hay log, outbox, inbox, vistas ni Kafka.
@@ -36,7 +37,8 @@ from eda_retail.experiments.oracle import Oracle
 from eda_retail.infra.backoff import Backoff
 from eda_retail.infra.db import connect
 from eda_retail.infra.effect_keys import compute_idempotency_key
-from eda_retail.llm.generation import BUDGET_EXHAUSTED, Budget, LlmCall, LlmClient, LlmRequest, generate
+from eda_retail.llm.generation import BUDGET_EXHAUSTED, Budget, LlmCall, LlmClient, LlmRequest
+from eda_retail.llm.harness import AgentHarness, Check
 from eda_retail.llm.prompts import interpreter, planner, replanner
 from eda_retail.llm.prompts.writer import INVALID_DRAFT, DraftRequest, Writer
 from eda_retail.llm.schemas import PlanProposal
@@ -85,6 +87,8 @@ class SyncSystem:
                  rules: BusinessRules | None = None, max_attempts: int = 3, backoff: Backoff | None = None) -> None:
         self.conn, self.llm, self.rules = conn, llm, rules or BusinessRules()
         self.services = services
+        self.harness = AgentHarness(llm, max_generations=self.rules.max_generations,
+                                    max_input_chars=self.rules.max_untrusted_input_chars)
         self.writer = Writer(llm, max_generations=self.rules.max_generations)
         self._faults = faults
         self._max_attempts = max_attempts
@@ -95,9 +99,10 @@ class SyncSystem:
         self.latencies_ms: list[float] = []
 
     # -- llamadas al LLM -----------------------------------------------------------------------
-    def _ask(self, inc: Incident, request: LlmRequest, output: type, check: Any) -> Any:
-        gen = generate(self.llm, request, output, max_generations=self.rules.max_generations,
-                       budget=inc.budget, check=check)
+    def _ask(self, inc: Incident, request: LlmRequest, *, check: Check | None = None, ground: Check,
+             untrusted: str | None = None) -> Any:
+        """La misma ejecución del harness que el componente (límite de entrada, grounding y reglas)."""
+        gen = self.harness.run(request, budget=inc.budget, check=check, ground=ground, untrusted=untrusted)
         self._charge(inc, gen.calls)
         if gen.value is None:
             raise Escalate(gen.reason)
@@ -144,8 +149,9 @@ class SyncSystem:
         return status if status == "escalated" else reason
 
     def _process(self, inc: Incident, notice: SyntheticNotice, fmt: str) -> str:
-        v = self._ask(inc, interpreter.notice_request(inc.incident_id, notice.carrier, notice.raw_text(fmt)),
-                      interpreter.NoticeInterpretation, interpreter.check_interpretation)
+        raw_text = notice.raw_text(fmt)
+        v = self._ask(inc, interpreter.notice_request(inc.incident_id, notice.carrier, raw_text),
+                      ground=interpreter.ground_interpretation(raw_text), untrusted=raw_text)
         inc.cause, inc.delay_hours = v.cause.value, v.estimated_delay_hours
         amounts = self._amounts(v.order_ids)
         with self.conn.transaction():
@@ -164,7 +170,7 @@ class SyncSystem:
                 result = check_plan(plan.command_steps(), self.rules, amounts)
                 return result if isinstance(result, str) else None
 
-            steps = self._ask(inc, request, PlanProposal, check).command_steps()
+            steps = self._ask(inc, request, check=check, ground=planner.ground_plan(orders)).command_steps()
         inc.plan_version = 1
         inc.steps = {s["step_id"]: Step(s["step_id"], s["action"], s["params"], list(s["depends_on"]), 1)
                      for s in steps}
@@ -297,8 +303,9 @@ class SyncSystem:
         if inc.plan_version - 1 >= self.rules.max_plan_revisions:
             raise Escalate(replanner.MAX_REVISIONS)
         current = [s.view() for s in inc.steps.values()]
-        amounts = self._amounts(sorted({str(s.params["order_id"]) for s in inc.steps.values()
-                                        if s.params.get("order_id")}))
+        # Los pedidos de la incidencia, como `RevisePlan.order_ids()` en el componente.
+        order_ids = sorted({str(s.params["order_id"]) for s in inc.steps.values() if s.params.get("order_id")})
+        amounts = self._amounts(order_ids)
 
         def check(plan: PlanProposal) -> str | None:
             result = check_revision(current, plan.command_steps(), self.rules, amounts)
@@ -306,7 +313,7 @@ class SyncSystem:
 
         proposal = self._ask(inc, replanner.revise_request(
             inc.incident_id, inc.plan_version, current, failed.step_id, failed.error or "",
-        ), PlanProposal, check)
+        ), check=check, ground=planner.ground_plan(order_ids))
         inc.plan_version += 1
         apply_revision(inc.steps, proposal.command_steps(), inc.plan_version)
 

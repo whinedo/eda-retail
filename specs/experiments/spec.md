@@ -8,13 +8,20 @@ Definir las hipótesis, los experimentos y las métricas de la PoC académica. L
 
 ### Requirement: Base síncrona de referencia
 
-El sistema SHALL incluir una implementación síncrona con la misma lógica de negocio, los mismos agentes con LLM y los mismos ejecutores, pero con llamadas directas en lugar de bus, log y vistas. MUST usar los mismos datos sintéticos y los mismos fallos inyectados.
+El sistema SHALL incluir una implementación síncrona con la misma lógica de negocio, los mismos agentes con LLM y los mismos ejecutores, pero con llamadas directas en lugar de bus, log y vistas. MUST usar los mismos datos sintéticos y los mismos fallos inyectados. Sus agentes MUST pasar por el mismo harness de agentes (spec agent-harness): el mismo límite de la entrada no confiable y el mismo grounding de las referencias que en la versión de eventos.
 
 #### Scenario: Misma entrada en ambas versiones
 
 - **GIVEN** un conjunto de 50 avisos con una semilla
 - **WHEN** se ejecuta en la versión de eventos y en la síncrona
 - **THEN** ambas reciben exactamente los mismos avisos y fallos
+
+#### Scenario: Base síncrona con el harness de agentes
+
+- **GIVEN** `MAX_UNTRUSTED_INPUT_CHARS` menor que el texto de los avisos
+- **WHEN** se ejecuta la base síncrona
+- **THEN** cada incidencia se escala con `input_too_long` sin ninguna llamada al LLM
+- **AND** un intérprete que devuelve un pedido que no aparece en el aviso escala la incidencia con `llm_output_invalid`
 
 ### Requirement: Informe reproducible
 
@@ -77,7 +84,14 @@ El experimento E4 SHALL borrar cada vista y reconstruirla volviendo a consumir e
 
 ### Requirement: E5 Calidad del plan (hipótesis H5)
 
-El experimento E5 SHALL medir el acierto del planificador sobre un conjunto etiquetado de 30 a 50 incidencias, comparando el plan generado con el esperado. Hipótesis H5: el acierto en la selección de acciones es al menos del 80 % (valor inicial).
+El experimento E5 SHALL medir el acierto del planificador sobre un conjunto etiquetado de 30 a 50 incidencias, comparando el plan generado con el esperado. Hipótesis H5: el acierto en la selección de acciones es al menos del 80 % (valor inicial). El planificador de E5 MUST pasar por el harness de agentes (spec agent-harness), con el mismo grounding de las referencias que el componente `planner`.
+
+#### Scenario: E5 con el harness del planificador
+
+- **GIVEN** un LLM que propone un paso sobre un pedido ajeno a la incidencia
+- **WHEN** se ejecuta E5
+- **THEN** el plan se rechaza con `ungrounded_reference` en cada generación
+- **AND** el informe lo lista como no coincidente con el motivo `llm_output_invalid`
 
 #### Scenario: Evaluación del planificador
 

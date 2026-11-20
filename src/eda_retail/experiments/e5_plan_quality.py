@@ -2,7 +2,8 @@
 
 El planificador aislado (decisión del usuario, L15): recibe la interpretación etiquetada del
 generador (causa, gravedad y retraso) y los pedidos, con el mismo prompt, las mismas
-comprobaciones de código (`validate_plan`) y los mismos reintentos que el agente. Su plan
+comprobaciones de código (`validate_plan`), el mismo harness de agentes (grounding de los
+pedidos) y los mismos reintentos que el agente. Su plan
 acierta si propone las mismas acciones que el plan esperado (supuesto A1), sin importar el
 orden ni los `step_id`.
 
@@ -22,7 +23,8 @@ from eda_retail.config import Settings
 from eda_retail.events.ids import incident_id_for_notice
 from eda_retail.experiments.oracle import Oracle
 from eda_retail.experiments.report import Report
-from eda_retail.llm.generation import Budget, LlmClient, generate
+from eda_retail.llm.generation import Budget, LlmClient
+from eda_retail.llm.harness import AgentHarness
 from eda_retail.llm.prompts import planner
 from eda_retail.llm.schemas import PlanProposal
 from eda_retail.planner.handler import check_plan, order_lines
@@ -40,6 +42,7 @@ def _oracle(data: Dataset, repetition: int) -> LlmClient:
 class _Evaluation:
     def __init__(self, data: Dataset, llm: LlmClient, rules: BusinessRules) -> None:
         self.llm, self.rules = llm, rules
+        self.harness = AgentHarness(llm, max_generations=rules.max_generations)
         self._orders = {o.order_id: o for o in data.orders}
         self.calls: list[Any] = []
 
@@ -55,8 +58,7 @@ class _Evaluation:
         request = planner.plan_request(incident_id_for_notice(notice.carrier_notice_id), notice.cause,
                                        notice.severity, notice.delay_hours, order_lines(amounts))
         budget = Budget(0, 0, self.rules.max_tokens_per_incident, self.rules.max_llm_calls_per_incident)
-        gen = generate(self.llm, request, PlanProposal, max_generations=self.rules.max_generations,
-                       budget=budget, check=check)
+        gen = self.harness.run(request, budget=budget, check=check, ground=planner.ground_plan(list(amounts)))
         self.calls += gen.calls
         if gen.value is None:
             return [], gen.reason
