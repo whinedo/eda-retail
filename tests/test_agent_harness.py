@@ -89,7 +89,8 @@ def test_a_prompt_changed_without_a_new_version_fails_the_contract_test():
     problems = stale_fingerprints(agents, FINGERPRINTS)
 
     assert len(problems) == 1
-    assert problems[0].startswith("planner: el prompt cambió y la prompt_version sigue en 1")
+    assert problems[0].startswith(
+        f"planner: el prompt cambió y la prompt_version sigue en {AGENTS['planner'].prompt_version}")
 
 
 def test_a_request_not_built_with_its_spec_is_refused():

@@ -149,7 +149,7 @@ def test_report_of_a_recorded_directory(tmp_path, monkeypatch, capsys):
     assert eval_cli.main([str(tmp_path)]) == 0
     report = json.loads(capsys.readouterr().out)
 
-    planner = report["planner@1"]
+    planner = report[f"planner@{AGENTS['planner'].prompt_version}"]
     assert planner["runs"] == 20
     assert planner["first_attempt_rate"] == 0.75
     assert planner["mean_attempts"] == 1.25
