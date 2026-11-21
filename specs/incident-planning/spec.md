@@ -107,6 +107,8 @@ La saga SHALL invocar a la vez los comandos `ExecuteStep` de los pasos cuyas dep
 
 Cuando un paso termine en `StepFailed` sin posibilidad de reintento, la saga SHALL invocar el comando `RevisePlan` al replanner, con el plan vigente, el paso fallido y las revisiones hechas, y el replanner SHALL publicar `PlanRevised` con `plan_version` incrementada y los pasos pendientes. MUST NOT incluir de nuevo los pasos ya completados. Mientras haya un `RevisePlan` de la versión vigente pendiente, otro `StepFailed` no reintentable de esa versión MUST NOT invocar otro `RevisePlan` ni escalar la incidencia: espera a esa revisión. Al aplicar el `PlanRevised`, si el plan nuevo mantiene un paso que falló mientras tanto, la saga SHALL tratar ese fallo con las reglas normales en la versión nueva.
 
+El prompt del replanner SHALL incluir, además del plan vigente y el fallo, cada pedido de la incidencia con su importe en `view_orders`, para que un `issue_refund` lleve un `amount` válido. También SHALL decir que un paso no completado que se mantiene conserva su `step_id` y que `depends_on` solo puede listar pasos del plan revisado o ya completados, nunca el paso fallido ni uno que el plan deja fuera.
+
 #### Scenario: Sin stock en el almacén
 
 - **GIVEN** un plan en el que `reserve_stock` termina en `StepFailed` con el error `out_of_stock` y `retryable` falso
@@ -114,6 +116,13 @@ Cuando un paso termine en `StepFailed` sin posibilidad de reintento, la saga SHA
 - **THEN** publica `PlanRevised` con `plan_version` 2
 - **AND** el plan sustituye `reissue_shipment` por `issue_refund`
 - **AND** no vuelve a incluir `notify_customer`, que ya estaba completado
+
+#### Scenario: El replanner conoce los importes y las dependencias válidas
+
+- **GIVEN** un plan del pedido P-1, de importe 40.00, en el que `reserve_stock` termina en `StepFailed` sin posibilidad de reintento
+- **WHEN** el replanner prepara la petición al LLM
+- **THEN** el prompt lista `- P-1: importe 40.00` en «Pedidos de la incidencia»
+- **AND** las reglas piden el importe del pedido en `issue_refund`, conservar el `step_id` de los pasos mantenidos y no depender del paso fallido ni de un paso que el plan deja fuera
 
 #### Scenario: Revisión ya hecha
 

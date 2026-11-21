@@ -21,21 +21,30 @@ Un paso del plan ha fallado sin posibilidad de reintento. Propón el plan revisa
 {ACTIONS}
 
 Reglas:
-- No incluyas los pasos ya completados; los demás pasos pueden depender de ellos.
-- Si mantienes un paso del plan vigente, conserva su step_id. Los pasos nuevos usan
-  step_id que no existan todavía.
+- No incluyas los pasos ya completados (completed); los demás pasos pueden depender de ellos.
+- Un paso del plan vigente que no está completado y sigue haciendo falta va en el plan y
+  conserva su step_id, aunque cambies su depends_on; un paso que dejas fuera se cancela. No
+  crees un paso nuevo con la acción y el pedido de un paso que puedes mantener.
+- Los pasos nuevos usan step_id que no existan todavía.
+- depends_on solo lista pasos del plan revisado o pasos ya completados: nunca del paso que ha
+  fallado ni de un paso que dejas fuera.
 - Cada paso tiene step_id, action, params (order_id y, solo en issue_refund, amount; en el
   resto amount es null) y depends_on.
+- Un issue_refund lleva siempre amount: el importe del pedido que aparece en «Pedidos de la
+  incidencia», nunca más.
 - No incluyas release_stock ni pasos de compensación: los deriva el sistema.
-- Un reembolso no supera el importe del pedido.
+- Ejemplo: S1 notify_customer completed, S2 file_claim pending, S3 reserve_stock failed y S4
+  reissue_shipment pending con depends_on ["S3"], pedido P1 de importe 40.00. El reenvío ya no
+  es posible: S2 file_claim (depends_on []) y S5 issue_refund con amount 40.00 (depends_on []).
 Responde solo con el JSON del esquema."""
 
 TEMPLATE = ("Plan vigente (versión {plan_version}):\n{plan}\n\n"
+            "Pedidos de la incidencia:\n{orders}\n\n"
             "Fallo: el paso {failed_step_id} terminó con el error {error} y no se puede reintentar.")
 STEP_TEMPLATE = "- {step_id}: {action} {params} depends_on {depends_on} -> {status}{error}"
 ERROR_TEMPLATE = ", error {error}"
 
-SPEC = AgentSpec(agent="replanner", prompt_version="1", system=SYSTEM,
+SPEC = AgentSpec(agent="replanner", prompt_version="2", system=SYSTEM,
                  templates=(TEMPLATE, STEP_TEMPLATE, ERROR_TEMPLATE), output=PlanProposal)
 
 
@@ -64,12 +73,14 @@ def render_plan(steps: list[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
-def revise_prompt(plan_version: int, steps: list[dict[str, Any]], failed_step_id: str, error: str) -> str:
-    """El prompt del replanner: el plan vigente con el estado de cada paso y el fallo."""
-    return TEMPLATE.format(plan_version=plan_version, plan=render_plan(steps), failed_step_id=failed_step_id,
-                           error=error)
+def revise_prompt(plan_version: int, steps: list[dict[str, Any]], failed_step_id: str, error: str,
+                  orders: str) -> str:
+    """El prompt del replanner: el plan vigente con el estado de cada paso, los pedidos con su importe
+    (`planner.handler.order_lines`, para que un reembolso lleve un `amount` válido) y el fallo."""
+    return TEMPLATE.format(plan_version=plan_version, plan=render_plan(steps), orders=orders,
+                           failed_step_id=failed_step_id, error=error)
 
 
 def revise_request(incident_id: str, plan_version: int, steps: list[dict[str, Any]], failed_step_id: str,
-                   error: str) -> LlmRequest:
-    return SPEC.request(incident_id, revise_prompt(plan_version, steps, failed_step_id, error))
+                   error: str, *, orders: str) -> LlmRequest:
+    return SPEC.request(incident_id, revise_prompt(plan_version, steps, failed_step_id, error, orders))

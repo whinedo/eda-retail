@@ -184,7 +184,7 @@ def test_the_outcome_log_keeps_the_full_text_of_each_rejection(tmp_path):
     assert [a["error"] for a in first["attempts"]] == [detail, None]
     assert [a["rejection"] for a in first["attempts"]] == ["invalid_plan", None]
     assert second["attempts"] == []
-    assert agent_report(tmp_path)["replanner@1"]["rejections"] == {"invalid_plan": 1}
+    assert agent_report(tmp_path)[f"replanner@{AGENTS['replanner'].prompt_version}"]["rejections"] == {"invalid_plan": 1}
 
 
 def test_eval_rejects_a_missing_directory(tmp_path, capsys):

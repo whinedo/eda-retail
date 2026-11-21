@@ -313,6 +313,7 @@ class SyncSystem:
 
         proposal = self._ask(inc, replanner.revise_request(
             inc.incident_id, inc.plan_version, current, failed.step_id, failed.error or "",
+            orders=order_lines(amounts),
         ), check=check, ground=planner.ground_plan(order_ids))
         inc.plan_version += 1
         apply_revision(inc.steps, proposal.command_steps(), inc.plan_version)
