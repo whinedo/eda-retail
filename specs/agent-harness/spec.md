@@ -141,7 +141,7 @@ Con `LLM_RECORD_DIR` definido, el cliente real SHALL guardar cada petición y su
 
 ### Requirement: Evaluación por agente
 
-`eda-agent-eval <directorio>` SHALL leer las ejecuciones del harness grabadas en un directorio (cada una con sus intentos, el motivo de cada rechazo y el de su escalado, sin prompt ni salida) y dar, por agente y `prompt_version`: la tasa de salidas aceptadas al primer intento, la media de intentos, los rechazos por motivo (`ungrounded_reference`, esquema y cada regla de negocio), los escalados por motivo y los tokens de entrada y salida. No escribe en la base ni en Kafka.
+`eda-agent-eval <directorio>` SHALL leer las ejecuciones del harness grabadas en un directorio (cada una con sus intentos, el motivo de cada rechazo y el de su escalado, sin prompt ni salida). Cada intento rechazado MUST guardar, además del motivo, el texto completo del rechazo, el mismo que se le devuelve al LLM, para poder distinguir los casos de un mismo motivo (por ejemplo, los de `invalid_plan`) y dar, por agente y `prompt_version`: la tasa de salidas aceptadas al primer intento, la media de intentos, los rechazos por motivo (`ungrounded_reference`, esquema y cada regla de negocio), los escalados por motivo y los tokens de entrada y salida. No escribe en la base ni en Kafka.
 
 #### Scenario: Informe de un directorio grabado
 
@@ -149,3 +149,10 @@ Con `LLM_RECORD_DIR` definido, el cliente real SHALL guardar cada petición y su
 - **WHEN** se ejecuta `eda-agent-eval` sobre él
 - **THEN** el informe del planificador da una tasa al primer intento de 0,75 y una media de 1,25 intentos
 - **AND** la base y el topic no tienen filas ni mensajes nuevos
+
+#### Scenario: Texto completo de los rechazos
+
+- **GIVEN** `LLM_RECORD_DIR` apunta a un directorio
+- **WHEN** el replanificador propone un paso que depende de un paso fallido y el harness lo rechaza con `invalid_plan`
+- **THEN** el intento grabado guarda el motivo `invalid_plan` y el texto `invalid_plan (S4 depende de pasos inexistentes: ['S3'])`
+- **AND** el informe de `eda-agent-eval` sigue contando el rechazo por su motivo

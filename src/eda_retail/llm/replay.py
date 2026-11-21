@@ -106,16 +106,19 @@ class ReplayClient:
 
 
 class OutcomeLog:
-    """Graba cada ejecución del harness para `eda-agent-eval`: intentos, rechazos y motivo, sin prompt ni salida."""
+    """Graba cada ejecución del harness para `eda-agent-eval`: intentos, rechazos (código y texto completo, el
+    mismo que se le devuelve al LLM) y motivo, sin prompt ni salida."""
 
     def __init__(self, directory: str | Path) -> None:
         self._outcomes = _JsonlWriter(directory, "outcomes")
 
     def __call__(self, request: LlmRequest, outcome: Generation[Any]) -> None:
+        errors = iter(outcome.errors)  # el texto de cada rechazo, en el orden de los intentos rechazados
         self._outcomes.write({
             "agent": request.agent, "prompt_version": request.prompt_version, "prompt_hash": request.prompt_hash,
             "incident_id": request.incident_id, "accepted": outcome.value is not None, "reason": outcome.reason,
             "attempts": [{"attempt": c.attempt, "validation_passed": c.validation_passed, "rejection": c.rejection,
+                          "error": None if c.validation_passed else next(errors, None),
                           "tokens_in": c.tokens_in, "tokens_out": c.tokens_out} for c in outcome.calls],
         })
 
