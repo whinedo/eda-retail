@@ -171,6 +171,22 @@ def test_report_counts_escalations_by_reason(tmp_path):
     assert interp["first_attempt_rate"] == 0.0
 
 
+def test_the_outcome_log_keeps_the_full_text_of_each_rejection(tmp_path):
+    """Texto completo de los rechazos"""
+    log = OutcomeLog(tmp_path)
+    request = AGENTS["replanner"].request("I-1", "p")
+    detail = "invalid_plan (S4 depende de pasos inexistentes: ['S3'])"
+    log(request, Generation(object(), None, [_call(1, False, "invalid_plan"), _call(2, True)], [detail]))
+    log(request, Generation(None, "budget_exhausted"))
+
+    first, second = read_jsonl(tmp_path, "outcomes")
+
+    assert [a["error"] for a in first["attempts"]] == [detail, None]
+    assert [a["rejection"] for a in first["attempts"]] == ["invalid_plan", None]
+    assert second["attempts"] == []
+    assert agent_report(tmp_path)["replanner@1"]["rejections"] == {"invalid_plan": 1}
+
+
 def test_eval_rejects_a_missing_directory(tmp_path, capsys):
     assert eval_cli.main([str(tmp_path / "nope")]) == 2
     assert "no es un directorio" in capsys.readouterr().err
