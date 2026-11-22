@@ -33,6 +33,14 @@ Cada experimento SHALL poder ejecutarse con un único comando y generar un infor
 - **WHEN** se ejecuta
 - **THEN** se genera un informe con sus métricas y la configuración usada
 
+Un experimento sin umbral (como E6) no tiene hipótesis que cumplir; su informe SHALL decirlo en la sección «Hipótesis» en lugar de dejarla vacía.
+
+#### Scenario: Informe de un experimento sin umbral
+
+- **GIVEN** un experimento que no fija ninguna hipótesis, como E6
+- **WHEN** se escribe su informe
+- **THEN** la sección «Hipótesis» dice que el experimento mide y describe las diferencias, sin umbral
+
 ### Requirement: E1 Duplicados en el bus (hipótesis H1)
 
 El experimento E1 SHALL entregar cada evento a cada consumidor de Kafka y cada comando REST que invoca la saga 2 y 3 veces (el mismo `command_id`, como un reintento HTTP de entrega al menos una vez) y comparar el sistema con y sin Idempotency key. Sin idempotencia, los ejecutores e `inventory` pierden su inbox de comandos, `effect_keys` y la clave en los servicios simulados. Hipótesis H1: con idempotencia el número de efectos duplicados es 0 en todas las ejecuciones; sin ella, mayor que 0.
