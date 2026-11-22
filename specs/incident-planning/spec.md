@@ -107,7 +107,7 @@ La saga SHALL invocar a la vez los comandos `ExecuteStep` de los pasos cuyas dep
 
 Cuando un paso termine en `StepFailed` sin posibilidad de reintento, la saga SHALL invocar el comando `RevisePlan` al replanner, con el plan vigente, el paso fallido y las revisiones hechas, y el replanner SHALL publicar `PlanRevised` con `plan_version` incrementada y los pasos pendientes. MUST NOT incluir de nuevo los pasos ya completados. Mientras haya un `RevisePlan` de la versión vigente pendiente, otro `StepFailed` no reintentable de esa versión MUST NOT invocar otro `RevisePlan` ni escalar la incidencia: espera a esa revisión. Al aplicar el `PlanRevised`, si el plan nuevo mantiene un paso que falló mientras tanto, la saga SHALL tratar ese fallo con las reglas normales en la versión nueva.
 
-El prompt del replanner SHALL incluir, además del plan vigente y el fallo, cada pedido de la incidencia con su importe en `view_orders`, para que un `issue_refund` lleve un `amount` válido. También SHALL decir que un paso no completado que se mantiene conserva su `step_id` y que `depends_on` solo puede listar pasos del plan revisado o ya completados, nunca el paso fallido ni uno que el plan deja fuera.
+El prompt del replanner SHALL incluir, además del plan vigente y el fallo, cada pedido de la incidencia con su importe en `view_orders`, para que un `issue_refund` lleve un `amount` válido. También SHALL decir que un paso no completado que se mantiene conserva su `step_id` y que `depends_on` solo puede listar pasos del plan revisado o ya completados, nunca el paso fallido ni uno que el plan deja fuera. SHALL prohibir usar el `step_id` de un paso para otra acción, y su ejemplo MUST NOT llevar `step_id` literales, que el modelo copiaría a planes distintos.
 
 #### Scenario: Sin stock en el almacén
 
@@ -123,6 +123,7 @@ El prompt del replanner SHALL incluir, además del plan vigente y el fallo, cada
 - **WHEN** el replanner prepara la petición al LLM
 - **THEN** el prompt lista `- P-1: importe 40.00` en «Pedidos de la incidencia»
 - **AND** las reglas piden el importe del pedido en `issue_refund`, conservar el `step_id` de los pasos mantenidos y no depender del paso fallido ni de un paso que el plan deja fuera
+- **AND** las reglas prohíben usar el `step_id` de un paso para otra acción, y el ejemplo deja fuera los pasos completados sin copiar ningún `step_id`
 
 #### Scenario: Revisión ya hecha
 

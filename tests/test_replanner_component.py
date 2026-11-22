@@ -101,11 +101,13 @@ def test_the_replanner_knows_the_order_amounts_and_the_valid_dependencies():
 
     [request] = llm.requests
     assert "Pedidos de la incidencia:\n- P-1: importe 40.00" in request.prompt
-    assert request.prompt_version == "2"
+    assert request.prompt_version == "3"
     system = " ".join(replanner.SYSTEM.split())
     assert "issue_refund lleva siempre amount: el importe del pedido" in system
     assert "nunca del paso que ha fallado ni de un paso que dejas fuera" in system
     assert "conserva su step_id" in system
+    assert "nunca uses el step_id de un paso para otra acción" in system
+    assert "No lleva notify_customer ni file_claim porque están completados" in system
 
 
 def test_prepare_reads_the_amounts_of_the_plan_orders():
