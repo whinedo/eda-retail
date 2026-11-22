@@ -8,8 +8,10 @@ Kafka propio para no ver mensajes de otros tests.
 from __future__ import annotations
 
 import contextlib
+import os
 import uuid
-from collections.abc import Iterator
+from collections.abc import Iterator, MutableMapping
+from pathlib import Path
 
 import psycopg
 import pytest
@@ -17,6 +19,7 @@ from confluent_kafka.admin import AdminClient, NewTopic
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
+from eda_retail import config
 from eda_retail.config import Settings, load_settings
 from eda_retail.infra import tracing
 from eda_retail.infra.db import connect
@@ -28,6 +31,32 @@ TEST_DB = "eda_test"
 def _with_db(url: str, dbname: str) -> str:
     base, _, _ = url.rpartition("/")
     return f"{base}/{dbname}"
+
+
+INTEGRATION_DIR = Path(__file__).resolve().parent / "integration"
+REPO_ENV_FILE = Path(__file__).resolve().parents[1] / config.ENV_FILE
+
+
+@pytest.fixture(autouse=True)
+def _no_local_env_file(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """Los tests unitarios no leen el `.env` del repositorio ni dejan variables cargadas para el test siguiente.
+
+    `load_settings` (p. ej. desde `create_app`) añade el `.env` a `os.environ`: con el `.env` local (`POC_VERSION=2`,
+    etc.), los tests darían otro resultado que en CI, que no tiene `.env`. Un `.env` de otra carpeta (`tmp_path`) se
+    sigue cargando. Los de integración sí lo leen: es de donde sacan la base de datos y Kafka."""
+    if INTEGRATION_DIR in Path(request.node.path).resolve().parents:
+        yield
+        return
+    load = config.load_env_file
+
+    def without_repo_env(path: Path, environ: MutableMapping[str, str] = os.environ) -> list[str]:
+        return [] if Path(path).resolve() == REPO_ENV_FILE else load(path, environ)
+
+    monkeypatch.setattr(config, "load_env_file", without_repo_env)
+    saved = dict(os.environ)
+    yield
+    os.environ.clear()
+    os.environ.update(saved)
 
 
 @pytest.fixture(scope="session", autouse=True)
