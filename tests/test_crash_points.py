@@ -620,7 +620,22 @@ def test_the_wrappers_can_be_copied():
         return "ok"
 
     prepare._carrier = "carrier"
-    wrapped = copy.copy(harness.ThenPrepare(prepare, lambda: None))
+    wrapped = copy.copy(harness.ThenPrepare(prepare, lambda prepared: None))
     assert wrapped._carrier == "carrier"
     counting = copy.copy(CountingLlmClient(FakeLlmClient()))
     assert counting.requests == []
+
+
+def test_a_job_without_an_llm_call_is_not_a_before_tx_unit():
+    """Un trabajo sin llamada al LLM no cuenta como unidad `before_tx`"""
+    h = _bare(FaultPlan(crash_at={("planner", BEFORE_TX): 1}))
+    answers = iter([SimpleNamespace(calls=[]), SimpleNamespace(calls=["llm"])])
+    work = Work(prepare=lambda command, payload: next(answers))
+    spec = h._crashing_before_tx("planner", {"PlanIncident": work.spec()})["PlanIncident"]
+    command = _command(command_type="PlanIncident")
+
+    spec.prepare(command, None)  # el plan fijo de gravedad `low`: sin LLM, no es unidad
+    assert h.crash_points.units[("planner", BEFORE_TX)] == 0 and h.crash_points.records == []
+    with pytest.raises(WorkerCrashed, match="unidad 1"):
+        spec.prepare(command, None)  # el primero con LLM es la unidad 1
+    assert h.crash_points.units[("planner", BEFORE_TX)] == 1

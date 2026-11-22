@@ -324,16 +324,16 @@ def crashing(spec: CommandSpec, crashes: EffectRecordCrashes) -> CommandSpec:
 
 
 class ThenPrepare:
-    """`prepare` que llama a `then` tras el original (E8: la caída `before_tx`). Delega sus atributos en el original,
-    así lo que se inspecciona del `prepare` de un comando (p. ej. `_carrier`) sigue igual."""
+    """`prepare` que llama a `then` con su resultado tras el original (E8: la caída `before_tx`). Delega sus atributos
+    en el original, así lo que se inspecciona del `prepare` de un comando (p. ej. `_carrier`) sigue igual."""
 
-    def __init__(self, prepare: Callable[[CommandEnvelope, Any], Any] | None, then: Callable[[], None]) -> None:
+    def __init__(self, prepare: Callable[[CommandEnvelope, Any], Any] | None, then: Callable[[Any], None]) -> None:
         self._prepare = prepare
         self._then = then
 
     def __call__(self, command: CommandEnvelope, payload: Any) -> Any:
         prepared = self._prepare(command, payload) if self._prepare is not None else None
-        self._then()
+        self._then(prepared)
         return prepared
 
     def __getattr__(self, name: str) -> Any:
@@ -1069,9 +1069,14 @@ class Harness:
 
     def _crashing_before_tx(self, schema: str, specs: dict[str, CommandSpec]) -> dict[str, CommandSpec]:
         """E8: los trabajos de `schema` cuentan una unidad `before_tx` tras su `prepare` (el LLM) y, en la K, el worker
-        cae con `WorkerCrashed` antes de la transacción."""
+        cae con `WorkerCrashed` antes de la transacción. Un `prepare` que no llamó al LLM (`calls` vacío: el plan fijo
+        de gravedad `low`, el límite de revisiones, una incidencia ya planificada o cerrada) no cuenta como unidad: su
+        reintento no vuelve a llamar al LLM y la celda no mostraría su mecanismo."""
 
-        def crash() -> None:
+        def crash(prepared: Any) -> None:
+            calls = getattr(prepared, "calls", None)
+            if calls is not None and not calls:
+                return
             unit = self.crash_points.decide(schema, BEFORE_TX)
             if unit is not None:
                 raise WorkerCrashed(f"worker de {schema} cae antes de la transacción (unidad {unit})")
