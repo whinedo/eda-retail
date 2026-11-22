@@ -90,6 +90,26 @@ def test_out_of_stock_replaces_the_reissue_with_a_refund():
     assert "el paso S3 terminó con el error out_of_stock" in request.prompt
 
 
+def test_the_replanner_knows_the_order_amounts_and_the_valid_dependencies():
+    """El replanner conoce los importes y las dependencias válidas"""
+    from eda_retail.llm.prompts import replanner
+
+    llm = FakeLlmClient([REFUND_PLAN])
+    command, payload = _command(_payload())
+
+    _preparer(llm)(command, payload)
+
+    [request] = llm.requests
+    assert "Pedidos de la incidencia:\n- P-1: importe 40.00" in request.prompt
+    assert request.prompt_version == "3"
+    system = " ".join(replanner.SYSTEM.split())
+    assert "issue_refund lleva siempre amount: el importe del pedido" in system
+    assert "nunca del paso que ha fallado ni de un paso que dejas fuera" in system
+    assert "conserva su step_id" in system
+    assert "nunca uses el step_id de un paso para otra acción" in system
+    assert "No lleva notify_customer ni file_claim porque están completados" in system
+
+
 def test_prepare_reads_the_amounts_of_the_plan_orders():
     """Dato de otro dominio: los importes de los pedidos del plan se consultan en view_orders"""
     llm = FakeLlmClient([REFUND_PLAN])

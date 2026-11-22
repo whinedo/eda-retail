@@ -17,7 +17,7 @@ AGENTS: dict[str, AgentSpec[Any]] = {s.agent: s for s in (interpreter.SPEC, plan
 FINGERPRINTS: dict[str, tuple[str, str]] = {
     "interpreter": ("1", "27e99b3b1b09e36a2bae43208fd500910189436ac0302de9d94922b974f3175a"),
     "planner": ("3", "bfea67e092fbccc52e62d5b86440993fc0c0782eff3535ba9ae0b091ecdca357"),
-    "replanner": ("1", "617976d1a7e934da445f78b86978bfc8077aa6ddb00cc52783df9a999f109bfb"),
+    "replanner": ("3", "363a11d23d10851dc9f9aad3298c67db0e300d01da690977e1318d9985b427ac"),
     "writer": ("1", "a2e8c43839c9c0776d453e1153e048167030c4912489505eab479fcfb15d5981"),
 }
 

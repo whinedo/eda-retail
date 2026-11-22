@@ -46,6 +46,7 @@ from eda_retail.llm.prompts.replanner import MAX_REVISIONS, REPLACEABLE, check_s
 from eda_retail.llm.recording import record_llm_calls
 from eda_retail.llm.schemas import PlanProposal
 from eda_retail.plan_validation import PlanRejected, refund_over_reissue, validate_plan
+from eda_retail.planner.handler import order_lines
 from eda_retail.queries.cost_per_incident import Prices, budget_from_cost, get_incident_cost
 from eda_retail.queries.incident_status import INCIDENT_CLOSED, incident_closed
 from eda_retail.queries.orders import get_orders
@@ -162,7 +163,8 @@ class RevisionPreparer:
             result = check_revision(current, plan.command_steps(), self._rules, ctx.amounts)
             return result if isinstance(result, str) else None
 
-        request = revise_request(incident_id, payload.plan_version, current, payload.failed_step_id, payload.error)
+        request = revise_request(incident_id, payload.plan_version, current, payload.failed_step_id, payload.error,
+                                 orders=order_lines(ctx.amounts))
         gen = self._harness.run(request, budget=ctx.budget, check=check, ground=ground_plan(payload.order_ids()))
         steps = gen.value.command_steps() if gen.value is not None else None
         return Prepared(False, steps, gen.reason, gen.calls, ctx.amounts)
