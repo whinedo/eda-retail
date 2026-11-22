@@ -34,6 +34,9 @@ def summary(values: list[float]) -> dict[str, float | None]:
     return {"mean": statistics.fmean(ordered), "median": statistics.median(ordered), "p95": p95}
 
 
+NO_HYPOTHESIS = "Sin umbral: este experimento mide y describe las diferencias (ver «Métricas»)."
+
+
 @dataclass
 class Report:
     experiment: str
@@ -68,7 +71,8 @@ def write_report(report: Report, base: Path | str) -> Path:
         f"- Modelo: {report.model}",
         f"- Versión de los prompts: `{report.prompts_version[:12]}`", "",
         "## Hipótesis", "",
-        *[f"- {name}: {'cumplida' if ok else 'no cumplida'}" for name, ok in report.hypothesis.items()], "",
+        *([f"- {name}: {'cumplida' if ok else 'no cumplida'}" for name, ok in report.hypothesis.items()]
+          or [NO_HYPOTHESIS]), "",
         "## Métricas", "", "```json", json.dumps(data["metrics"], indent=2, ensure_ascii=False, default=str), "```",
         "", "## Configuración", "", "```json", json.dumps(data["config"], indent=2, ensure_ascii=False, default=str),
         "```",
